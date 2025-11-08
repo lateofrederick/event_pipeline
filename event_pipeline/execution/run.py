@@ -12,6 +12,32 @@ from event_pipeline.execution.context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
+# TODO: This code needs massive refactoring in favour of
+#  iterative algorithm instead of recursive one. Also, a
+#  clear execution mechanism must be designed to avoid edge cases(Runners scheme is better).
+#  For now we are focus on getting the flow runner to work with our old code
+
+
+def get_next_non_executable_task(context: ExecutionContext):
+    pass
+
+
+def handle_parallel_tasks(task: TaskType) -> typing.Set[TaskType]:
+    parallel_tasks = set()
+
+    # Loop through the chain of tasks, adding each task to the 'parallel_tasks' set,
+    # until we encounter a task where the 'on_success_pipe' is no longer equal
+    # to PipeType.PARALLELISM.
+    # This indicates that the task is part of a parallel execution chain.
+    while task and task.condition_node.on_success_pipe == PipeType.PARALLELISM:
+        parallel_tasks.add(task)
+        task = task.condition_node.on_success_event
+
+    if parallel_tasks:
+        parallel_tasks.add(task)
+
+    return parallel_tasks
+
 
 def run_workflow(
     task: TaskType,
@@ -35,30 +61,21 @@ def run_workflow(
     # TODO: make this function iterative
 
     if task:
+        parallel_tasks = None
+
+        if task.is_parallel_execution_node:
+            parallel_tasks = handle_parallel_tasks(task)
+
+        execution_context = ExecutionContext(
+            pipeline=pipeline,
+            task_profiles=list(parallel_tasks) if parallel_tasks else task,
+        )
+
         if previous_context is None:
-            execution_context = ExecutionContext(pipeline=pipeline, task_profiles=task)
             pipeline.execution_context = execution_context
         else:
             if task.sink_node:
                 sink_queue.append(task.sink_node)
-
-            parallel_tasks = set()
-
-            # Loop through the chain of tasks, adding each task to the 'parallel_tasks' set,
-            # until we encounter a task where the 'on_success_pipe' is no longer equal
-            # to PipeType.PARALLELISM.
-            # This indicates that the task is part of a parallel execution chain.
-            while task and task.condition_node.on_success_pipe == PipeType.PARALLELISM:
-                parallel_tasks.add(task)
-                task = task.condition_node.on_success_event
-
-            if parallel_tasks:
-                parallel_tasks.add(task)
-
-            execution_context = ExecutionContext(
-                pipeline=pipeline,
-                task_profiles=list(parallel_tasks) if parallel_tasks else task,
-            )
 
             execution_context.previous_context = previous_context
             previous_context.next_context = execution_context
@@ -127,12 +144,24 @@ def run_workflow(
                         f"Cannot evaluate conditional task '{task}' without execution results."
                     )
             else:
-                run_workflow(
-                    task=task.condition_node.on_success_event,
-                    previous_context=execution_context,
-                    pipeline=pipeline,
-                    sink_queue=sink_queue,
-                )
+                if execution_context.is_multitask():
+                    last_task = execution_context.get_decision_task_profile()
+                    if last_task is None:
+                        return
+
+                    run_workflow(
+                        task=last_task.condition_node.on_success_event,
+                        previous_context=execution_context,
+                        pipeline=pipeline,
+                        sink_queue=sink_queue,
+                    )
+                else:
+                    run_workflow(
+                        task=task.condition_node.on_success_event,
+                        previous_context=execution_context,
+                        pipeline=pipeline,
+                        sink_queue=sink_queue,
+                    )
 
     else:
         # clear the sink nodes

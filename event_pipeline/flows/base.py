@@ -128,7 +128,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
             # TODO: get result from context state
             if self.context.previous_context:
                 event_init_args["previous_result"] = (
-                    self.context.previous_context.execution_result
+                    self.context.previous_context.state.results
                 )
             else:
                 event_init_args["previous_result"] = EMPTY

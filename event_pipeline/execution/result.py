@@ -60,6 +60,8 @@ class ResultProcessor:
         for result in completed:
             if isinstance(result, Exception):
                 errors.add(result)
+            elif isinstance(result, (list, tuple, ResultSet)):
+                pass
             else:
                 results.add(result)
 
