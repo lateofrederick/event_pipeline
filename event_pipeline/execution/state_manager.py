@@ -29,7 +29,7 @@ class ExecutionState:
     errors: typing.List[PipelineError] = field(default_factory=list)
     results: ResultSet[EventResult] = field(default_factory=lambda: ResultSet())
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> typing.Dict[str, typing.Any]:
         """Serialize state for IPC"""
         return {
             "status": self.status.value,
@@ -38,7 +38,7 @@ class ExecutionState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ExecutionState":
+    def from_dict(cls, data: typing.Dict[str, typing.Any]) -> "ExecutionState":
         """Deserialize state from IPC"""
         return cls(
             status=ExecutionStatus(data["status"]),
@@ -46,14 +46,14 @@ class ExecutionState:
             results=data["results"],
         )
 
-    def get_stop_processing_request(self):
+    def get_stop_processing_request(self) -> typing.Optional[Exception]:
         """Check for StopProcessingError in errors"""
         for err in self.errors:
             if isinstance(err, Exception) and err.__class__ == StopProcessingError:
                 return err
         return None
 
-    def get_switch_request(self):
+    def get_switch_request(self) -> typing.Optional[Exception]:
         """Check for SwitchTask in errors"""
         for err in self.errors:
             if isinstance(err, Exception) and err.__class__ == SwitchTask:
@@ -68,7 +68,7 @@ class StateManager:
     _instance_lock = ThreadLock()
     _manager = None
 
-    def __new__(cls):
+    def __new__(cls) -> "StateManager":
         # Thread-safe singleton with double-checked locking
         if cls._instance is None:
             with cls._instance_lock:
@@ -78,7 +78,7 @@ class StateManager:
                     cls._instance = instance
         return cls._instance
 
-    def _initialize(self):
+    def _initialize(self) -> None:
         """Initialize the manager - called once during singleton creation"""
         if self._manager is None:
             self._manager = Manager()
@@ -135,7 +135,7 @@ class StateManager:
         except KeyError as e:
             raise KeyError(f"State {state_id} not found") from e
 
-    async def get_state_async(self, state_id: str):
+    async def get_state_async(self, state_id: str) -> ExecutionState:
         return await asyncio.to_thread(self.get_state, state_id)
 
     def update_state(self, state_id: str, state: ExecutionState) -> None:
@@ -213,7 +213,7 @@ class StateManager:
             self._states[state_id] = state_dict
 
     @contextmanager
-    def acquire(self, state_id: str):
+    def acquire(self, state_id: str) -> typing.Generator[None, typing.Any, None]:
         """
         Context manager for acquiring ONLY this state's lock.
         Other states are completely unaffected.
@@ -228,7 +228,9 @@ class StateManager:
             lock.release()
 
     @asynccontextmanager
-    async def acquire_async(self, state_id: str):
+    async def acquire_async(
+        self, state_id: str
+    ) -> typing.AsyncGenerator[None, typing.Any]:
         """
         Async context manager for acquiring state's lock.
         """
@@ -242,7 +244,7 @@ class StateManager:
         finally:
             await asyncio.to_thread(lock.release)
 
-    def release_state(self, state_id: str, force: bool = False):
+    def release_state(self, state_id: str, force: bool = False) -> None:
         """
         Decrement reference count and optionally remove state.
         State is only removed when reference count reaches 0 or force=True.
@@ -261,14 +263,14 @@ class StateManager:
                 if self._ref_counts[state_id] == 0:
                     self._remove_state_unsafe(state_id)
 
-    async def release_state_async(self, state_id: str, force: bool = False):
+    async def release_state_async(self, state_id: str, force: bool = False) -> None:
         """
         Decrement reference count and optionally remove state asynchronously.
         State is only removed when reference count reaches 0 or force=True.
         """
         await asyncio.to_thread(self.release_state, state_id, force)
 
-    def _remove_state_unsafe(self, state_id: str):
+    def _remove_state_unsafe(self, state_id: str) -> None:
         """Internal method to remove state - must be called within _creation_lock"""
         if state_id in self._states:
             del self._states[state_id]
@@ -277,11 +279,11 @@ class StateManager:
         if state_id in self._ref_counts:
             del self._ref_counts[state_id]
 
-    def remove_state(self, state_id: str):
+    def remove_state(self, state_id: str) -> None:
         """Clean up state and its dedicated lock"""
         self.release_state(state_id, force=False)
 
-    async def remove_state_async(self, state_id: str):
+    async def remove_state_async(self, state_id: str) -> None:
         """Clean up state and its dedicated lock asynchronously."""
         await asyncio.to_thread(self.remove_state, state_id)
 
@@ -301,7 +303,7 @@ class StateManager:
         """Get list of all state_ids in shared memory asynchronously."""
         return await asyncio.to_thread(self.get_active_states)
 
-    def clear_all_states(self):
+    def clear_all_states(self) -> None:
         """
         Remove all states from shared memory.
         WARNING: Only use this when you're sure no processes are using the states.
@@ -311,11 +313,11 @@ class StateManager:
             self._locks.clear()
             self._ref_counts.clear()
 
-    async def clear_all_states_async(self):
+    async def clear_all_states_async(self) -> None:
         """Remove all states from shared memory asynchronously."""
         await asyncio.to_thread(self.clear_all_states)
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Shuts down the manager's server process."""
         if self._manager:
             try:
@@ -327,10 +329,11 @@ class StateManager:
                 self._manager = None
                 self.__class__._instance = None
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup when manager is destroyed"""
         try:
             if hasattr(self, "_manager"):
-                self._manager.shutdown()
+                if self._manager:
+                    self._manager.shutdown()
         except:
             pass  # Ignore errors during cleanup

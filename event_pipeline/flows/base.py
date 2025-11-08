@@ -28,39 +28,43 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def attach_signal_emitter(signal: SoftSignal, **signal_kwargs) -> None:
+def attach_signal_emitter(
+    signal: SoftSignal, **signal_kwargs: typing.Dict[str, typing.Any]
+) -> None:
     """Attaches a signal emitter to the execution context."""
     signal.emit(**signal_kwargs)
 
 
 def format_task_profiles(
     task_profiles: typing.Any,
-) -> typing.Set[typing.Union[TaskProtocol, TaskGroupingProtocol]]:
+) -> typing.Set[TaskType]:
     if isinstance(task_profiles, (TaskProtocol, TaskGroupingProtocol)):
         return {
             task_profiles,
         }
-    return task_profiles
+    return typing.cast(typing.Set[TaskType], task_profiles)
 
 
-class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
+class BaseFlow(BaseModel, ObjectIdentityMixin):
     # The execution context for this flow
     context: ExecutionContext
 
     #  The profile of the tasks to be executed
-    task_profiles: typing.Optional[typing.Deque[TaskType]]
+    task_profiles: typing.Optional[typing.Deque[TaskType]]  # type: ignore
 
     class Config:
         disable_type_check = False
         disable_all_validations = False
 
-    def __model_init__(self, *args, **kwargs) -> None:
-        self.task_profiles = typing.cast(typing.Deque, self.context.task_profiles)
-        super().__init__(*args, **kwargs)
-
-    def add_task_profile(
-        self, task_profile: typing.Union[TaskProtocol, TaskGroupingProtocol]
+    def __model_init__(
+        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
+        self.task_profiles = typing.cast(
+            typing.Deque[TaskType], self.context.task_profiles
+        )
+        super().__init__(*args, **kwargs)  # type: ignore
+
+    def add_task_profile(self, task_profile: TaskType) -> None:
         """
         Add a task profile to this flow.
         Args:
@@ -68,7 +72,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
         """
         if self.task_profiles is None:
             self.task_profiles = deque([task_profile])
-        self.task_profiles.add(task_profile)
+        self.task_profiles.append(task_profile)
 
     def configure_event(self, event: "Event", task_profile: TaskProtocol) -> None:
         """
@@ -81,15 +85,15 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
             task_profile.options and task_profile.options.retry_attempts or 0
         )
         total_retries = options_retries
-        if total_retries > 1:
+        if total_retries > 1:  # type: ignore
             event_retry_policy = event.get_retry_policy()
             if event_retry_policy:
-                event_retry_policy.max_attempts = total_retries
+                event_retry_policy.max_attempts = total_retries  # type: ignore
             else:
-                event.config_retry_policy(max_attempts=total_retries)
+                event.config_retry_policy(max_attempts=total_retries)  # type: ignore
 
     def get_initialized_event(
-        self, task_profile: "TaskProtocol"
+        self, task_profile: TaskType
     ) -> typing.Tuple["Event", typing.Dict[str, typing.Any]]:
         """
         Initialized and configure event
@@ -115,10 +119,10 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
             event_init_args["options"] = task_profile.options
 
         if task_profile.is_parallel_execution_node:
-            parent = task_profile.get_parent_node_for_parallel_execution()
-            pointer_type = parent.get_task_pointer_type()
+            parent = task_profile.get_first_task_in_parallel_execution_mode()
+            pointer_type = parent.get_pointer_to_task()
         else:
-            pointer_type = task_profile.get_task_pointer_type()
+            pointer_type = task_profile.get_pointer_to_task()
 
         if pointer_type == PipeType.PIPE_POINTER:
             # TODO: get result from context state
@@ -148,10 +152,12 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
             The executor class or None if not found or invalid.
         """
         if task_profile.options:
-            executor_str = task_profile.options.executor
+            executor_str: str = task_profile.options.executor  # type: ignore
             if executor_str is not None:
                 try:
-                    instance = import_string(executor_str)
+                    instance = typing.cast(
+                        typing.Type[BaseExecutor], import_string(executor_str)
+                    )
                     if not issubclass(instance, BaseExecutor):
                         raise ValueError(f"Unsupported executor type {executor_str}")
                     return instance
@@ -176,10 +182,14 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
         return get_function_call_args(executor.__init__, execution_config.to_dict())
 
     @abstractmethod
-    async def get_flow_executor(self, *args, **kwargs) -> typing.Type[BaseExecutor]:
+    async def get_flow_executor(
+        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
+    ) -> typing.Type[BaseExecutor]:
         raise NotImplementedError()
 
-    async def get_flow_executor_config(self, task_profile) -> ExecutorInitializerConfig:
+    async def get_flow_executor_config(
+        self, task_profile: TaskType
+    ) -> ExecutorInitializerConfig:
         """
         Get the init configuration for executor
         Args:
@@ -197,22 +207,22 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
             event, _ = self.get_initialized_event(task_profile)
             execution_config = event.get_executor_initializer_config()
             if options_config:
-                new_config = execution_config.update(options_config)
+                new_config = execution_config.update(options_config)  # type: ignore
                 return new_config
             return execution_config
 
         if options_config:
-            return options_config
+            return options_config  # type: ignore
         return ExecutorInitializerConfig()
 
     async def _submit_event_to_executor(
         self,
         executor: BaseExecutor,
-        event: Event,
+        event: "Event",
         event_call_kwargs: typing.Dict[str, typing.Any],
         *,
         loop: typing.Optional[asyncio.AbstractEventLoop] = None,
-    ) -> asyncio.Future:
+    ) -> asyncio.Future[typing.Any]:
         """
         Submit event for execution via the provided executor.
 
@@ -230,7 +240,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
             f"Submitting event {event} to executor {executor.__class__.__name__}"
         )
 
-        event_execution_start.emit(
+        await event_execution_start.emit_async(
             sender=self.context.__class__,
             event=event,
             execution_context=self.context,
@@ -239,13 +249,15 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
         if loop is None:
             loop = asyncio.get_event_loop()
 
-        future = loop.run_in_executor(executor, event, **event_call_kwargs)
+        event_args = (event_call_kwargs,)
+
+        future = loop.run_in_executor(executor, event, *event_args)
         future.add_done_callback(
             lambda fut: attach_signal_emitter(
                 signal=event_execution_end,
-                sender=self.context.__class__,
-                event=event,
-                execution_context=self.context,
+                sender=self.context.__class__,  # type: ignore
+                event=event,  # type: ignore
+                execution_context=self.context,  # type: ignore
             )
         )
         logger.debug(f"Event submitted successfully; future: {future}")
@@ -254,8 +266,8 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
     async def _map_events_to_executor(
         self,
         executor: BaseExecutor,
-        event_execution_config: typing.Dict[Event, typing.Any],
-    ) -> asyncio.Future:
+        event_execution_config: typing.Dict["Event", typing.Any],
+    ) -> asyncio.Future[typing.Any]:
         """
         Submit events to the provided executor class.
 
@@ -280,14 +292,14 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
     def validate_executor_class_and_config(
         executor_class: typing.Type[BaseExecutor],
         executor_config: ExecutorInitializerConfig,
-    ):
+    ) -> None:
         if isinstance(executor_class, Exception):
             raise RuntimeError(f"Failed to get executor class: {executor_class}")
         if isinstance(executor_config, Exception):
             raise ValueError(f"Invalid executor config: {executor_config}")
 
     @abstractmethod
-    async def run(self) -> asyncio.Future:
+    async def run(self) -> asyncio.Future[typing.Any]:
         """
         Run the flow.
         Raises:
@@ -297,7 +309,9 @@ class BaseFlow(BaseModel, ObjectIdentityMixin, ABC):
             Exception: For any other exceptions that may occur.
         """
 
-    async def cancel(self, *args, **kwargs) -> None:
+    async def cancel(
+        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
         """
         Cancel the flow execution.
         """

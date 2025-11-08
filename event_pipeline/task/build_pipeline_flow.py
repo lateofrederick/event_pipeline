@@ -11,6 +11,9 @@ def build_pipeline_flow_from_pointy_code(code: str):
     Returns:
         The constructed pipeline flow.
     """
+    import pdb
+
+    pdb.set_trace()
     ast = pointy_parser(code)
     code_generator = ExecutableASTGenerator(PipelineTask, PipelineTaskGrouping)
     code_generator.visit_program(ast)

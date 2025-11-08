@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 def run_workflow(
     task: TaskType,
     pipeline: "Pipeline",
-    sink_queue: deque,
+    sink_queue: typing.Deque[TaskType],
     previous_context: typing.Optional[ExecutionContext] = None,
-):
+) -> None:
     """
     Executes a specific task in the pipeline and manages the flow of data.
 
@@ -36,7 +36,7 @@ def run_workflow(
 
     if task:
         if previous_context is None:
-            execution_context = ExecutionContext(pipeline=pipeline, task=task)
+            execution_context = ExecutionContext(pipeline=pipeline, task_profiles=task)
             pipeline.execution_context = execution_context
         else:
             if task.sink_node:
@@ -57,7 +57,7 @@ def run_workflow(
 
             execution_context = ExecutionContext(
                 pipeline=pipeline,
-                task=list(parallel_tasks) if parallel_tasks else task,
+                task_profiles=list(parallel_tasks) if parallel_tasks else task,
             )
 
             execution_context.previous_context = previous_context

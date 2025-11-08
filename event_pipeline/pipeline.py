@@ -30,16 +30,14 @@ from .signal.signals import (
 )
 
 from .task import PipelineTask, build_pipeline_flow_from_pointy_code
-from .execution.context import ExecutionContext
 from .execution.state_manager import ExecutionStatus
 from .parser.operator import PipeType
-
+from .typing import BatchProcessType
 from .constants import (
     PIPELINE_FIELDS,
     PIPELINE_STATE,
     UNKNOWN,
     EMPTY,
-    BATCH_PROCESSOR_TYPE,
 )
 from .exceptions import (
     ImproperlyConfigured,
@@ -51,10 +49,12 @@ from .exceptions import (
 from .mixins import ObjectIdentityMixin, ScheduleMixin
 from .fields import InputDataField
 from .import_utils import import_string
-from .utils import AcquireReleaseLock, validate_batch_processor
+from .utils import validate_batch_processor
 from .conf import ConfigLoader
 from .typing import TaskType
-from .execution.run import run_workflow
+
+if typing.TYPE_CHECKING:
+    from .execution.context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class PipelineState(object):
                     pass
 
     @staticmethod
-    def get_cache_key(instance: typing.Union["Pipeline", str]):
+    def get_cache_key(instance: typing.Union["Pipeline", str]) -> str:
         """
         Get cache key for pipeline instance
         Args:
@@ -122,7 +122,9 @@ class PipelineState(object):
         """
         return instance.get_cache_key() if not isinstance(instance, str) else instance
 
-    def check_cache_exists(self, instance: typing.Union["Pipeline", str]):
+    def check_cache_exists(
+        self, instance: typing.Union["Pipeline", str]
+    ) -> typing.Set[str]:
         """
         Check which cache fields have cache for specific pipeline instance
         Args:
@@ -137,7 +139,7 @@ class PipelineState(object):
                 keys.add(field)
         return keys
 
-    def cache(self, instance: typing.Union["Pipeline", str]):
+    def cache(self, instance: typing.Union["Pipeline", str]) -> ChainMap:
         """
         Get cache for specific pipeline instance
         Args:
@@ -149,7 +151,14 @@ class PipelineState(object):
         instance_key = self.get_cache_key(instance)
         return ChainMap(*(self.__dict__[field][instance_key] for field in cache_fields))
 
-    def set_cache(self, instance, instance_cache_field, *, field_name=None, value=None):
+    def set_cache(
+        self,
+        instance: "Pipeline",
+        instance_cache_field: str,
+        *,
+        field_name: typing.Optional[str] = None,
+        value: typing.Any = None,
+    ) -> None:
         """
         Set cache for specific pipeline instance
         Args:
@@ -173,7 +182,9 @@ class PipelineState(object):
 
         self.__dict__[instance_cache_field][instance_key][field_name] = value
 
-    def set_cache_for_pipeline_field(self, instance, field_name, value):
+    def set_cache_for_pipeline_field(
+        self, instance: "Pipeline", field_name: str, value: typing.Any
+    ) -> None:
         """
         Set cache for specific pipeline field
         Args:
@@ -368,7 +379,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
         """
         return getattr(self.__class__, PIPELINE_STATE)
 
-    def start(self, force_rerun: bool = False) -> typing.Optional[ExecutionContext]:
+    def start(self, force_rerun: bool = False) -> typing.Optional["ExecutionContext"]:
         """
         Initiates the execution of the pipeline.
 
@@ -388,12 +399,14 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
                 force_rerun is not set to True, this exception is raised
                 to indicate that the execution is complete.
         """
+        from .execution.run import run_workflow
+
         pipeline_execution_start.emit(sender=self.__class__, pipeline=self)
 
         if self.execution_context and not force_rerun:
             raise EventDone("Done executing pipeline")
 
-        self.execution_context: typing.Optional[ExecutionContext] = None
+        self.execution_context: typing.Optional["ExecutionContext"] = None
         sink_queue = deque()
 
         run_workflow(
@@ -447,7 +460,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
                 execution_context=self.execution_context,
             )
 
-    def get_cache_key(self):
+    def get_cache_key(self) -> str:
         return f"pipeline_{self.__class__.__name__}_{self.id}"
 
     @classmethod
@@ -583,10 +596,10 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             existing cache entries before attempting to load the instance
             from other sources.
         """
-        cache_keys = cls._state.check_cache_exists(pk)
+        cache_keys = cls.get_pipeline_state().check_cache_exists(pk)
         if not cache_keys:
             return cls()
-        cache = cls._state.cache(pk)
+        cache = cls.get_pipeline_state().cache(pk)
 
         # restore fields
         kwargs = {}
@@ -748,7 +761,7 @@ class BatchPipeline(ObjectIdentityMixin, ScheduleMixin):
         return self._signals_queue
 
     @staticmethod
-    def _validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE):
+    def _validate_batch_processor(batch_processor: BatchProcessType):
         is_iterable = validate_batch_processor(batch_processor)
         if not is_iterable:
             raise ImproperlyConfigured(
@@ -770,7 +783,7 @@ class BatchPipeline(ObjectIdentityMixin, ScheduleMixin):
                 field.batch_size = max(1, field.batch_size // 2)
 
     def _gather_field_batch_methods(
-        self, field: InputDataField, batch_processor: BATCH_PROCESSOR_TYPE
+        self, field: InputDataField, batch_processor: BatchProcessType
     ):
         """
         Gathers and applies all batch processing operations for the specified field.

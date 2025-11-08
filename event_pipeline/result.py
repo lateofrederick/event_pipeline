@@ -34,12 +34,16 @@ class EventResult(BackendIntegrationMixin, BaseModel):
         frozen = False
         eq = True
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.id)
 
     @property
-    def success(self):
+    def success(self) -> bool:
         return not self.error
+
+    @success.setter
+    def success(self, value: bool) -> None:
+        self.error = not value
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
         state = self.__dict__.copy()
@@ -56,7 +60,7 @@ class EventResult(BackendIntegrationMixin, BaseModel):
 
         if self.content is not None:
             content_type = type(self.content)
-            if not is_builtin_type(content_type):
+            if not is_builtin_type(content_type):  # type: ignore
                 state["content"] = {
                     "content_type_import_str": get_obj_klass_import_str(self.content),
                     "state": get_obj_state(self.content),
@@ -64,7 +68,7 @@ class EventResult(BackendIntegrationMixin, BaseModel):
         state["init_params"] = init_params
         return state
 
-    def set_state(self, state: typing.Dict[str, typing.Any]):
+    def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
         # TODO handle the init and call params
         init_params = state.pop("init_params", None)
         call_params = state.pop("call_params", None)
@@ -74,7 +78,7 @@ class EventResult(BackendIntegrationMixin, BaseModel):
             import_str = content["content_type_import_str"]
             content_state = content["state"]
             klass = import_string(import_str)
-            instance = klass.__new__(klass)
+            instance = klass.__new__(klass)  # type: ignore
             instance.__setstate__(content_state)
             state["content"] = instance
 
@@ -89,8 +93,8 @@ class EventResult(BackendIntegrationMixin, BaseModel):
     def is_error(self) -> bool:
         return self.error
 
-    def as_dict(self):
-        return asdict(self)
+    def as_dict(self) -> typing.Dict[str, typing.Any]:
+        return asdict(self)  # type: ignore
 
 
 class EntityContentType:
@@ -150,7 +154,7 @@ class EntityContentType:
         return f"<EntityContentType: backend={self.backend_import_str}, type={self.entity_content_type}>"
 
 
-class ResultSet(MutableSet):
+class ResultSet(MutableSet[Result]):
     """A collection of Result objects with filtering and query capabilities."""
 
     # Dictionary of filter operators and their implementation
@@ -204,14 +208,23 @@ class ResultSet(MutableSet):
         return list(self._content.values())[index]
 
     def _insert_entity(self, record: Result) -> None:
-        """Insert an entity and track its content type."""
+        """
+        Insert an entity and track its content type.
+
+        Args:
+            record: The Result object to insert.
+        """
         self._content[self.get_hash(record)] = typing.cast(Result, record)
         content_type = EntityContentType.add_entity_content_type(record)
         if content_type and content_type not in self._context_types:
             self._context_types.add(content_type)
 
     def add(self, value: typing.Union[Result, "ResultSet"]) -> None:
-        """Add a result or merge another ResultSet."""
+        """
+        Add a result or merge another ResultSet.
+        Args:
+            value: Result or ResultSet to add.
+        """
         if isinstance(value, ResultSet):
             self._content.update(value._content)
             self._context_types.update(value._context_types)
@@ -219,8 +232,12 @@ class ResultSet(MutableSet):
             self._content[self.get_hash(value)] = value
             self._insert_entity(value)
 
-    def extend(self, results: typing.Collection[Result]):
-        """Add multiple items to set"""
+    def extend(self, results: typing.Collection[Result]) -> None:
+        """
+        Add multiple items to set.
+        Args:
+            results: Collection of Result objects to add.
+        """
         for result in results:
             self.add(result)
 
@@ -244,7 +261,7 @@ class ResultSet(MutableSet):
         new._context_types = self._context_types.copy()
         return new
 
-    def get(self, **filters) -> Result:
+    def get(self, **filters: typing.Dict[str, typing.Any]) -> Result:
         """
         Get a single result matching the filters.
         Raises MultiValueError if more than one result is found.
@@ -258,7 +275,7 @@ class ResultSet(MutableSet):
             )
         return qs[0]
 
-    def filter(self, **filter_params) -> "ResultSet":
+    def filter(self, **filter_params: typing.Dict[str, typing.Any]) -> "ResultSet":
         """
         Filter results by attribute values with support for nested fields.
 
@@ -316,8 +333,8 @@ class ResultSet(MutableSet):
             if "__" in key:
                 parts = key.split("__")
                 if parts[-1] in self._FILTER_OPERATORS:
-                    field_path, operator = parts[:-1], parts[-1]
-                    field_path = "__".join(field_path)
+                    field_path_list, operator = parts[:-1], parts[-1]
+                    field_path: str = "__".join(field_path_list)
                     if not self._check_operator(result, field_path, operator, value):
                         return False
                 else:
@@ -384,7 +401,7 @@ class ResultSet(MutableSet):
             True if the field exists and matches the value
         """
         actual_value = self._get_field_value(obj, field_path)
-        return actual_value == expected_value
+        return actual_value == expected_value  # type: ignore
 
     def _check_operator(
         self, obj: typing.Any, field_path: str, operator: str, filter_value: typing.Any
@@ -466,5 +483,5 @@ class ResultSet(MutableSet):
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}: {len(self)}>"
 
-    def __class_getitem__(cls, item):
+    def __class_getitem__(cls, item: typing.Any) -> typing.Type["ResultSet"]:
         return cls

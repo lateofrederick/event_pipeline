@@ -6,7 +6,16 @@ try:
     from more_itertools import batched
 except ImportError:
 
-    def batched(iterable, n):
+    def batched(iterable, n, *, strict=False):  # type: ignore
+        """
+        Batch data into tuples of length n. The last batch may be shorter.
+        Args:
+            iterable (Iterable): The input iterable to be batched.
+            n (int): The size of each batch.
+            strict (bool): If True, raise ValueError if the last batch is not of size n.
+        Yields:
+            Tuple: A batch (tuple) of items from the original iterable.
+        """
         if n < 1:
             raise ValueError("n must be at least one")
         it = iter(iterable)
@@ -14,14 +23,14 @@ except ImportError:
             yield batch
 
 
-DEFAULT_BATCH_SIZE = 100
+DEFAULT_BATCH_SIZE: typing.Final[int] = 100
 
-DEFAULT_CHUNK_SIZE = 10240  # 10K
+DEFAULT_CHUNK_SIZE: typing.Final[int] = 10240  # 10K
 
 
 def list_batch_processor(
-    values: typing.Collection, batch_size: int = DEFAULT_BATCH_SIZE
-):
+    values: typing.Collection[typing.Any], batch_size: int = DEFAULT_BATCH_SIZE
+) -> typing.Generator[typing.Sequence[typing.Any], None, None]:
     """
     Yields items from a collection in batches of a specified size.
 
@@ -37,7 +46,9 @@ def list_batch_processor(
     yield from batched(values, batch_size)
 
 
-def file_stream_batch_processor(values: IOBase, chunk_size: int = DEFAULT_CHUNK_SIZE):
+def file_stream_batch_processor(
+    values: IOBase, chunk_size: int = DEFAULT_CHUNK_SIZE
+) -> typing.Generator[bytes, None, None]:
     """
     Reads a file-like stream in fixed-size chunks and yields each chunk as a generator.
 

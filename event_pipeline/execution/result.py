@@ -22,7 +22,7 @@ class ResultProcessor:
         Args:
             strategy: Optional event evaluator for result evaluation.
         """
-        self._evaluator = EventEvaluator(strategy=strategy)
+        self._evaluator = EventEvaluator(strategy=strategy)  # type: ignore
 
     def change_strategy(
         self, strategy: ExecutionResultEvaluationStrategyBase
@@ -41,7 +41,7 @@ class ResultProcessor:
 
     @staticmethod
     async def process_futures(
-        futures: typing.Sequence[asyncio.Future],
+        futures: typing.Sequence[asyncio.Future[typing.Any]],
     ) -> typing.Tuple[ResultSet, ResultSet]:
         """
         Process futures and separate successful results from errors.

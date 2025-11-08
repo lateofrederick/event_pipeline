@@ -1,6 +1,17 @@
 import typing
 import dataclasses
-from enum import Enum, StrEnum
+from enum import Enum
+
+try:
+    from enum import StrEnum
+except ImportError:
+
+    class StrEnum(str, Enum):
+        """An Enum class that inherits from str."""
+
+        pass
+
+
 from pydantic_mini.exceptions import ValidationError
 from pydantic_mini import BaseModel, MiniAnnotated, Attrib
 
@@ -67,7 +78,7 @@ class Options(BaseModel):
 
     # Execution state and control
     result_evaluation_strategy: MiniAnnotated[
-        typing.Union[ResultEvaluationStrategy],
+        ResultEvaluationStrategy,
         Attrib(
             default=ResultEvaluationStrategy.ALL_MUST_SUCCEED,
             pre_formatter=lambda val: resolve_str_to_enum(

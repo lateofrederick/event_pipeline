@@ -54,14 +54,20 @@ class TaskProtocolMixin(typing.Protocol):
 
     def get_root(self) -> "TaskProtocol": ...
 
-    def get_task_pointer_type(self) -> typing.Optional["PipeType"]:
-        """Return the pointer type pointing to this task"""
+    # def get_task_pointer_type(self) -> typing.Optional["PipeType"]:
+    #     """Return the pointer type pointing to this task"""
 
-    def get_parent_node_for_parallel_execution(
+    # def get_parent_node_for_parallel_execution(
+    #     self,
+    # ) -> typing.Optional["TaskProtocol"]: ...
+
+    def get_first_task_in_parallel_execution_mode(
         self,
     ) -> typing.Optional["TaskProtocol"]: ...
 
-    def get_event_klass(self) -> "EventBase": ...
+    def get_last_task_in_parallel_execution_mode(
+        self,
+    ) -> typing.Optional["TaskProtocol"]: ...
 
     def get_descriptor(self, descriptor: int) -> "TaskProtocol": ...
 

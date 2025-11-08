@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class SingleFlow(BaseFlow):
     """Setup for execution flow of a single event"""
 
-    task_profile: typing.Optional[TaskProtocol] = None
+    task_profile: typing.Optional["TaskProtocol"] = None
 
     def __model_init__(self, *args, **kwargs) -> None:
         super().__model_init__(*args, **kwargs)
@@ -68,7 +68,7 @@ class SingleFlow(BaseFlow):
                 executor_class, executor_config
             )
 
-            async with executor_class(**config) as executor:
+            with executor_class(**config) as executor:
                 future = await self._submit_event_to_executor(
                     executor, event, event_call_kwargs
                 )

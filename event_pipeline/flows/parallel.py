@@ -75,7 +75,7 @@ class ParallelFlow(BaseFlow):
 
     async def run(self) -> asyncio.Future:
         try:
-            task_profile = self.context.get_last_task_in_task_profile_chain()
+            task_profile = self.context.get_decision_task_profile()
 
             executor_class, executor_config = await asyncio.gather(
                 self.get_flow_executor(),
@@ -97,7 +97,7 @@ class ParallelFlow(BaseFlow):
                 executor_class, executor_config
             )
 
-            async with executor_class(**config) as executor:
+            with executor_class(**config) as executor:
                 future = await self._map_events_to_executor(
                     executor, event_execution_config=event_config
                 )

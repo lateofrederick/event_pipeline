@@ -5,7 +5,7 @@ from event_pipeline.decorators import listener
 
 
 class Simple(Pipeline):
-    name = InputDataField(data_type=list, batch_size=5)
+    name = InputDataField(data_type=str, batch_size=5)
 
 
 class SimpleBatch(BatchPipeline):

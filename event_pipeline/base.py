@@ -46,6 +46,13 @@ if typing.TYPE_CHECKING:
     from event_pipeline.execution.context import ExecutionContext
 
 
+class RetryConfigDict(typing.TypedDict, total=False):
+    max_attempts: int
+    backoff_factor: float
+    max_backoff: float
+    retry_on_exceptions: typing.List[typing.Type[Exception]]
+
+
 @dataclass
 class RetryPolicy:
     max_attempts: int = field(
@@ -69,7 +76,9 @@ class _RetryMixin:
         typing.Optional[RetryPolicy], typing.Dict[str, typing.Any], None
     ] = None
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
         self._retry_count = 0
         super().__init__(*args, **kwargs)
 
@@ -83,31 +92,45 @@ class _RetryMixin:
         max_attempts: int,
         backoff_factor: float = MAX_BACKOFF_FACTOR,
         max_backoff: float = MAX_BACKOFF,
-        retry_on_exceptions: typing.Tuple[typing.Type[Exception]] = (),
-    ):
-        config = {
+        retry_on_exceptions: typing.Union[
+            typing.List[typing.Type[Exception]], typing.Type[Exception], None
+        ] = None,
+    ) -> None:
+        """
+        Configures the retry policy for the event.
+        Args:
+            max_attempts (int): Maximum number of retry attempts.
+            backoff_factor (float): Factor for calculating backoff time.
+            max_backoff (float): Maximum backoff time.
+            retry_on_exceptions (Union[Tuple[Type[Exception]], Type[Exception], None]): Exceptions that trigger a retry.
+        Returns:
+            None
+        """
+        config: RetryConfigDict = {
             "max_attempts": max_attempts,
             "backoff_factor": backoff_factor,
             "max_backoff": max_backoff,
             "retry_on_exceptions": [],
         }
         if retry_on_exceptions:
-            retry_on_exceptions = (
+            retry_exceptions: typing.Sequence[typing.Type[Exception]] = (
                 retry_on_exceptions
                 if isinstance(retry_on_exceptions, (tuple, list))
                 else [retry_on_exceptions]
             )
-            config["retry_on_exceptions"].extend(retry_on_exceptions)
+            config["retry_on_exceptions"].extend(retry_exceptions)
 
         self.retry_policy = RetryPolicy(**config)
 
     def get_backoff_time(self) -> float:
         if self.retry_policy is None or self._retry_count <= 1:
             return 0
+
         backoff_value = self.retry_policy.backoff_factor * (
             2 ** (self._retry_count - 1)
         )
-        return min(backoff_value, self.retry_policy.max_backoff)
+
+        return typing.cast(float, min(backoff_value, self.retry_policy.max_backoff))
 
     def _sleep_for_backoff(self) -> float:
         backoff = self.get_backoff_time()
@@ -129,14 +152,18 @@ class _RetryMixin:
         )
         return isinstance(exception, Exception) and exception_evaluation
 
-    def is_exhausted(self):
+    def is_exhausted(self) -> bool:
         return (
             self.retry_policy is None
             or self._retry_count >= self.retry_policy.max_attempts
         )
 
     def retry(
-        self, func: typing.Callable, /, *args, **kwargs
+        self,
+        func: typing.Callable[[typing.Any], typing.Tuple[bool, typing.Any]],
+        /,
+        *args: typing.Tuple[typing.Any],
+        **kwargs: typing.Dict[str, typing.Any],
     ) -> typing.Tuple[bool, typing.Any]:
         if self.retry_policy is None:
             return func(*args, **kwargs)
@@ -198,9 +225,11 @@ class _ExecutorInitializerMixin:
 
     executor: typing.Type[Executor] = DefaultExecutor
 
-    executor_config: ExecutorInitializerConfig = None
+    executor_config: typing.Optional[ExecutorInitializerConfig] = None
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
         super().__init__(*args, **kwargs)
 
         self.get_executor_initializer_config()
@@ -219,7 +248,7 @@ class _ExecutorInitializerMixin:
             self.executor_config = ExecutorInitializerConfig()
         return self.executor_config
 
-    def is_multiprocessing_executor(self):
+    def is_multiprocessing_executor(self) -> bool:
         """Check if using multiprocessing or remote executor"""
         return (
             self.get_executor_class() == ProcessPoolExecutor
@@ -249,7 +278,7 @@ class _ExecutorInitializerMixin:
         if self.is_multiprocessing_executor():
             context["mp_context"] = mp.get_context("spawn")
         elif hasattr(executor, "get_context"):
-            context["mp_context"] = executor.get_context("spawn")
+            context["mp_context"] = executor.get_context("spawn")  # type: ignore
         params = get_function_call_args(
             executor.__init__, self.get_executor_initializer_config()
         )
@@ -275,7 +304,7 @@ class StopConditionProcessor:
     message: typing.Optional[str] = None
     logger: typing.Optional[logging.Logger] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate initialization parameters."""
         if not self.logger:
             self.logger = logging.getLogger(__name__)
@@ -350,12 +379,12 @@ class StopConditionProcessor:
             self._log_stop_decision("error")
         return should_stop
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the processor state for reuse."""
         self.exception = None
         self.message = None
 
-    def _log_stop_decision(self, event_type: str):
+    def _log_stop_decision(self, event_type: str) -> None:
         """Log the stop decision with context."""
         context = {
             "event_type": event_type,
@@ -373,7 +402,7 @@ class StopConditionProcessor:
                 f"Stopping on {event_type} due to {self.stop_condition}", extra=context
             )
 
-    def get_status(self) -> dict:
+    def get_status(self) -> typing.Dict[str, typing.Any]:
         """Get current processor status for debugging."""
         return {
             "stop_condition": self.stop_condition,
@@ -422,12 +451,14 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
     )
 
     # Class-level registry to cache discovered subclasses
-    _subclass_registry: typing.Dict[typing.Type, typing.Set[typing.Type]] = {}
+    _subclass_registry: typing.Dict[
+        typing.Type["EventBase"], typing.Set[typing.Type["EventBase"]]
+    ] = {}
 
     # WeakSet to automatically clean up when classes are garbage collected
     _all_event_classes: "weakref.WeakSet[typing.Type[EventBase]]" = weakref.WeakSet()
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
         """Automatically register subclasses when they're defined"""
         # prevent the overriding of __init__
         if cls.__name__ != "EventBase":
@@ -453,13 +484,13 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         self,
         execution_context: "ExecutionContext",
         task_id: str,
-        *args,
+        *args: typing.Tuple[typing.Any],
         previous_result: typing.Union[typing.List[EventResult], EMPTY] = EMPTY,
         stop_condition: StopCondition = StopCondition.NEVER,
         run_bypass_event_checks: bool = False,
         options: typing.Optional["Options"] = None,
-        **kwargs,
-    ):
+        **kwargs: typing.Dict[str, typing.Any],
+    ) -> None:
         """
         Initializes an EventBase instance with the provided execution context and configuration.
 
@@ -500,18 +531,18 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
 
-    def get_init_args(self):
+    def get_init_args(self) -> typing.Dict[str, typing.Any]:
         return self._init_args
 
-    def get_call_args(self):
-        return self._call_args
+    def get_call_args(self) -> typing.Dict[str, typing.Any]:
+        return self._call_args  # type: ignore
 
     def goto(
         self,
         descriptor: int,
         result_success: bool,
         result: typing.Any,
-        reason="manual",
+        reason: typing.Literal["manual"] = "manual",
         execute_on_event_method: bool = True,
     ) -> None:
         """
@@ -544,7 +575,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
                 event_name=self.__class__.__name__,
                 call_params=self._call_args,
                 init_params=self._init_args,
-            )
+            )  # type: ignore
         raise SwitchTask(
             current_task_id=self._task_id,
             next_task_descriptor=descriptor,
@@ -553,7 +584,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         )
 
     @classmethod
-    def register_event(cls, event_klass: typing.Type["EventBase"]):
+    def register_event(cls, event_klass: typing.Type["EventBase"]) -> None:
         if not issubclass(event_klass, EventBase):
             raise ValueError(f"Event '{event_klass}' must be a subclass of EventBase")
 
@@ -609,7 +640,9 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         return False, None
 
     @abc.abstractmethod
-    def process(self, *args, **kwargs) -> typing.Tuple[bool, typing.Any]:
+    def process(
+        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    ) -> typing.Tuple[bool, typing.Any]:
         """
         Processes pipeline data and executes the associated logic.
 
@@ -636,9 +669,9 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
             content=content,
             call_params=self.get_call_args(),
             init_params=self.get_init_args(),
-        )
+        )  # type: ignore
 
-    def on_success(self, execution_result) -> EventResult:
+    def on_success(self, execution_result: typing.Any) -> EventResult:
         self.stop_condition.message = execution_result
 
         event_called.emit(
@@ -665,7 +698,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
 
         return self.event_result(False, execution_result)
 
-    def on_failure(self, execution_result) -> EventResult:
+    def on_failure(self, execution_result: typing.Any) -> EventResult:
         """
         Handles failure scenarios during event execution.
         Args:
@@ -754,14 +787,16 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         return set(cls.__subclasses__())
 
     @classmethod
-    def clear_class_cache(cls):
+    def clear_class_cache(cls) -> None:
         """Clear the cached subclass registry"""
         cls._subclass_registry.clear()
         # Clear LRU cache
         cls.get_event_klasses.cache_clear()
 
-    def __call__(self, *args, **kwargs):
-        self._call_args = get_function_call_args(self.__class__.__call__, locals())
+    def __call__(
+        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    ) -> EventResult:
+        self._call_args = get_function_call_args(self.__class__.__call__, locals())  # type: ignore
 
         if self.run_bypass_event_checks:
             try:

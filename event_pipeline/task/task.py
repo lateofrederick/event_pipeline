@@ -1,6 +1,8 @@
 import typing
+from functools import lru_cache
 from .base import TaskBase
 from event_pipeline.base import EventBase
+from event_pipeline.exceptions import EventDoesNotExist
 from event_pipeline.parser.protocols import (
     GroupingStrategy,
     TaskProtocol,
@@ -19,6 +21,33 @@ class PipelineTask(TaskBase):
         if isinstance(self.event, str):
             return self.event
         return self.event.__name__
+
+    def get_event_klass(self):
+        return self.resolve_event_name(self.event)
+
+    def get_event_class(self):
+        return self.get_event_klass()
+
+    @classmethod
+    @lru_cache()
+    def resolve_event_name(
+        cls, event_name: typing.Union[str, typing.Type[EventBase]]
+    ) -> typing.Type[EventBase]:
+        """Resolve event class"""
+        if not isinstance(event_name, str):
+            return event_name
+
+        for event in cls.get_event_klasses():
+            klass_name = event.__name__.lower()
+            if klass_name == event_name.lower():
+                return event
+        raise EventDoesNotExist(f"'{event_name}' was not found.")
+
+    @staticmethod
+    def get_event_klasses() -> (
+        typing.Generator[typing.Type[EventBase], typing.Any, None]
+    ):
+        yield from EventBase.get_all_event_classes()
 
     def get_dot_node_data(self) -> str:
         if self.is_sink:

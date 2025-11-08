@@ -1,9 +1,21 @@
-import typing
+from typing import (
+    TypeAlias,
+    Union,
+    TypeVar,
+    Callable,
+    Collection,
+    Any,
+    Iterator,
+    Generator,
+    Optional,
+    Deque,
+    List,
+)
 from enum import Enum
 from event_pipeline.parser.protocols import TaskProtocol, TaskGroupingProtocol
 
 
-TaskType = typing.TypeVar("TaskType", TaskProtocol, TaskGroupingProtocol)
+TaskType: TypeAlias = Union[TaskProtocol, TaskGroupingProtocol]
 
 
 class ConfigState(Enum):
@@ -12,5 +24,13 @@ class ConfigState(Enum):
     UNSET = "unset"
 
 
-T = typing.TypeVar("T")
-ConfigurableValue = typing.Union[T, None, ConfigState]
+T = TypeVar("T")
+ConfigurableValue: TypeAlias = Union[T, None, ConfigState]
+
+BatchProcessType: TypeAlias = Callable[
+    [
+        Union[Collection[Any], Any],
+        Optional[Union[int, float]],
+    ],
+    Union[Iterator[Any], Generator[Any, None, None]],
+]

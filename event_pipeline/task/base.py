@@ -1,6 +1,6 @@
 import typing
 from collections import deque
-
+from event_pipeline.typing import TaskType
 from event_pipeline.mixins import ObjectIdentityMixin
 from event_pipeline.parser.options import Options
 from event_pipeline.parser.operator import PipeType
@@ -12,8 +12,10 @@ if typing.TYPE_CHECKING:
 
 class TaskBase(ObjectIdentityMixin):
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore
 
         # options specified in pointy scripts for tasks are kept here
         self.options: typing.Optional[Options] = None
@@ -35,15 +37,15 @@ class TaskBase(ObjectIdentityMixin):
 
         self.condition_node: ConditionalNode = ConditionalNode()
 
-    def __getstate__(self):
+    def __getstate__(self) -> typing.Dict[str, typing.Any]:
         state = self.__dict__.copy()
         return state
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: typing.Dict[str, typing.Any]) -> None:
         self.__dict__.update(state)
 
     def get_id(self) -> str:
-        return self.id
+        return self.id  # type: ignore
 
     @property
     def descriptor(self) -> typing.Optional[int]:
@@ -68,11 +70,11 @@ class TaskBase(ObjectIdentityMixin):
         self._descriptor_pipe = value
 
     @property
-    def is_conditional(self):
+    def is_conditional(self) -> bool:
         return len(self.condition_node.get_descriptors()) > 1
 
     @property
-    def is_descriptor_task(self):
+    def is_descriptor_task(self) -> bool:
         """
         Determines if the current task is a descriptor node.
 
@@ -99,11 +101,11 @@ class TaskBase(ObjectIdentityMixin):
         """
         parent = self.parent_node
         if parent and not self.is_descriptor_task:
-            return parent.sink_node == self
+            return parent.sink_node == self  # type: ignore
         return False
 
     @property
-    def is_parallel_execution_node(self):
+    def is_parallel_execution_node(self) -> bool:
         """
         Determines whether the current node is configured for parallel execution.
 
@@ -135,7 +137,7 @@ class TaskBase(ObjectIdentityMixin):
                 and self.parent_node.condition_node.on_failure_event == self
             ):
                 pipe_type = self.parent_node.condition_node.on_failure_pipe
-            elif self.parent_node.sink_node and self.parent_node.sink_node == self:
+            elif self.parent_node.sink_node and self.parent_node.sink_node == self:  # type: ignore
                 pipe_type = self.parent_node.sink_pipe
             else:
                 descriptor = self._descriptor
@@ -155,7 +157,7 @@ class TaskBase(ObjectIdentityMixin):
 
         return pipe_type
 
-    def get_children(self):
+    def get_children(self) -> typing.List[TaskType]:
         children = []
         if self.sink_node:
             children.append(self.sink_node)
@@ -163,13 +165,11 @@ class TaskBase(ObjectIdentityMixin):
             children.append(node_config.task)
         return children
 
-    def get_root(self) -> typing.Union["TaskProtocol", "TaskGroupingProtocol"]:
+    def get_root(self) -> TaskType:
         if self.parent_node is None:
             node = self
             if typing.TYPE_CHECKING:
-                node = typing.cast(
-                    typing.Union["TaskProtocol", "TaskGroupingProtocol"], node
-                )
+                node = typing.cast(TaskType, node)
             return node
         return self.parent_node.get_root()
 
@@ -189,8 +189,8 @@ class TaskBase(ObjectIdentityMixin):
 
     @classmethod
     def bf_traversal(
-        cls, node: typing.Optional[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]
-    ):
+        cls, node: typing.Optional[TaskType]
+    ) -> typing.Generator[TaskType, None, None]:
         """
         Performs a breadth-first traversal of the task tree starting from the given node.
 
@@ -205,12 +205,32 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_parallel_nodes(
         self,
-    ) -> typing.Deque[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]:
-        parallel_tasks = deque()
+    ) -> typing.Deque[TaskType]:
+        parallel_tasks: typing.Deque[TaskType] = deque()
         task = self
+        task = typing.cast(TaskType, task)
         while task and task.condition_node.on_success_pipe == PipeType.PARALLELISM:
             parallel_tasks.append(task)
             task = task.condition_node.on_success_event
 
         parallel_tasks.append(task)
         return parallel_tasks
+
+    def get_first_task_in_parallel_execution_mode(
+        self,
+    ) -> typing.Optional["TaskProtocol"]:
+        if self.is_parallel_execution_node:
+            if (
+                self.parent_node
+                and self.parent_node.condition_node.on_success_pipe
+                == PipeType.PARALLELISM
+            ):
+                return self.parent_node.get_first_task_in_parallel_execution_mode()
+            else:
+                return self
+        return None
+
+    def get_last_task_in_parallel_execution_mode(
+        self,
+    ) -> typing.Optional["TaskProtocol"]:
+        pass

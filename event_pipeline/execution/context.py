@@ -15,12 +15,15 @@ from event_pipeline.signal.signals import (
     event_execution_failed,
 )
 from event_pipeline.parser.operator import PipeType
-from event_pipeline.typing import TaskType
-from event_pipeline.result_evaluators import EventEvaluator, ResultEvaluationStrategies
-from event_pipeline.parser.protocols import TaskProtocol, TaskGroupingProtocol
 
-if typing.TYPE_CHECKING:
-    from .state_manager import StateManager, ExecutionState, ExecutionStatus
+# from event_pipeline.typing import TaskType
+from event_pipeline.result_evaluators import EventEvaluator, ResultEvaluationStrategies
+
+from event_pipeline.task import PipelineTask, PipelineTaskGrouping
+from .state_manager import StateManager, ExecutionState, ExecutionStatus
+from event_pipeline.parser.protocols import TaskType
+from event_pipeline.parser.options import ResultEvaluationStrategy
+
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,7 @@ def preformat_task_profile(
         TaskType, typing.List[TaskType], typing.Deque[TaskType]
     ],
 ) -> typing.Deque[TaskType]:
-    if isinstance(task_profiles, (TaskProtocol, TaskGroupingProtocol)):
+    if isinstance(task_profiles, (PipelineTask, PipelineTaskGrouping)):
         return deque([task_profiles])
     elif isinstance(task_profiles, (list, tuple)):
         return deque(task_profiles)
@@ -87,7 +90,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     """
 
     task_profiles: MiniAnnotated[
-        typing.Deque[typing.Union["TaskProtocol", "TaskGroupingProtocol"]],
+        typing.Deque[TaskType],
         Attrib(pre_formatter=preformat_task_profile),
     ]
     pipeline: Pipeline
@@ -98,13 +101,15 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     _state_manager: typing.ClassVar[typing.Optional["StateManager"]] = None
 
     class Config:
-        disable_type_check = True
-        disable_all_validations = True
+        disable_typecheck = True
+        disable_all_validation = True
 
-    def __model_init__(self, *args, **kwargs):
-        from .state_manager import StateManager
+    def __model_init__(
+        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
+        from .state_manager import StateManager, ExecutionState, ExecutionStatus
 
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)  # type: ignore
 
         # Initialize shared state manager
         if self.__class__._state_manager is None:
@@ -119,23 +124,23 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         return self.id
 
     @property
-    def state(self) -> ExecutionState:
+    def state(self) -> "ExecutionState":
         """
         Get current state from shared memory.
         """
         return self._state_manager.get_state(self.state_id)
 
     @property
-    async def state_async(self) -> ExecutionState:
+    async def state_async(self) -> "ExecutionState":
         """
         Async version of getting current state from shared memory.
         """
         return await self._state_manager.get_state_async(self.state_id)
 
-    def update_status(self, new_status: ExecutionStatus) -> None:
+    def update_status(self, new_status: "ExecutionStatus") -> None:
         self._state_manager.update_status(self.state_id, new_status)
 
-    async def update_status_async(self, new_status: ExecutionStatus) -> None:
+    async def update_status_async(self, new_status: "ExecutionStatus") -> None:
         await self._state_manager.update_status_async(self.state_id, new_status)
 
     def add_error(self, error: Exception) -> None:
@@ -238,13 +243,13 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state=ExecutionStatus.FAILED,
         )
 
-    def get_state_snapshot(self) -> ExecutionState:
+    def get_state_snapshot(self) -> "ExecutionState":
         """Get a thread-safe copy of current state."""
         return self.state
 
     def bulk_update(
         self,
-        status: typing.Optional[ExecutionStatus] = None,
+        status: typing.Optional["ExecutionStatus"] = None,
         errors: typing.Optional[typing.Sequence[Exception]] = None,
         results: typing.Optional[typing.Sequence[EventResult]] = None,
     ) -> None:
@@ -260,7 +265,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     async def bulk_update_async(
         self,
-        status: typing.Optional[ExecutionStatus] = None,
+        status: typing.Optional["ExecutionStatus"] = None,
         errors: typing.Optional[typing.Sequence[Exception]] = None,
         results: typing.Optional[typing.Sequence[EventResult]] = None,
     ) -> None:
@@ -274,16 +279,18 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state.results.extend(results)
         await self._state_manager.update_state_async(self.state_id, state)
 
-    def __iter__(self):
-        current = self
+    def __iter__(self) -> typing.Generator["ExecutionContext", typing.Any, None]:
+        current: typing.Optional["ExecutionContext"] = self
         while current is not None:
             yield current
             current = current.next_context
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.id)
 
-    def dispatch(self, timeout: typing.Optional[float] = None):
+    def dispatch(
+        self, timeout: typing.Optional[float] = None
+    ) -> typing.Tuple[typing.Any, typing.Any]:
         """
         Dispatch the task associated with this execution context.
         Args:
@@ -358,7 +365,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     def get_decision_task_profile(
         self,
-    ) -> typing.Union["TaskProtocol", "TaskGroupingProtocol", None]:
+    ) -> typing.Optional[TaskType]:
         """
         Retrieves task profile for use in making decisions.
 
@@ -379,10 +386,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         task_profiles = self.get_task_profiles()
         if len(task_profiles) == 1:
-            return self.task_profiles[0]
+            return task_profiles[0]
 
         for task_profile in task_profiles:
-            pointer_to_task = task_profile.get_task_pointer_type()
+            pointer_to_task = task_profile.get_pointer_to_task()
             if (
                 pointer_to_task == PipeType.PARALLELISM
                 and task_profile.condition_node.on_success_pipe != PipeType.PARALLELISM
@@ -410,9 +417,13 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             ):
                 # resolve evaluation strategy from options
                 try:
+                    evaluator_strategy = typing.cast(
+                        ResultEvaluationStrategy,
+                        task_profile.options.result_evaluation_strategy,
+                    )
                     strategy = getattr(
                         ResultEvaluationStrategies,
-                        task_profile.options.result_evaluation_strategy.name,
+                        evaluator_strategy.name,
                     )
                 except AttributeError as e:
                     logger.warning(
@@ -423,7 +434,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
                 if strategy:
                     return EventEvaluator(strategy=strategy)
 
-            return task_profile.get_event_klass().evaluator()
+            return task_profile.get_event_class().evaluator()
         return None
 
     def cleanup(self):
