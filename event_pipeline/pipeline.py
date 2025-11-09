@@ -399,7 +399,7 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
                 force_rerun is not set to True, this exception is raised
                 to indicate that the execution is complete.
         """
-        from .execution.run import run_workflow
+        from .engine import run_workflow
 
         pipeline_execution_start.emit(sender=self.__class__, pipeline=self)
 
@@ -407,13 +407,10 @@ class Pipeline(ObjectIdentityMixin, ScheduleMixin, metaclass=PipelineMeta):
             raise EventDone("Done executing pipeline")
 
         self.execution_context: typing.Optional["ExecutionContext"] = None
-        sink_queue = deque()
 
         run_workflow(
             self.get_pipeline_state().start,
-            previous_context=self.execution_context,
             pipeline=self,
-            sink_queue=sink_queue,
         )
 
         if self.execution_context:
