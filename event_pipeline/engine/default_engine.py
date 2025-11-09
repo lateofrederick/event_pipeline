@@ -132,7 +132,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                             tasks_processed=tasks_processed,
                         )
 
-                    # === 5. Handle task switching ===
+                    # Handle task switching
                     switched = self._handle_task_switch(
                         task=executable_node.task,
                         execution_state=execution_state,
@@ -143,7 +143,9 @@ class DefaultWorkflowEngine(WorkflowEngine):
                         continue
 
                     # Determine next task
-                    next_task = self._resolve_next_task(executable_node.task, execution_context)
+                    next_task = self._resolve_next_task(
+                        executable_node.task, execution_context
+                    )
 
                     # Schedule next task
                     if next_task:
@@ -151,7 +153,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
                 except Exception as e:
                     logger.error(
-                        f"[Engine] Error processing task {executable_node.task}: {e}", exc_info=True
+                        f"[Engine] Error processing task {executable_node.task}: {e}",
+                        exc_info=True,
                     )
                     execution_error = e
 

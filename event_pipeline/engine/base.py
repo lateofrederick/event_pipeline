@@ -71,11 +71,3 @@ class WorkflowEngine(ABC):
         """
         pass
 
-
-"""
-
-
-
-# Keep old name for backward compatibility
-run_workflow = run_workflow_iterative
-"""
