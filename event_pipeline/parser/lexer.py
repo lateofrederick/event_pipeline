@@ -1,6 +1,5 @@
 import logging
 from ply.lex import lex
-from event_pipeline.utils import _extend_recursion_depth
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +72,8 @@ class PointyLexer(object):
 
     def t_DIRECTIVE(self, t):
         r"\@[a-zA-Z0-9-]+:{1}[a-zA-Z0-9]+"
+        from event_pipeline.utils import _extend_recursion_depth
+
         value = str(t.value).lstrip("@")
         directive, value = value.split(":")
         if directive in self.directives:

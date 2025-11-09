@@ -23,11 +23,15 @@ except ImportError:
     from io import StringIO
 
 from .exceptions import ImproperlyConfigured
-from .constants import EMPTY, BATCH_PROCESSOR_TYPE
+from .constants import EMPTY
+from .typing import BatchProcessType
+
+# from event_pipeline.executors import ProcessPoolExecutor, BaseExecutor
 
 if typing.TYPE_CHECKING:
     from .base import EventBase
     from .pipeline import Pipeline
+    from .executors import BaseExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +147,7 @@ class AcquireReleaseLock(object):
         self.lock.release()
 
 
-def validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE) -> bool:
+def validate_batch_processor(batch_processor: BatchProcessType) -> bool:
     if not callable(batch_processor):
         raise ValueError(f"Batch processor '{batch_processor}' must be callable")
 
@@ -167,7 +171,7 @@ def validate_batch_processor(batch_processor: BATCH_PROCESSOR_TYPE) -> bool:
                     )
         if field_name not in required_field_names:
             raise ImproperlyConfigured(
-                f"Batch processor '{batch_processor.__name__}' arguments must fields named {required_field_names}. "
+                f"Batch processor '{batch_processor.__name__}' arguments must contain fields named {required_field_names}. "
                 f"{field_name} cannot be use"
             )
 
@@ -351,3 +355,14 @@ def create_client_ssl_context(
         context.load_cert_chain(certfile=client_cert_path, keyfile=client_key_path)
 
     return context
+
+
+def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> bool:
+    """Check if an executor is multiprocessing executor."""
+    from event_pipeline.executors import ProcessPoolExecutor, BaseExecutor
+
+    if not issubclass(executor_class, BaseExecutor):
+        return False
+    return executor_class == ProcessPoolExecutor or getattr(
+        executor_class, "support_parallel_execution", False
+    )

@@ -48,9 +48,13 @@ def event(
 
             executor = executor_class
             executor_config = _executor_config
-            retry_policy = _retry_policy
+            retry_policy = _retry_policy  # type: ignore
 
-            def process(self, *args, **kwargs) -> typing.Tuple[bool, typing.Any]:
+            def process(
+                self,
+                *args: typing.Tuple[typing.Any],
+                **kwargs: typing.Dict[str, typing.Any],
+            ) -> typing.Tuple[bool, typing.Any]:
                 return func(self, *args, **kwargs)
 
         # Set class name and module for better debugging
@@ -59,15 +63,18 @@ def event(
         GeneratedEvent.__module__ = func.__module__
 
         # Preserve original function metadata
-        GeneratedEvent._original_func = func
-        GeneratedEvent._event_name = event_name
+        GeneratedEvent._original_func = func  # type: ignore
+        GeneratedEvent._event_name = event_name  # type: ignore
 
         return GeneratedEvent
 
     return decorator
 
 
-def listener(signal: typing.Union["SoftSignal", typing.Iterable["SoftSignal"]], sender: typing.Type=None):
+def listener(
+    signal: typing.Union["SoftSignal", typing.Iterable["SoftSignal"]],
+    sender: typing.Type[typing.Any] = None,
+) -> typing.Any:
     """
     A decorator to connect a callback function to a specified signal or signals.
 
@@ -96,7 +103,9 @@ def listener(signal: typing.Union["SoftSignal", typing.Iterable["SoftSignal"]], 
         function: The original callback function wrapped with the connection logic.
     """
 
-    def wrapper(func):
+    def wrapper(
+        func: typing.Callable[[typing.Any], typing.Any],
+    ) -> typing.Callable[[typing.Any], typing.Any]:
         if isinstance(signal, (list, tuple)):
             for s in signal:
                 s.connect(listener=func, sender=sender)
