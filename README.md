@@ -1,14 +1,14 @@
 <div style="display:flex; justify-content:center; align-items:center;">
-    <img alt="nexus" src="img/nexus.svg" width="280" height="280" style="padding-bottom:0!important;margin-bottom:0!important;" />
+    <img alt="volnux" src="img/volnux.svg" width="280" height="280" style="padding-bottom:0!important;margin-bottom:0!important;" />
 </div>
 
 
-[![Build Status](https://github.com/nshaibu/nexus/actions/workflows/python_package.yml/badge.svg)](https://github.com/nshaibu/nexus/actions)
+[![Build Status](https://github.com/nshaibu/volnux/actions/workflows/python_package.yml/badge.svg)](https://github.com/nshaibu/volnux/actions)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Status](https://img.shields.io/pypi/status/event-pipeline.svg)](https://pypi.python.org/pypi/event-pipeline)
 [![Latest](https://img.shields.io/pypi/v/event-pipeline.svg)](https://pypi.python.org/pypi/event-pipeline)
 [![PyV](https://img.shields.io/pypi/pyversions/event-pipeline.svg)](https://pypi.python.org/pypi/event-pipeline)
-[![codecov](https://codecov.io/github/nshaibu/nexus/graph/badge.svg?token=N9OEAI3EDB)](https://codecov.io/github/nshaibu/nexus)
+[![codecov](https://codecov.io/github/nshaibu/volnux/graph/badge.svg?token=N9OEAI3EDB)](https://codecov.io/github/nshaibu/volnux)
 
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
 
@@ -68,7 +68,7 @@ Build resilient automation that can handle anything from simple data processing 
 To install the framework, simply use pip:
 
 ```bash
-pip install nexus
+pip install volnux
 ```
 
 # Requirements
@@ -85,11 +85,11 @@ pip install nexus
 
 ## Defining Pipelines
 
-To define a pipeline, import the `Pipeline` class using `from nexus import Pipeline` and create a new class that
+To define a pipeline, import the `Pipeline` class using `from volnux import Pipeline` and create a new class that
 inherits from it. This custom class will define the behavior and structure of your pipeline.
 
 ```python
-from nexus import Pipeline
+from volnux import Pipeline
 
 class MyPipeline(Pipeline):
     # Define input fields as class attributes here
@@ -98,15 +98,15 @@ class MyPipeline(Pipeline):
 ```
 
 ## Defining Input Data Field
-Import the `InputDataField` (or another field class) from the `nexus.fields` module.
+Import the `InputDataField` (or another field class) from the `volnux.fields` module.
 
 The `InputDataField` class is used to declare input fields for your pipeline. Define these fields as class attributes
 on your pipeline class; they represent the data that will flow through the pipeline. Events can access input field
 values by including the field name in their `process` method signature.
 
 ```python
-from nexus import Pipeline
-from nexus.fields import InputDataField
+from volnux import Pipeline
+from volnux.fields import InputDataField
 
 class MyPipeline(Pipeline):
     # Define input fields as attributes
@@ -361,8 +361,8 @@ contexts, depending on the data you plan to process.
 
 ***Example:***
 ```python
-from nexus import Pipeline
-from nexus.fields import InputDataField, FileInputDataField
+from volnux import Pipeline
+from volnux.fields import InputDataField, FileInputDataField
 
 class Simple(Pipeline):
     name = InputDataField(data_type=list, batch_size=5)
@@ -381,8 +381,8 @@ the parallel execution of the pipeline template you just created.
 ***Example:***
 
 ```python
-from nexus.pipeline import BatchPipeline
-from nexus.signal import SoftSignal
+from volnux.pipeline import BatchPipeline
+from volnux.signal import SoftSignal
 
 class SimpleBatch(BatchPipeline):
     pipeline_template = Simple
@@ -439,8 +439,8 @@ Batch Pipeline with Parallel Execution
 Here’s a full example that demonstrates the creation and configuration of a batch processing pipeline:
 
 ```python
-from nexus import Pipeline
-from nexus.pipeline import BatchPipeline, InputDataField, SoftSignal
+from volnux import Pipeline
+from volnux.pipeline import BatchPipeline, InputDataField, SoftSignal
 
 class Simple(Pipeline):
     name = InputDataField(data_type=list, batch_size=5)
@@ -479,7 +479,7 @@ To define an event, you need to inherit from the EventBase class and override th
 This process method defines the logic for how the event is executed.
 
 ```python
-from nexus import EventBase
+from volnux import EventBase
 
 class MyEvent(EventBase):
     def process(self, *args, **kwargs):
@@ -544,7 +544,7 @@ behavior of the executor:
 Here’s an example of how to use the ExecutorInitializerConfig class to configure an executor for event processing:
 
 ```python
-from nexus import ExecutorInitializerConfig
+from volnux import ExecutorInitializerConfig
 
 # Configuring an executor with a specific number of workers, max tasks per worker, and thread name prefix
 config = ExecutorInitializerConfig(
@@ -607,7 +607,7 @@ The decorator allows you to configure the executor, just like in class-based eve
 providing flexibility for execution.
 
 ```python
-from nexus.decorators import event
+from volnux.decorators import event
 
 # Define a function-based event using the @event decorator
 @event()
@@ -620,7 +620,7 @@ The event decorator allows you to define an event as a simple function. You can 
 executor for the event's execution using parameters like max_workers, max_tasks_per_child, and thread_name_prefix.
 
 ```python
-from nexus.decorators import event
+from volnux.decorators import event
 from concurrent.futures import ThreadPoolExecutor
 
 # Define a function-based event using the @event decorator
@@ -660,7 +660,7 @@ in managing workflows.
 Here's how you can set the execution evaluation state in your event class:
 
 ```python
-from nexus import EventBase, EventExecutionEvaluationState
+from volnux import EventBase, EventExecutionEvaluationState
 
 class MyEvent(EventBase):
     execution_evaluation_state = EventExecutionEvaluationState.SUCCESS_ON_ALL_EVENTS_SUCCESS
@@ -698,7 +698,7 @@ settings. The retry policy can also be defined as a dictionary.
 For example:
 
 ```python
-from nexus.base import RetryPolicy
+from volnux.base import RetryPolicy
 
 # Define a custom retry policy
 retry_policy = RetryPolicy(
@@ -732,7 +732,7 @@ Here’s how you can assign the retry policy to your event class:
 
 ```python
 import typing
-from nexus import EventBase
+from volnux import EventBase
 
 
 class MyEvent(EventBase):
@@ -854,8 +854,8 @@ To leverage the signaling framework, you can connect listeners to these signals.
 called when a specific signal is emitted. Here's how to connect a listener:
 
 ```python
-from nexus.signal.signals import pipeline_execution_start
-from nexus import Pipeline
+from volnux.signal.signals import pipeline_execution_start
+from volnux import Pipeline
 
 def my_listener(pipeline):
     print(f"Execution starting for pipeline: {pipeline}")
@@ -865,9 +865,9 @@ pipeline_execution_start.connect(my_listener, sender=Pipeline)
 ``` 
 ***Or***
 ```python
-from nexus.decorators import listener
-from nexus.signal.signals import pipeline_pre_init
-from nexus import Pipeline
+from volnux.decorators import listener
+from volnux.signal.signals import pipeline_pre_init
+from volnux import Pipeline
 
 @listener(pipeline_pre_init, sender=Pipeline)
 def my_lister(sender, signal, *args, **kwargs):
@@ -891,7 +891,7 @@ The event-pipeline library includes built-in telemetry capabilities for monitori
 To enable telemetry collection in your pipeline:
 
 ```python
-from nexus.telemetry import monitor_events, get_metrics
+from volnux.telemetry import monitor_events, get_metrics
 
 # Enable telemetry collection
 monitor_events()
@@ -920,7 +920,7 @@ The telemetry module automatically tracks:
 For pipelines using remote execution, the telemetry module provides detailed network operation metrics:
 
 ```python
-from nexus.telemetry import get_failed_network_ops, get_slow_network_ops
+from volnux.telemetry import get_failed_network_ops, get_slow_network_ops
 
 # Get metrics for failed network operations
 failed_ops = get_failed_network_ops()
@@ -952,7 +952,7 @@ The telemetry module supports publishing metrics to various monitoring systems t
 Publishes metrics to Elasticsearch, allowing visualization in Kibana:
 
 ```python
-from nexus.telemetry import ElasticsearchPublisher
+from volnux.telemetry import ElasticsearchPublisher
 
 es_publisher = ElasticsearchPublisher(
     hosts=["localhost:9200"],
@@ -965,7 +965,7 @@ monitor_events([es_publisher])
 Exposes metrics for Prometheus scraping, compatible with Grafana:
 
 ```python
-from nexus.telemetry import PrometheusPublisher
+from volnux.telemetry import PrometheusPublisher
 
 prometheus_publisher = PrometheusPublisher(port=9090)
 monitor_events([prometheus_publisher])
@@ -975,7 +975,7 @@ monitor_events([prometheus_publisher])
 Publishes metrics directly to Grafana Cloud:
 
 ```python
-from nexus.telemetry import GrafanaCloudPublisher
+from volnux.telemetry import GrafanaCloudPublisher
 
 grafana_publisher = GrafanaCloudPublisher(
     api_key="your-api-key",
@@ -988,7 +988,7 @@ monitor_events([grafana_publisher])
 Publish metrics to multiple backends simultaneously:
 
 ```python
-from nexus.telemetry import CompositePublisher
+from volnux.telemetry import CompositePublisher
 
 publisher = CompositePublisher([
     es_publisher,
@@ -1038,7 +1038,7 @@ This will install the optional dependencies needed for each publisher:
 You can create custom publishers by implementing the MetricsPublisher interface:
 
 ```python
-from nexus.telemetry import MetricsPublisher
+from volnux.telemetry import MetricsPublisher
 
 class CustomPublisher(MetricsPublisher):
     def publish_event_metrics(self, metrics: EventMetrics) -> None:

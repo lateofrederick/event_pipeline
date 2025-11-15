@@ -1,5 +1,5 @@
 [run]
-source = event_pipeline/
+source = volnux/
 
 omit =
     # Ignore the 'tests' directory
@@ -9,8 +9,8 @@ omit =
     # Ignore all __init__.py files
     */__init__.py
     # Ignore a specific file
-    event_pipeline/arts.py
-    event_pipeline/scripts/*
+    volnux/arts.py
+    volnux/scripts/*
     examples/*
     # Ignore a virtual environment directory
     venv/*
