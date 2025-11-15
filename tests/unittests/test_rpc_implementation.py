@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import Mock, patch, MagicMock
 import threading
 import xmlrpc.client
-from nexus.executors.rpc_executor import XMLRPCExecutor
-from nexus.manager.rpc_manager import XMLRPCManager
+from volnux.executors.rpc_executor import XMLRPCExecutor
+from volnux.manager.rpc_manager import XMLRPCManager
 
 
 def example_task(x: int) -> int:
@@ -39,7 +39,7 @@ class TestRPCImplementation(unittest.TestCase):
         self.assertEqual(result, 42)
 
     @pytest.mark.skip(reason="Not implemented yet")
-    @patch("nexus.executors.rpc_executor.xmlrpc.client.ServerProxy")
+    @patch("volnux.executors.rpc_executor.xmlrpc.client.ServerProxy")
     def test_rpc_error_handling(self, mock_server):
         """Test handling of RPC errors"""
         mock_proxy = Mock()

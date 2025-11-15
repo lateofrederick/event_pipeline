@@ -3,9 +3,9 @@ import threading
 import grpc
 import cloudpickle
 from unittest.mock import Mock, patch, MagicMock
-from nexus.executors.grpc_executor import GRPCExecutor
-from nexus.manager.grpc_manager import GRPCManager, TaskExecutorServicer
-from nexus.protos import task_pb2, task_pb2_grpc
+from volnux.executors.grpc_executor import GRPCExecutor
+from volnux.manager.grpc_manager import GRPCManager, TaskExecutorServicer
+from volnux.protos import task_pb2, task_pb2_grpc
 
 
 def example_task(x: int) -> int:

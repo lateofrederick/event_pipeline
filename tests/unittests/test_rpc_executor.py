@@ -6,7 +6,7 @@ from concurrent.futures import Future
 
 import pytest
 
-from nexus.executors.rpc_executor import XMLRPCExecutor  # TaskMessage
+from volnux.executors.rpc_executor import XMLRPCExecutor  # TaskMessage
 
 
 class TestRPCExecutor(unittest.TestCase):

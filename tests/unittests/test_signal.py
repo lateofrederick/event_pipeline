@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
-from nexus.signal import SoftSignal
-from nexus.decorators import listener
+from volnux.signal import SoftSignal
+from volnux.decorators import listener
 
 
 class Target(object):

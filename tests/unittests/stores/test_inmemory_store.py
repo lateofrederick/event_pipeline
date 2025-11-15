@@ -1,7 +1,7 @@
 import pytest
 from pydantic_mini import BaseModel
-from nexus.exceptions import ObjectDoesNotExist
-from nexus.backends.stores.inmemory_store import InMemoryKeyValueStoreBackend
+from volnux.exceptions import ObjectDoesNotExist
+from volnux.backends.stores.inmemory_store import InMemoryKeyValueStoreBackend
 
 
 class MockModel(BaseModel):

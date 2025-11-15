@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
-from nexus.exceptions import MultiValueError
-from nexus.result import ResultSet, EntityContentType
+from volnux.exceptions import MultiValueError
+from volnux.result import ResultSet, EntityContentType
 
 
 class MockResult:

@@ -6,8 +6,8 @@ import pytest
 
 from ..utils import is_package_installed
 
-from nexus.telemetry.logger import EventMetrics
-from nexus.telemetry.publisher import (
+from volnux.telemetry.logger import EventMetrics
+from volnux.telemetry.publisher import (
     MetricsPublisher,
     ElasticsearchPublisher,
     PrometheusPublisher,

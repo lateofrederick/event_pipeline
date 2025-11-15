@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime
-from nexus.result import EventResult, ResultSet, EntityContentType
-from nexus.exceptions import MultiValueError
+from volnux.result import EventResult, ResultSet, EntityContentType
+from volnux.exceptions import MultiValueError
 
 
 def test_event_result_initialization():
