@@ -2,11 +2,11 @@ import shutil
 import unittest
 import pytest
 from treelib import Tree
-from nexus import EventBase
-from nexus import Pipeline
-from nexus.exceptions import EventDone, EventDoesNotExist
-from nexus.fields import InputDataField, FileInputDataField
-from nexus.constants import PIPELINE_STATE, PIPELINE_FIELDS
+from volnux import EventBase
+from volnux import Pipeline
+from volnux.exceptions import EventDone, EventDoesNotExist
+from volnux.fields import InputDataField, FileInputDataField
+from volnux.constants import PIPELINE_STATE, PIPELINE_FIELDS
 
 
 class PipelineTest(unittest.TestCase):

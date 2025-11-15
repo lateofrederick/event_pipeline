@@ -1,6 +1,6 @@
 from typing import Tuple
 
-from nexus import EventBase
+from volnux import EventBase
 
 
 class EventOne(EventBase):

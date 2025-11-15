@@ -1,15 +1,15 @@
 import time
 import unittest
 
-from nexus import EventBase
-from nexus.executors.remote_executor import RemoteExecutor
-from nexus.telemetry import (get_failed_events,
+from volnux import EventBase
+from volnux.executors.remote_executor import RemoteExecutor
+from volnux.telemetry import (get_failed_events,
                                       get_failed_network_ops, get_metrics,
                                       get_retry_stats, get_slow_events,
                                       get_slow_network_ops, monitor_events)
-from nexus.telemetry.factory import TelemetryLoggerFactory
-from nexus.telemetry.logger import StandardTelemetryLogger
-from nexus.telemetry.network import network_telemetry
+from volnux.telemetry.factory import TelemetryLoggerFactory
+from volnux.telemetry.logger import StandardTelemetryLogger
+from volnux.telemetry.network import network_telemetry
 
 
 # TODO: add tests for batch pipeline cases

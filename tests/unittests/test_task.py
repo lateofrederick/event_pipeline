@@ -1,8 +1,8 @@
 import unittest
 from collections import deque
 from concurrent.futures import Executor
-from nexus import EventBase, Pipeline
-from nexus.task import (
+from volnux import EventBase, Pipeline
+from volnux.task import (
     PipelineTask,
     PipeType,
     EventExecutionContext,

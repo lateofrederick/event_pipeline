@@ -5,10 +5,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from nexus import EventBase
-from nexus.fields import InputDataField
-from nexus.pipeline import Pipeline
-from nexus.pipeline_wrapper import PipelineExecutionState, PipelineWrapper
+from volnux import EventBase
+from volnux.fields import InputDataField
+from volnux.pipeline import Pipeline
+from volnux.pipeline_wrapper import PipelineExecutionState, PipelineWrapper
 
 
 class Fetch(EventBase):
@@ -49,8 +49,8 @@ def basic_wrapper(mock_logger, mock_queue):
     return PipelineWrapper(
         pipeline=pipeline,
         focus_on_signals=[
-            "nexus.signal.signals.pipeline_execution_start",
-            "nexus.signal.signals.pipeline_execution_end",
+            "volnux.signal.signals.pipeline_execution_start",
+            "volnux.signal.signals.pipeline_execution_end",
         ],
         signals_queue=mock_queue,
         import_string_fn=lambda x: Mock(),
@@ -233,7 +233,7 @@ class TestPipelineWrapper:
 
         wrapper = PipelineWrapper(
             pipeline=basic_wrapper.pipeline,
-            focus_on_signals=["nexus.signal.signals.pipeline_execution_start"],
+            focus_on_signals=["volnux.signal.signals.pipeline_execution_start"],
             signals_queue=mock_queue,
             import_string_fn=lambda x: Mock(),
             logger=Mock(),

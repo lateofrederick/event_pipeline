@@ -1,5 +1,5 @@
 import pytest
-from nexus.backends.connectors.dummy import DummyConnector
+from volnux.backends.connectors.dummy import DummyConnector
 
 
 @pytest.fixture

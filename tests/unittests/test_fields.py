@@ -1,11 +1,11 @@
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-from nexus.fields import InputDataField, FileInputDataField
-from nexus.constants import EMPTY, UNKNOWN
-from nexus.exceptions import ImproperlyConfigured
+from volnux.fields import InputDataField, FileInputDataField
+from volnux.constants import EMPTY, UNKNOWN
+from volnux.exceptions import ImproperlyConfigured
 from unittest.mock import MagicMock, mock_open, patch
-from nexus.fields import FileProxy
+from volnux.fields import FileProxy
 
 
 class TestInputDataField:
@@ -106,7 +106,7 @@ class TestFileInputDataField:
         with pytest.raises(ValueError):
             field.__set__(mock_instance, "non_existing_file.txt")
 
-    @patch("nexus.fields.FileProxy")
+    @patch("volnux.fields.FileProxy")
     @patch("os.path.isfile")
     def test_file_opening(self, mock_isfile, mock_open):
         mock_isfile.return_value = True

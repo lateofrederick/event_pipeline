@@ -1,7 +1,7 @@
 import pytest
 import zlib
 import cloudpickle
-from nexus.executors.message import TaskMessage
+from volnux.executors.message import TaskMessage
 
 
 def test_task_message_serialization_and_deserialization():
