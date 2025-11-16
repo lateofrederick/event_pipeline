@@ -70,4 +70,3 @@ class WorkflowEngine(ABC):
             Human-readable engine name
         """
         pass
-

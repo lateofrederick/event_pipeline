@@ -35,7 +35,7 @@ class PipelineTest(unittest.TestCase):
 
     def test_get_task_by_id(self):
         pipe = self.pipeline_klass(name="text")
-        state_b = pipe._state.start.on_success_event
+        state_b = pipe._state.start.condition_node.on_success_event
 
         self.assertIsNotNone(state_b)
 
@@ -183,7 +183,7 @@ class PipelineTest(unittest.TestCase):
         current_task = pipe._state.start
         while current_task:
             task_order.append(current_task.id)
-            current_task = current_task.on_success_event
+            current_task = current_task.condition_node.on_success_event
         self.assertTrue(len(task_order) > 0)
         self.assertEqual(len(task_order), len(set(task_order)))  # No duplicate tasks
 

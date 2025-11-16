@@ -1,7 +1,7 @@
 import typing
 
 if typing.TYPE_CHECKING:
-    from event_pipeline.base import EventBase
+    from .typing import TaskType
     from .task_group import TaskGroupingProtocol
     from .task import TaskProtocol
     from ..operator import PipeType
@@ -15,11 +15,11 @@ class TaskProtocolMixin(typing.Protocol):
     # options specified in pointy scripts for tasks are kept here
     options: typing.Optional["Options"]
 
-    parent_node: typing.Optional[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]
+    parent_node: typing.Optional["TaskType"]
 
     # sink event this is where the conditional events collapse
     # into after they are done executing
-    sink_node: typing.Optional[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]
+    sink_node: typing.Optional["TaskType"]
     sink_pipe: typing.Optional["PipeType"]
 
     condition_node: "ConditionalNode"
@@ -52,26 +52,19 @@ class TaskProtocolMixin(typing.Protocol):
     @property
     def is_parallel_execution_node(self) -> bool: ...
 
-    def get_root(self) -> "TaskProtocol": ...
-
-    # def get_task_pointer_type(self) -> typing.Optional["PipeType"]:
-    #     """Return the pointer type pointing to this task"""
-
-    # def get_parent_node_for_parallel_execution(
-    #     self,
-    # ) -> typing.Optional["TaskProtocol"]: ...
+    def get_root(self) -> "TaskType": ...
 
     def get_first_task_in_parallel_execution_mode(
         self,
-    ) -> typing.Optional["TaskProtocol"]: ...
+    ) -> typing.Optional["TaskType"]: ...
 
     def get_last_task_in_parallel_execution_mode(
         self,
-    ) -> typing.Optional["TaskProtocol"]: ...
+    ) -> typing.Optional["TaskType"]: ...
 
-    def get_descriptor(self, descriptor: int) -> "TaskProtocol": ...
+    def get_descriptor(self, descriptor: int) -> "TaskType": ...
 
-    def get_children(self) -> typing.List["TaskProtocol"]: ...
+    def get_children(self) -> typing.List["TaskType"]: ...
 
     def get_pointer_to_task(self) -> typing.Optional["PipeType"]: ...
 
@@ -79,19 +72,10 @@ class TaskProtocolMixin(typing.Protocol):
 
     def get_parallel_nodes(
         self,
-    ) -> typing.Deque[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]: ...
+    ) -> typing.Deque["TaskType"]: ...
 
     @classmethod
     def bf_traversal(
         cls,
-        root: typing.Union["TaskProtocol", "TaskGroupingProtocol"],
-    ) -> typing.Generator[
-        typing.Union["TaskProtocol", "TaskGroupingProtocol"], None, None
-    ]: ...
-
-    # queue = deque([root])
-    # while queue:
-    #     node = queue.popleft()
-    #     yield node
-    #     for child in node.get_children():
-    #         queue.append(child)
+        root: "TaskType",
+    ) -> typing.Generator["TaskType", None, None]: ...

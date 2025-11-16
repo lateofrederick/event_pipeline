@@ -65,11 +65,11 @@ class TestInputDataField:
         assert field.name == "dynamic_name"
 
     def test_cache_operations(self):
-        field = InputDataField(name="test")
+        field = InputDataField(name="test", data_type=str)
         mock_instance = MagicMock()
         field.__set__(mock_instance, "value")
 
-        mock_instance._state.set_cache_for_pipeline_field.assert_called_once_with(
+        mock_instance.get_pipeline_state().set_cache_for_pipeline_field.assert_called_once_with(
             mock_instance, "test", "value"
         )
 

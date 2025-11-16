@@ -5,6 +5,7 @@ from .mixin import TaskProtocolMixin
 
 if typing.TYPE_CHECKING:
     from .task import TaskProtocol
+    from .typing import TaskType
 
 
 class GroupingStrategy(Enum):
@@ -21,11 +22,9 @@ class TaskGroupingProtocol(TaskProtocolMixin, typing.Protocol):
     """Task group protocol."""
 
     # head of each task chain
-    chains: typing.List["TaskProtocol"]
+    chains: typing.List["TaskType"]
 
     # strategy for this grouping
     strategy: GroupingStrategy
 
-    def __init__(
-        self, chains: typing.List[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]
-    ) -> None: ...
+    def __init__(self, chains: typing.List["TaskType"]) -> None: ...

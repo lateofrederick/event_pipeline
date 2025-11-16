@@ -126,6 +126,9 @@ def test_result_set_discard():
     class MockResult:
         id = "1"
 
+        def __hash__(self):
+            return 1
+
         def __object_import_str__(self):
             return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 

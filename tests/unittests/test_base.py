@@ -187,7 +187,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(SwitchTask) as context:
             self.event.goto(
                 descriptor=1,
-                result_status=True,
+                result_success=True,
                 result={"key": "value"},
                 reason="manual",
                 execute_on_event_method=True,
@@ -217,7 +217,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(SwitchTask) as context:
             self.event.goto(
                 descriptor=2,
-                result_status=False,
+                result_success=False,
                 result={"error": "failure"},
                 reason="manual",
                 execute_on_event_method=True,
@@ -236,7 +236,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(SwitchTask) as context:
             self.event.goto(
                 descriptor=3,
-                result_status=True,
+                result_success=True,
                 result={"key": "value"},
                 reason="manual",
                 execute_on_event_method=False,
@@ -261,7 +261,7 @@ class TestGotoMethod(TestCase):
         with self.assertRaises(ValueError):
             self.event.goto(
                 descriptor="invalid",
-                result_status=True,
+                result_success=True,
                 result={"key": "value"},
                 reason="manual",
                 execute_on_event_method=True,

@@ -299,14 +299,6 @@ class ResultSet(MutableSet[Result]):
         - rs.filter(tags__contains="urgent") - Check if list contains value
         - rs.filter(name__startswith="A") - String prefix matching
         """
-        # Fast path for ID lookups
-        if len(filter_params) == 1 and "id" in filter_params:
-            pk = filter_params["id"]
-            try:
-                return ResultSet([self._content[pk]])
-            except KeyError:
-                return ResultSet([])
-
         filtered_results = []
 
         for result in self._content.values():

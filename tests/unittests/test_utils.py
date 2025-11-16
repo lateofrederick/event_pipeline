@@ -1,5 +1,6 @@
 import inspect
 from unittest import mock
+from event_pipeline.parser.options import StopCondition
 from event_pipeline.utils import (
     generate_unique_id,
     get_function_call_args,
@@ -83,9 +84,7 @@ def test_build_event_arguments_from_pipeline():
             "execution_context": None,
             "task_id": None,
             "previous_result": None,
-            "stop_on_exception": False,
-            "stop_on_success": False,
-            "stop_on_error": False,
+            "stop_condition": StopCondition.NEVER,
             "run_bypass_event_checks": False,
             "options": None,
         },

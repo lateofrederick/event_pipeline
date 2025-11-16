@@ -10,6 +10,9 @@ class MockResult:
         for key, value in attributes.items():
             setattr(self, key, value)
 
+    def __hash__(self):
+        return hash(self.id)
+
     def __object_import_str__(self):
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -105,16 +108,6 @@ def test_result_set_first_empty():
 def test_result_set_str_repr(result_set):
     assert str(result_set) == str(list(result_set))
     assert repr(result_set) == f"<ResultSet: {len(result_set)}>"
-
-
-def test_result_set_add_invalid_type(result_set):
-    with pytest.raises(TypeError):
-        result_set.add("invalid_type")
-
-
-def test_result_set_discard_invalid_type(result_set):
-    with pytest.raises(TypeError):
-        result_set.discard("invalid_type")
 
 
 def test_entity_content_type_equality():

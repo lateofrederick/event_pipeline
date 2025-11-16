@@ -3,10 +3,10 @@ import unittest
 from unittest.mock import patch
 from concurrent.futures import ProcessPoolExecutor
 from event_pipeline import EventBase
-# from event_pipeline.base import EventExecutionEvaluationState, EvaluationContext
 from event_pipeline.task import PipelineTask
 from event_pipeline.decorators import event
 from event_pipeline.result import EventResult
+from event_pipeline.parser.options import StopCondition
 
 
 class TestEventBase(unittest.TestCase):
@@ -119,10 +119,8 @@ class TestEventBase(unittest.TestCase):
                 "task_id": "1",
                 "args": (),
                 "previous_result": "box",
-                "stop_on_exception": False,
-                "stop_on_success": False,
-                "stop_on_error": False,
                 "run_bypass_event_checks": False,
+                "stop_condition": StopCondition.NEVER,
                 "options": None,
                 "kwargs": {},
             },
