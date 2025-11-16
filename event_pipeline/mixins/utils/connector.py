@@ -108,11 +108,11 @@ class BaseConnectorManager:
         self.connector_class = connector_class
         self.connector_config = connector_config
 
-    def get_connection(self) -> "BaseConnectorManager":
+    def get_connection(self) -> object:
         """Get a connection."""
         raise NotImplementedError
 
-    def release_connection(self, connection: "BaseConnectorManager") -> None:
+    def release_connection(self, connection: object) -> None:
         """Release a connection."""
         raise NotImplementedError
 
@@ -173,7 +173,7 @@ class SingleConnectorManager(BaseConnectorManager):
     Suitable for backends that don't need or support multiple connections.
     """
 
-    def __init__(self, connector_class, connector_config: dict):
+    def __init__(self, connector_class: typing.Type[typing.Any], connector_config: typing.Dict[str, typing.Any]) -> None:
         """
         Initialize the single connector manager.
         Args:
@@ -185,7 +185,7 @@ class SingleConnectorManager(BaseConnectorManager):
         self._connection_lock = threading.RLock()
         self._connection_stats = None
 
-    def get_connection(self):
+    def get_connection(self) -> object:
         """
         Get the shared connection, creating it if needed.
         Returns:
