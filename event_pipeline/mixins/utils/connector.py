@@ -1,4 +1,5 @@
 import threading
+import typing
 import logging
 import time
 from enum import Enum
@@ -25,11 +26,11 @@ class ConnectorManagerFactory:
 
     @staticmethod
     def create_manager(
-        connector_class,
-        connector_config: dict,
-        connection_mode: ConnectionMode = None,
-        **kwargs,
-    ):
+        connector_class: typing.Type[typing.Any],
+        connector_config: typing.Dict[str, typing.Any],
+        connection_mode: typing.Optional[ConnectionMode] = None,
+        **kwargs: typing.Dict[str, typing.Any],
+    ) -> "BaseConnectorManager":
         """
         Create a connector manager based on the specified connection mode.
 
@@ -55,7 +56,7 @@ class ConnectorManagerFactory:
             return SingleConnectorManager(connector_class, connector_config)
 
     @staticmethod
-    def _detect_connection_mode(connector_class, connector_config):
+    def _detect_connection_mode(connector_class: typing.Type[typing.Any], connector_config: typing.Dict[str, typing.Any]) -> ConnectionMode:
         """
         Detect the appropriate connection mode based on the connector class.
 
@@ -97,7 +98,7 @@ class ConnectorManagerFactory:
 class BaseConnectorManager:
     """Base class for connector managers."""
 
-    def __init__(self, connector_class, connector_config: dict):
+    def __init__(self, connector_class: typing.Type[typing.Any], connector_config: typing.Dict[str, typing.Any]) -> None:
         """
         Initialize the connector manager.
         Args:
@@ -107,19 +108,19 @@ class BaseConnectorManager:
         self.connector_class = connector_class
         self.connector_config = connector_config
 
-    def get_connection(self):
+    def get_connection(self) -> "BaseConnectorManager":
         """Get a connection."""
         raise NotImplementedError
 
-    def release_connection(self, connection):
+    def release_connection(self, connection: "BaseConnectorManager") -> None:
         """Release a connection."""
         raise NotImplementedError
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Shut down the connector manager."""
         raise NotImplementedError
 
-    def _create_connection(self):
+    def _create_connection(self) -> object:
         """
         Create a new connection instance.
         Returns:
@@ -133,7 +134,7 @@ class BaseConnectorManager:
         except Exception as e:
             raise ConnectionError(f"Failed to create connection: {e}") from e
 
-    def _check_connection_health(self, connection) -> bool:
+    def _check_connection_health(self, connection: object) -> bool:
         """
         Check if a connection is healthy.
         Args:
@@ -151,7 +152,7 @@ class BaseConnectorManager:
         except Exception:
             return False
 
-    def _close_connection(self, connection):
+    def _close_connection(self, connection: object) -> None:
         """
         Close a connection.
         Args:

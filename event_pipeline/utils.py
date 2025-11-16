@@ -13,7 +13,7 @@ try:
     import resource
 except ImportError:
     # No windows support for this lib
-    resource = None
+    resource = None  # type:ignore
 
 from inspect import signature, Parameter, isgeneratorfunction, isgenerator
 
@@ -26,7 +26,6 @@ from .exceptions import ImproperlyConfigured
 from .constants import EMPTY
 from .typing import BatchProcessType
 
-# from event_pipeline.executors import ProcessPoolExecutor, BaseExecutor
 
 if typing.TYPE_CHECKING:
     from .base import EventBase
@@ -36,7 +35,7 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _extend_recursion_depth(limit: int = 1048576):
+def _extend_recursion_depth(limit: int = 1048576) -> typing.Optional[typing.Union[int, Exception]]:
     """
     Extends the maximum recursion depth of the Python interpreter.
 
@@ -50,7 +49,7 @@ def _extend_recursion_depth(limit: int = 1048576):
         return
     rec_limit = sys.getrecursionlimit()
     if rec_limit == limit:
-        return
+        return None
     try:
         resource.setrlimit(resource.RLIMIT_STACK, (limit, resource.RLIM_INFINITY))
         sys.setrecursionlimit(limit)
@@ -60,7 +59,7 @@ def _extend_recursion_depth(limit: int = 1048576):
     return limit
 
 
-def generate_unique_id(obj: object):
+def generate_unique_id(obj: object) -> str:
     """
     Generate unique identify for objects
     :param obj: The object to generate the id for
@@ -97,7 +96,7 @@ def build_event_arguments_from_pipeline(
 
 
 def get_function_call_args(
-    func, params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object]
+    func: typing.Callable, params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object]
 ) -> typing.Dict[str, typing.Any]:
     """
     Extracts the arguments for a function call from the provided parameters.
@@ -132,19 +131,6 @@ def get_function_call_args(
         if key in params_dict and params_dict[key] is None:
             params_dict.pop(key, None)
     return params_dict
-
-
-class AcquireReleaseLock(object):
-    """A context manager for acquiring and releasing locks."""
-
-    def __init__(self, lock):
-        self.lock = lock
-
-    def __enter__(self):
-        self.lock.acquire()
-
-    def __exit__(self, *args):
-        self.lock.release()
 
 
 def validate_batch_processor(batch_processor: BatchProcessType) -> bool:
@@ -217,9 +203,9 @@ def get_expected_args(
 
 def get_obj_state(obj: typing.Any) -> typing.Dict[str, typing.Any]:
     try:
-        return obj.get_state()
+        return obj.get_state()  # type: ignore
     except (AttributeError, NotImplementedError):
-        return obj.__getstate__()
+        return obj.__getstate__()  # type: ignore
 
 
 def get_obj_klass_import_str(obj: typing.Any) -> str:

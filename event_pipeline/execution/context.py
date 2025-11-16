@@ -15,10 +15,7 @@ from event_pipeline.signal.signals import (
     event_execution_failed,
 )
 from event_pipeline.parser.operator import PipeType
-
-# from event_pipeline.typing import TaskType
 from event_pipeline.result_evaluators import EventEvaluator, ResultEvaluationStrategies
-
 from event_pipeline.task import PipelineTask, PipelineTaskGrouping
 from .state_manager import StateManager, ExecutionState, ExecutionStatus
 from event_pipeline.parser.protocols import TaskType
@@ -52,7 +49,7 @@ def preformat_task_profile(
     elif isinstance(task_profiles, deque):
         return task_profiles
     # TODO: descriptive error message
-    raise PydanticMiniError("invalid task format")
+    raise PydanticMiniError("invalid task format") # type: ignore
 
 
 class ExecutionContext(ObjectIdentityMixin, BaseModel):
@@ -215,7 +212,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state=ExecutionStatus.ABORTED,
         )
 
-    def failed(self):
+    def failed(self) -> None:
         """
         Mark the execution context as failed.
         """
@@ -228,7 +225,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state=ExecutionStatus.FAILED,
         )
 
-    async def failed_async(self):
+    async def failed_async(self) -> None:
         """
         Async version of marking the execution context as failed.
         """
@@ -258,10 +255,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         if status is not None:
             state.status = status
         if errors is not None:
-            state.errors.extend(errors)
+            state.errors.extend(errors) # type: ignore
         if results is not None:
             state.results.extend(results)
-        self._state_manager.update_state(self.state_id, state)
+        self._state_manager.update_state(self.state_id, state) # type: ignore
 
     async def bulk_update_async(
         self,
@@ -274,7 +271,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         if status is not None:
             state.status = status
         if errors is not None:
-            state.errors.extend(errors)
+            state.errors.extend(errors) # type: ignore
         if results is not None:
             state.results.extend(results)
         await self._state_manager.update_state_async(self.state_id, state)
@@ -297,6 +294,9 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             timeout: Optional dispatch timeout
         Returns:
             SwitchRequest if task switching is requested, else None.
+        Raises:
+            RuntimeError: If called from within an existing event loop
+            Exception: If execution fails
         """
         from .coordinator import ExecutionCoordinator
 
@@ -308,12 +308,12 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             logger.error(
                 f"{self.pipeline.__class__.__name__} : {str(self.task_profiles)} : {str(e)}"
             )
+            raise
 
-    def get_task_profiles(self) -> typing.Deque:
+    def get_task_profiles(self) -> typing.Deque["TaskType"]:
         task_profiles = self.task_profiles
-        if typing.TYPE_CHECKING:
-            task_profiles = typing.cast(typing.Deque, task_profiles)
-        return task_profiles
+        
+        return typing.cast(typing.Deque["TaskType"], task_profiles)
 
     def is_multitask(self) -> bool:
         return len(self.get_task_profiles()) > 1
@@ -397,7 +397,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
                 return task_profile
         return None
 
-    def get_result_evaluator(self):
+    def get_result_evaluator(self) -> typing.Optional["EventEvaluator"]:
         """
         Retrieves the result evaluation strategy from the task profile.
 
@@ -437,14 +437,16 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             return task_profile.get_event_class().evaluator()
         return None
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Clean up shared memory resources"""
-        self._state_manager.release_state(self.state_id)
+        if self._state_manager:
+            self._state_manager.release_state(self.state_id)
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Ensure cleanup on garbage collection"""
         try:
             if hasattr(self, "state_id") and self.state_id:
-                self._state_manager.release_state(self.state_id)
+                if self._state_manager:
+                    self._state_manager.release_state(self.state_id)
         except:
             pass  # Ignore errors during cleanup
