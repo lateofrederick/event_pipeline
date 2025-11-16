@@ -49,7 +49,7 @@ def preformat_task_profile(
     elif isinstance(task_profiles, deque):
         return task_profiles
     # TODO: descriptive error message
-    raise PydanticMiniError("invalid task format") # type: ignore
+    raise PydanticMiniError("invalid task format")  # type: ignore
 
 
 class ExecutionContext(ObjectIdentityMixin, BaseModel):
@@ -255,10 +255,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         if status is not None:
             state.status = status
         if errors is not None:
-            state.errors.extend(errors) # type: ignore
+            state.errors.extend(errors)  # type: ignore
         if results is not None:
             state.results.extend(results)
-        self._state_manager.update_state(self.state_id, state) # type: ignore
+        self._state_manager.update_state(self.state_id, state)  # type: ignore
 
     async def bulk_update_async(
         self,
@@ -271,7 +271,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         if status is not None:
             state.status = status
         if errors is not None:
-            state.errors.extend(errors) # type: ignore
+            state.errors.extend(errors)  # type: ignore
         if results is not None:
             state.results.extend(results)
         await self._state_manager.update_state_async(self.state_id, state)
@@ -312,7 +312,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     def get_task_profiles(self) -> typing.Deque["TaskType"]:
         task_profiles = self.task_profiles
-        
+
         return typing.cast(typing.Deque["TaskType"], task_profiles)
 
     def is_multitask(self) -> bool:

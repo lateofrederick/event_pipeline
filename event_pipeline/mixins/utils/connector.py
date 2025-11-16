@@ -56,7 +56,10 @@ class ConnectorManagerFactory:
             return SingleConnectorManager(connector_class, connector_config)
 
     @staticmethod
-    def _detect_connection_mode(connector_class: typing.Type[typing.Any], connector_config: typing.Dict[str, typing.Any]) -> ConnectionMode:
+    def _detect_connection_mode(
+        connector_class: typing.Type[typing.Any],
+        connector_config: typing.Dict[str, typing.Any],
+    ) -> ConnectionMode:
         """
         Detect the appropriate connection mode based on the connector class.
 
@@ -98,7 +101,11 @@ class ConnectorManagerFactory:
 class BaseConnectorManager:
     """Base class for connector managers."""
 
-    def __init__(self, connector_class: typing.Type[typing.Any], connector_config: typing.Dict[str, typing.Any]) -> None:
+    def __init__(
+        self,
+        connector_class: typing.Type[typing.Any],
+        connector_config: typing.Dict[str, typing.Any],
+    ) -> None:
         """
         Initialize the connector manager.
         Args:
@@ -173,7 +180,11 @@ class SingleConnectorManager(BaseConnectorManager):
     Suitable for backends that don't need or support multiple connections.
     """
 
-    def __init__(self, connector_class: typing.Type[typing.Any], connector_config: typing.Dict[str, typing.Any]) -> None:
+    def __init__(
+        self,
+        connector_class: typing.Type[typing.Any],
+        connector_config: typing.Dict[str, typing.Any],
+    ) -> None:
         """
         Initialize the single connector manager.
         Args:

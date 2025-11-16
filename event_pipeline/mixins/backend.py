@@ -70,7 +70,12 @@ class BackendIntegrationMixin(ObjectIdentityMixin):
 
         self.save()
 
-    def with_connection(self, method: typing.Callable, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]) -> typing.Any:
+    def with_connection(
+        self,
+        method: typing.Callable,
+        *args: typing.Tuple[typing.Any],
+        **kwargs: typing.Dict[str, typing.Any],
+    ) -> typing.Any:
         """
         Execute a function with a connection from the manager.
         Args:

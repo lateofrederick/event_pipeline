@@ -35,7 +35,9 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _extend_recursion_depth(limit: int = 1048576) -> typing.Optional[typing.Union[int, Exception]]:
+def _extend_recursion_depth(
+    limit: int = 1048576,
+) -> typing.Optional[typing.Union[int, Exception]]:
     """
     Extends the maximum recursion depth of the Python interpreter.
 
@@ -96,7 +98,8 @@ def build_event_arguments_from_pipeline(
 
 
 def get_function_call_args(
-    func: typing.Callable, params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object]
+    func: typing.Callable,
+    params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object],
 ) -> typing.Dict[str, typing.Any]:
     """
     Extracts the arguments for a function call from the provided parameters.

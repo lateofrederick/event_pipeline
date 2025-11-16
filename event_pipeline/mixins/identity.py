@@ -4,7 +4,9 @@ from event_pipeline.utils import generate_unique_id, get_obj_klass_import_str
 
 class ObjectIdentityMixin:
 
-    def __init__(self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]) -> None:
+    def __init__(
+        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    ) -> None:
         generate_unique_id(self)
 
     @property
