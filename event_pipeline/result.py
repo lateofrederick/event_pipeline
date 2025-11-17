@@ -10,11 +10,16 @@ from .exceptions import MultiValueError
 from event_pipeline.mixins import BackendIntegrationMixin
 from event_pipeline.utils import get_obj_klass_import_str, get_obj_state
 
+if typing.TYPE_CHECKING:
+    from typing import TypeAlias  # noqa: F401
+else:
+    from typing_extensions import TypeAlias
+
 __all__ = ["EventResult", "ResultSet"]
 
 T = typing.TypeVar("T", bound="ResultSet")
 
-Result: typing.TypeAlias = Hashable  # Placeholder for Result type
+Result: TypeAlias = Hashable  # Placeholder for Result type
 
 
 class EventResult(BackendIntegrationMixin, BaseModel):

@@ -52,7 +52,7 @@ class ExecutionCoordinator:
         self._timeout = timeout
         self._flow = None
 
-    def _setup_execution_flow(self):
+    def _setup_execution_flow(self) -> "BaseFlow":
         """
         Setup the execution flow based on task dependencies.
 

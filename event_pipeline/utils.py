@@ -98,7 +98,7 @@ def build_event_arguments_from_pipeline(
 
 
 def get_function_call_args(
-    func: typing.Callable,
+    func: typing.Callable[..., typing.Any],
     params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object],
 ) -> typing.Dict[str, typing.Any]:
     """
@@ -176,7 +176,7 @@ def validate_batch_processor(batch_processor: BatchProcessType) -> bool:
 
 
 def get_expected_args(
-    func: typing.Callable, include_type: bool = False
+    func: typing.Callable[..., typing.Any], include_type: bool = False
 ) -> typing.Dict[str, typing.Any]:
     """
     Get the expected arguments of a function as a dictionary where the keys are argument names

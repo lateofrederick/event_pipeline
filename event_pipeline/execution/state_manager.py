@@ -7,6 +7,7 @@ from multiprocessing import Manager, Lock as MPLock
 from threading import Lock as ThreadLock
 from contextlib import contextmanager, asynccontextmanager
 from event_pipeline.result import ResultSet, EventResult
+from event_pipeline.concurrency.async_utils import to_thread
 from event_pipeline.exceptions import PipelineError, SwitchTask, StopProcessingError
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ class StateManager:
             initial_state: Initial state
         """
 
-        await asyncio.to_thread(self.create_state, state_id, initial_state)
+        await to_thread(self.create_state, state_id, initial_state)
 
     def get_state(self, state_id: str) -> ExecutionState:
         """
@@ -136,7 +137,8 @@ class StateManager:
             raise KeyError(f"State {state_id} not found") from e
 
     async def get_state_async(self, state_id: str) -> ExecutionState:
-        return await asyncio.to_thread(self.get_state, state_id)
+        state = await to_thread(self.get_state, state_id)
+        return typing.cast(ExecutionState, state)
 
     def update_state(self, state_id: str, state: ExecutionState) -> None:
         """
@@ -238,11 +240,11 @@ class StateManager:
             raise KeyError(f"Lock for state {state_id} not found")
         lock = self._locks[state_id]
 
-        await asyncio.to_thread(lock.acquire)
+        await to_thread(lock.acquire)
         try:
             yield
         finally:
-            await asyncio.to_thread(lock.release)
+            await to_thread(lock.release)
 
     def release_state(self, state_id: str, force: bool = False) -> None:
         """
@@ -268,7 +270,7 @@ class StateManager:
         Decrement reference count and optionally remove state asynchronously.
         State is only removed when reference count reaches 0 or force=True.
         """
-        await asyncio.to_thread(self.release_state, state_id, force)
+        await to_thread(self.release_state, state_id, force)
 
     def _remove_state_unsafe(self, state_id: str) -> None:
         """Internal method to remove state - must be called within _creation_lock"""
@@ -285,15 +287,17 @@ class StateManager:
 
     async def remove_state_async(self, state_id: str) -> None:
         """Clean up state and its dedicated lock asynchronously."""
-        await asyncio.to_thread(self.remove_state, state_id)
+        await to_thread(self.remove_state, state_id)
 
     def get_ref_count(self, state_id: str) -> int:
         """Get the number of active references to a state"""
-        return self._ref_counts.get(state_id, 0)
+        ref_count = self._ref_counts.get(state_id, 0)
+        return typing.cast(int, ref_count)
 
     async def get_ref_count_async(self, state_id: str) -> int:
         """Get the number of active references to a state asynchronously."""
-        return await asyncio.to_thread(self.get_ref_count, state_id)
+        ref_count = await to_thread(self.get_ref_count, state_id)
+        return typing.cast(int, ref_count)
 
     def get_active_states(self) -> typing.List[str]:
         """Get list of all state_ids in shared memory"""
@@ -301,7 +305,8 @@ class StateManager:
 
     async def get_active_states_async(self) -> typing.List[str]:
         """Get list of all state_ids in shared memory asynchronously."""
-        return await asyncio.to_thread(self.get_active_states)
+        states = await to_thread(self.get_active_states)
+        return typing.cast(typing.List[str], states)
 
     def clear_all_states(self) -> None:
         """
@@ -315,7 +320,7 @@ class StateManager:
 
     async def clear_all_states_async(self) -> None:
         """Remove all states from shared memory asynchronously."""
-        await asyncio.to_thread(self.clear_all_states)
+        await to_thread(self.clear_all_states)
 
     def shutdown(self) -> None:
         """Shuts down the manager's server process."""

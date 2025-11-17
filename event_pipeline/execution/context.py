@@ -125,39 +125,54 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         Get current state from shared memory.
         """
-        return self._state_manager.get_state(self.state_id)
+        return self.get_state_manager().get_state(self.state_id)
 
     @property
     async def state_async(self) -> "ExecutionState":
         """
         Async version of getting current state from shared memory.
         """
-        return await self._state_manager.get_state_async(self.state_id)
+        return await self.get_state_manager().get_state_async(self.state_id)
+
+    def get_state_manager(self) -> StateManager:
+        """
+        Get context state manager
+
+        Returns:
+            The state manager for this context
+        """
+        if self.__class__._state_manager is None:
+            state_manager = StateManager()
+            initial_state = ExecutionState(ExecutionStatus.PENDING)
+            state_manager.create_state(self.state_id, initial_state)
+            self.__class__._state_manager = state_manager
+            return state_manager
+        return self._state_manager
 
     def update_status(self, new_status: "ExecutionStatus") -> None:
-        self._state_manager.update_status(self.state_id, new_status)
+        self.get_state_manager().update_status(self.state_id, new_status)
 
     async def update_status_async(self, new_status: "ExecutionStatus") -> None:
-        await self._state_manager.update_status_async(self.state_id, new_status)
+        await self.get_state_manager().update_status_async(self.state_id, new_status)
 
     def add_error(self, error: Exception) -> None:
-        self._state_manager.append_error(self.state_id, error)
+        self.get_state_manager().append_error(self.state_id, error)
 
     async def add_error_async(self, error: Exception) -> None:
-        await self._state_manager.append_error_async(self.state_id, error)
+        await self.get_state_manager().append_error_async(self.state_id, error)
 
     def add_result(self, result: EventResult) -> None:
-        self._state_manager.append_result(self.state_id, result)
+        self.get_state_manager().append_result(self.state_id, result)
 
     async def add_result_async(self, result: EventResult) -> None:
-        await self._state_manager.append_result_async(self.state_id, result)
+        await self.get_state_manager().append_result_async(self.state_id, result)
 
     def cancel(self) -> None:
         """
         Cancel execution - only locks THIS context.
         Other contexts continue running unaffected.
         """
-        self._state_manager.update_status(self.state_id, ExecutionStatus.CANCELLED)
+        self.get_state_manager().update_status(self.state_id, ExecutionStatus.CANCELLED)
         # Emit event
         event_execution_cancelled.emit(
             sender=self.__class__,
@@ -171,7 +186,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         Async version of cancel execution - only locks THIS context.
         Other contexts continue running unaffected.
         """
-        await self._state_manager.update_status_async(
+        await self.get_state_manager().update_status_async(
             self.state_id, ExecutionStatus.CANCELLED
         )
         # Emit event
@@ -187,7 +202,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         Abort execution - only locks THIS context.
         Other contexts continue running unaffected.
         """
-        self._state_manager.update_status(self.state_id, ExecutionStatus.ABORTED)
+        self.get_state_manager().update_status(self.state_id, ExecutionStatus.ABORTED)
         # Emit event
         event_execution_aborted.emit(
             sender=self.__class__,
@@ -201,7 +216,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         Async version of abort execution - only locks THIS context.
         Other contexts continue running unaffected.
         """
-        await self._state_manager.update_status_async(
+        await self.get_state_manager().update_status_async(
             self.state_id, ExecutionStatus.ABORTED
         )
         # Emit event
@@ -216,7 +231,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         Mark the execution context as failed.
         """
-        self._state_manager.update_status(self.state_id, ExecutionStatus.FAILED)
+        self.get_state_manager().update_status(self.state_id, ExecutionStatus.FAILED)
         # Emit event
         event_execution_failed.emit(
             sender=self.__class__,
@@ -229,7 +244,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         Async version of marking the execution context as failed.
         """
-        await self._state_manager.update_status_async(
+        await self.get_state_manager().update_status_async(
             self.state_id, ExecutionStatus.FAILED
         )
         # Emit event
@@ -258,7 +273,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state.errors.extend(errors)  # type: ignore
         if results is not None:
             state.results.extend(results)
-        self._state_manager.update_state(self.state_id, state)  # type: ignore
+        self.get_state_manager().update_state(self.state_id, state)  # type: ignore
 
     async def bulk_update_async(
         self,
@@ -274,7 +289,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state.errors.extend(errors)  # type: ignore
         if results is not None:
             state.results.extend(results)
-        await self._state_manager.update_state_async(self.state_id, state)
+        await self.get_state_manager().update_state_async(self.state_id, state)
 
     def __iter__(self) -> typing.Generator["ExecutionContext", typing.Any, None]:
         current: typing.Optional["ExecutionContext"] = self
@@ -439,8 +454,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     def cleanup(self) -> None:
         """Clean up shared memory resources"""
-        if self._state_manager:
-            self._state_manager.release_state(self.state_id)
+        self.get_state_manager().release_state(self.state_id)
 
     def __del__(self) -> None:
         """Ensure cleanup on garbage collection"""
