@@ -3,12 +3,14 @@ import logging
 import time
 import typing
 from typing import Optional, Tuple, Any
-from contextlib import asynccontextmanager
 from event_pipeline.exceptions import SwitchTask
 from event_pipeline.flows import setup_execution_flow
 from event_pipeline.execution.state_manager import ExecutionStatus
 from event_pipeline.execution.result import ResultProcessor
 from event_pipeline.execution.context import ExecutionContext
+
+if typing.TYPE_CHECKING:
+    from event_pipeline.flows.base import BaseFlow
 
 logger = logging.getLogger(__name__)
 
@@ -223,30 +225,12 @@ class ExecutionCoordinator:
         """
         return await self._execute_async()
 
-    async def cancel(self):
+    async def cancel(self) -> None:
         """Cancel the currently running execution."""
         if self._flow:
             logger.warning("Cancelling execution flow")
             await self._flow.cancel()
             self.execution_context.update_status(ExecutionStatus.CANCELLED)
-
-    @asynccontextmanager
-    async def managed_execution(self):
-        """
-        Context manager for managed execution with automatic cleanup.
-
-        Usage:
-            async with coordinator.managed_execution() as (results, errors):
-                # Use results
-                pass
-        """
-        try:
-            results, errors = await self._execute_async()
-            yield results, errors
-        finally:
-            # Cleanup operations
-            logger.debug("Cleaning up execution resources")
-            self._flow = None
 
     def __repr__(self) -> str:
         return (

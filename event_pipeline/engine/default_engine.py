@@ -5,7 +5,7 @@ from event_pipeline.parser.protocols import TaskType
 from event_pipeline.pipeline import Pipeline
 from event_pipeline.parser.operator import PipeType
 from event_pipeline.execution.context import ExecutionContext
-from event_pipeline.execution.state_manager import ExecutionStatus
+from event_pipeline.execution.state_manager import ExecutionStatus, ExecutionState
 from event_pipeline.exceptions import TaskSwitchingError
 from ..execution.utils import evaluate_context_execution_results
 from .base import WorkflowEngine, EngineResult, EngineExecutionResult, TaskNode
@@ -228,9 +228,9 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self,
         task: TaskType,
         pipeline: Pipeline,
-        previous_context: ExecutionContext | None,
-        parallel_tasks: typing.Set[TaskType] | None,
-        sink_queue: deque[TaskType],
+        sink_queue: typing.Deque[TaskType],
+        previous_context: typing.Optional[ExecutionContext] = None,
+        parallel_tasks: typing.Optional[typing.Set[TaskType]] = None,
     ) -> ExecutionContext:
         """
         Create and chain execution context.
@@ -249,8 +249,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
             Configured ExecutionContext
         """
         context = ExecutionContext(
-            pipeline=pipeline,
-            task_profiles=list(parallel_tasks) if parallel_tasks else task,
+            pipeline=pipeline,  # type: ignore
+            task_profiles=list(parallel_tasks) if parallel_tasks else task,  # type: ignore
         )
 
         if previous_context is None:
@@ -267,7 +267,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         return context
 
-    def _should_terminate(self, execution_state) -> bool:
+    def _should_terminate(self, execution_state: ExecutionState) -> bool:
         """
         Check if execution should stop due to cancellation/abortion.
 
@@ -296,9 +296,9 @@ class DefaultWorkflowEngine(WorkflowEngine):
     def _handle_task_switch(
         self,
         task: TaskType,
-        execution_state,
-        previous_context: ExecutionContext | None,
-        queue: deque,
+        execution_state: ExecutionState,
+        queue: typing.Deque[TaskNode],
+        previous_context: typing.Optional[ExecutionContext] = None,
     ) -> bool:
         """
         Handle dynamic task switching via descriptors.
@@ -320,10 +320,10 @@ class DefaultWorkflowEngine(WorkflowEngine):
         """
         switch_request = execution_state.get_switch_request()
 
-        if not switch_request or not switch_request.descriptor_configured:
+        if not switch_request or not switch_request.descriptor_configured:  # type: ignore
             return False
 
-        next_task = task.get_descriptor(switch_request.next_task_descriptor)
+        next_task = task.get_descriptor(switch_request.next_task_descriptor)  # type: ignore
 
         if next_task is None:
             raise TaskSwitchingError(
@@ -336,9 +336,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         queue.appendleft(TaskNode(next_task, previous_context))
 
         if self.enable_debug_logging:
-            logger.debug(
-                f"[Engine] Switched to descriptor: {switch_request.next_task_descriptor}"
-            )
+            logger.debug(f"[Engine] Switched to descriptor: {switch_request.next_task_descriptor}")  # type: ignore
 
         return True
 
@@ -392,11 +390,11 @@ class DefaultWorkflowEngine(WorkflowEngine):
             branch = "success" if result.success else "failure"
             logger.debug(f"[Engine] Conditional branch: {branch}")
 
-        return next_task
+        return next_task  # type: ignore
 
     def _follow_sequential_flow(
         self, task: TaskType, execution_context: ExecutionContext
-    ) -> TaskType | None:
+    ) -> typing.Optional[TaskType]:
         """
         Follow normal sequential flow.
 
@@ -416,10 +414,10 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 decision_task.condition_node.on_success_event if decision_task else None
             )
         else:
-            return task.condition_node.on_success_event
+            return task.condition_node.on_success_event  # type: ignore
 
     def _drain_sink_nodes(
-        self, sink_queue: deque[TaskType], pipeline: Pipeline
+        self, sink_queue: typing.Deque[TaskType], pipeline: Pipeline
     ) -> None:
         """
         Execute deferred sink nodes.
@@ -443,8 +441,8 @@ class DefaultWorkflowEngine(WorkflowEngine):
             try:
                 # Create standalone context for sink node
                 context = ExecutionContext(
-                    pipeline=pipeline,
-                    task_profiles=sink_task,
+                    pipeline=pipeline,  # type: ignore
+                    task_profiles=sink_task,  # type: ignore
                 )
                 context.dispatch()
 
