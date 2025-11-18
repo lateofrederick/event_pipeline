@@ -1,16 +1,20 @@
+import multiprocessing
 import shutil
 import unittest
+
 import pytest
 from treelib import Tree
-from event_pipeline import EventBase
-from event_pipeline import Pipeline
-from event_pipeline.exceptions import EventDone, EventDoesNotExist
-from event_pipeline.fields import InputDataField, FileInputDataField
-from event_pipeline.constants import PIPELINE_STATE, PIPELINE_FIELDS
+
+from event_pipeline import EventBase, Pipeline
+from event_pipeline.constants import PIPELINE_FIELDS, PIPELINE_STATE
+from event_pipeline.exceptions import EventDoesNotExist, EventDone
+from event_pipeline.fields import FileInputDataField, InputDataField
+
+# fix deadlock in python3.11 for state management
+multiprocessing.set_start_method("spawn")
 
 
 class PipelineTest(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         class M(EventBase):
