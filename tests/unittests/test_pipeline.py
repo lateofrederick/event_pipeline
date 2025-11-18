@@ -11,7 +11,7 @@ from event_pipeline.exceptions import EventDoesNotExist, EventDone
 from event_pipeline.fields import FileInputDataField, InputDataField
 
 # fix deadlock in python3.11 for state management
-multiprocessing.set_start_method("spawn")
+multiprocessing.set_start_method("spawn", force=True)
 
 
 class PipelineTest(unittest.TestCase):

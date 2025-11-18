@@ -1,17 +1,14 @@
 import typing
 from collections import deque
-from event_pipeline.typing import TaskType
-from event_pipeline.mixins import ObjectIdentityMixin
-from event_pipeline.parser.options import Options
-from event_pipeline.parser.operator import PipeType
-from event_pipeline.parser.conditional import ConditionalNode
 
-if typing.TYPE_CHECKING:
-    from event_pipeline.parser.protocols import TaskProtocol, TaskGroupingProtocol
+from event_pipeline.mixins import ObjectIdentityMixin
+from event_pipeline.parser.conditional import ConditionalNode
+from event_pipeline.parser.operator import PipeType
+from event_pipeline.parser.options import Options
+from event_pipeline.parser.protocols import TaskType
 
 
 class TaskBase(ObjectIdentityMixin):
-
     def __init__(
         self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
@@ -24,15 +21,11 @@ class TaskBase(ObjectIdentityMixin):
         self._descriptor: typing.Optional[int] = None
         self._descriptor_pipe: typing.Optional[PipeType] = None
 
-        self.parent_node: typing.Optional[
-            typing.Union["TaskProtocol", "TaskGroupingProtocol"]
-        ] = None
+        self.parent_node: typing.Optional[TaskType] = None
 
         # sink event this is where the conditional events collapse
         # into after they are done executing
-        self.sink_node: typing.Optional[
-            typing.Union["TaskProtocol", "TaskGroupingProtocol"]
-        ] = None
+        self.sink_node: typing.Optional[TaskType] = None
         self.sink_pipe: typing.Optional[PipeType] = None
 
         self.condition_node: ConditionalNode = ConditionalNode()
@@ -78,7 +71,7 @@ class TaskBase(ObjectIdentityMixin):
         """
         Determines if the current task is a descriptor node.
 
-        A descriptor node is a conditional node that is executed based on the result
+        A descriptor node is a conditional node executed based on the result
         of its parent node's execution. In the pointy language, a value of 0 represents
         a failure descriptor, and a value of 1 represents a success descriptor.
 
@@ -168,8 +161,7 @@ class TaskBase(ObjectIdentityMixin):
     def get_root(self) -> TaskType:
         if self.parent_node is None:
             node = self
-            if typing.TYPE_CHECKING:
-                node = typing.cast(TaskType, node)
+            node = typing.cast(TaskType, node)
             return node
         return self.parent_node.get_root()
 
@@ -181,7 +173,7 @@ class TaskBase(ObjectIdentityMixin):
         nodes = list(self.bf_traversal(root))
         return len(nodes)
 
-    def get_descriptor(self, descriptor: int) -> typing.Optional["TaskProtocol"]:
+    def get_descriptor(self, descriptor: int) -> typing.Optional[TaskType]:
         target = self.condition_node.get_descriptor_config(descriptor)
         if target:
             return target.task
@@ -218,7 +210,7 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_first_task_in_parallel_execution_mode(
         self,
-    ) -> typing.Optional["TaskProtocol"]:
+    ) -> typing.Optional[TaskType]:
         if self.is_parallel_execution_node:
             if (
                 self.parent_node
@@ -232,5 +224,5 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_last_task_in_parallel_execution_mode(
         self,
-    ) -> typing.Optional["TaskProtocol"]:
+    ) -> typing.Optional[TaskType]:
         pass

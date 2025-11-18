@@ -1,6 +1,8 @@
-from .task import PipelineTask, PipelineTaskGrouping
 from event_pipeline.parser import pointy_parser
 from event_pipeline.parser.code_gen import ExecutableASTGenerator
+
+from .group import PipelineTaskGrouping
+from .task import PipelineTask
 
 
 def build_pipeline_flow_from_pointy_code(code: str):

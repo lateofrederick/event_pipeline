@@ -1,17 +1,13 @@
 import typing
 from functools import lru_cache
-from .base import TaskBase
+
 from event_pipeline.base import EventBase
 from event_pipeline.exceptions import EventDoesNotExist
-from event_pipeline.parser.protocols import (
-    GroupingStrategy,
-    TaskProtocol,
-    TaskGroupingProtocol,
-)
+
+from .base import TaskBase
 
 
 class PipelineTask(TaskBase):
-
     def __init__(self, event: typing.Union[typing.Type[EventBase], str]) -> None:
         super().__init__()
 
@@ -61,27 +57,3 @@ class PipelineTask(TaskBase):
             return f'\t"{node_id}" [label="{node_label}", shape=record, style="filled,rounded", fillcolor=lightblue]\n'
 
         return f'\t"{self.id}" [label="{self.get_event_name()}", shape=circle, style="filled,rounded", fillcolor=yellow]\n'
-
-
-class PipelineTaskGrouping(TaskBase):
-
-    def __init__(
-        self, chains: typing.List[typing.Union["TaskProtocol", "TaskGroupingProtocol"]]
-    ) -> None:
-        super().__init__()
-
-        self.chains = chains
-
-        self.strategy: GroupingStrategy = (
-            GroupingStrategy.MULTIPATH_CHAINS
-            if len(chains) > 1
-            else GroupingStrategy.SINGLE_CHAIN
-        )
-
-    def get_event_name(self) -> str:
-        return "TaskGrouping"
-
-    def get_dot_node_data(self) -> str:
-        from event_pipeline.translator.dot import draw_subgraph_from_task_state
-
-        return draw_subgraph_from_task_state(self)
