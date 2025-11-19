@@ -1,7 +1,9 @@
-import pytest
 from datetime import datetime
-from event_pipeline.result import EventResult, ResultSet, EntityContentType
-from event_pipeline.exceptions import MultiValueError
+
+import pytest
+
+from volnux.exceptions import MultiValueError
+from volnux.result import EntityContentType, EventResult, ResultSet
 
 
 def test_event_result_initialization():

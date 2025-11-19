@@ -1,21 +1,19 @@
-import pytest
 import unittest
-from unittest.mock import Mock
 from typing import List
+from unittest.mock import Mock
 
-from event_pipeline.result_evaluators import (
-    EventResult,
-    EventEvaluationResult,
-    ExecutionResultEvaluationStrategyBase,
-    AllTasksMustSucceedStrategy,
-    AnyTaskMustSucceedStrategy,
-    MajorityTasksMustSucceedStrategy,
-    MinimumSuccessThresholdStrategy,
-    PercentageSuccessThresholdStrategy,
-    NoFailuresAllowedStrategy,
-    ResultEvaluationStrategies,
-    EventEvaluator,
-)
+import pytest
+
+from volnux.result_evaluators import (AllTasksMustSucceedStrategy,
+                                      AnyTaskMustSucceedStrategy,
+                                      EventEvaluationResult, EventEvaluator,
+                                      EventResult,
+                                      ExecutionResultEvaluationStrategyBase,
+                                      MajorityTasksMustSucceedStrategy,
+                                      MinimumSuccessThresholdStrategy,
+                                      NoFailuresAllowedStrategy,
+                                      PercentageSuccessThresholdStrategy,
+                                      ResultEvaluationStrategies)
 
 
 class TestTaskResult(unittest.TestCase):

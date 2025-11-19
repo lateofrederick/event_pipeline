@@ -2,15 +2,16 @@
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 [project]
-name = "event_pipeline"
+name = "volnux"
 version = "2.0.0"
 requires-python = ">=3.8"
 authors = [
     {name = "nshaibu", email = "nafiushaibu1@gmail.com"},
-    {name = "lateofrederick", email = "lateofrederick@gmail.com"}
+    {name = "lateofrederick", email = "lateofrederick@gmail.com"},
+    {name = "darkwak", email = "darkwak@live.com"}
 ]
-description="Simple tool for writing events and pipelines in python"
-keywords=["pipeline","events","concurrency","data","pointy", "pointy-lang", "event-pipeline", "redis", "pointy", "ETL"]
+description="Workflow orchestration and automation management"
+keywords=["pipeline","events","concurrency","data","pointy", "pointy-lang", "event-pipeline", "redis", "pointy", "ETL", "volnux"]
 readme = "README.md"
 license = { file = "LICENSE" }
 dependencies = [
@@ -29,7 +30,8 @@ dependencies = [
     "grpcio-tools<=1.70.0",   # >=1.60.0
     "psycopg==3.2.5",
     "psycopg-binary==3.2.5",
-    "psycopg-pool==3.2.6"
+    "psycopg-pool==3.2.6",
+    "psutil==7.1.0",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -47,8 +49,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 [project.urls]
-"Issue Tracker"="https://github.com/nshaibu/event_pipeline/issues"
-CI="https://github.com/nshaibu/event_pipeline/actions"
+"Issue Tracker"="https://github.com/nshaibu/volnux/issues"
+CI="https://github.com/nshaibu/volnux/actions"
 [project.optional-dependencies]
 dev = [
     "coverage>=7.4.1",
@@ -75,30 +77,30 @@ metrics = [
 ]
 [tool.setuptools]
 packages = [
-    "event_pipeline",
-    "event_pipeline.translator",
-    "event_pipeline.protos",
-    "event_pipeline.parser",
-    "event_pipeline.executors",
-    "event_pipeline.manager",
-    "event_pipeline.mixins",
-    "event_pipeline.mixins.utils",
-    "event_pipeline.signal",
-    "event_pipeline.backends",
-    "event_pipeline.backends.stores",
-    "event_pipeline.backends.connectors",
-    "event_pipeline.telemetry"
+    "volnux",
+    "volnux.translator",
+    "volnux.protos",
+    "volnux.parser",
+    "volnux.executors",
+    "volnux.manager",
+    "volnux.mixins",
+    "volnux.mixins.utils",
+    "volnux.signal",
+    "volnux.backends",
+    "volnux.backends.stores",
+    "volnux.backends.connectors",
+    "volnux.telemetry"
 ]
 
 [tool.coverage.run]
 branch = true
 concurrency=["multiprocessing"]
-source=["event_pipeline"]
+source=["volnux"]
 omit = [
-    "event_pipeline/parser/*",
+    "volnux/parser/*",
     "tests/*",
-    "event_pipeline/scripts/*",
-    "event_piipeline/protos/*"
+    "volnux/scripts/*",
+    "volnux/protos/*"
 ]
 data_file=".coverage"
 
@@ -155,5 +157,5 @@ enabled = true
 
 [tool.mypy-some_untyped_legacy_module]
 # Relax checks for a specific file or module (e.g., old/temporary code)
-disallow_untyped_defs = false 
+disallow_untyped_defs = false
 ignore_errors = true

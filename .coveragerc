@@ -1,0 +1,16 @@
+[run]
+source = volnux/
+
+omit =
+    # Ignore the 'tests' directory
+    tests/*
+    # Ignore the 'migrations' directory, useful for Django
+    */migrations/*
+    # Ignore all __init__.py files
+    */__init__.py
+    # Ignore a specific file
+    volnux/arts.py
+    volnux/scripts/*
+    examples/*
+    # Ignore a virtual environment directory
+    venv/*

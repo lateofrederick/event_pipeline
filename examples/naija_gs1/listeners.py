@@ -1,6 +1,6 @@
-from event_pipeline.signal.signals import *
 from event_pipeline.decorators import listener
-from event_pipeline.execution.context import ExecutionContext
+from event_pipeline.signal.signals import *
+from event_pipeline.task import EventExecutionContext
 
 
 @listener(

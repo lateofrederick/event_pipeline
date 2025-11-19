@@ -1,7 +1,9 @@
-import pytest
 from unittest.mock import MagicMock
-from event_pipeline.exceptions import MultiValueError
-from event_pipeline.result import ResultSet, EntityContentType
+
+import pytest
+
+from volnux.exceptions import MultiValueError
+from volnux.result import EntityContentType, ResultSet
 
 
 class MockResult:

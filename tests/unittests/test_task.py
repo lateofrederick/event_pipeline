@@ -1,14 +1,14 @@
 import unittest
 from collections import deque
 from concurrent.futures import Executor
-from event_pipeline import EventBase, Pipeline
-from event_pipeline.task import PipelineTask, build_pipeline_flow_from_pointy_code
-from event_pipeline.parser.operator import PipeType
-from event_pipeline.execution.context import ExecutionContext
+
+from volnux import EventBase, Pipeline
+from volnux.execution.context import ExecutionContext
+from volnux.parser.operator import PipeType
+from volnux.task import PipelineTask, build_pipeline_flow_from_pointy_code
 
 
 class TestTask(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         class A(EventBase):

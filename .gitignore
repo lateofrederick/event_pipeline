@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+*.prof
 
 # Distribution / packaging
 .idea/
@@ -34,6 +35,8 @@ pipeline-graphs/
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+
+# PyCharm
 
 # Installer logs
 pip-log.txt
@@ -119,7 +122,7 @@ ipython_config.py
 .pdm.toml
 .pdm-python
 .pdm-build/
-
+AGENTS.md
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
