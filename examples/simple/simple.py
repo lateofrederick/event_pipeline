@@ -1,7 +1,7 @@
-from nexus.decorators import listener
-from nexus.fields import InputDataField
-from nexus.pipeline import BatchPipeline, Pipeline
-from nexus.signal.signals import pipeline_execution_start
+from volnux.decorators import listener
+from volnux.fields import InputDataField
+from volnux.pipeline import BatchPipeline, Pipeline
+from volnux.signal.signals import pipeline_execution_start
 
 
 class Simple(Pipeline):

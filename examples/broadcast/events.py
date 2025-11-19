@@ -1,6 +1,6 @@
-from nexus import EventBase
-from nexus.executors.grpc_executor import GRPCExecutor
-from nexus.executors.remote_executor import RemoteExecutor
+from volnux import EventBase
+from volnux.executors.grpc_executor import GRPCExecutor
+from volnux.executors.remote_executor import RemoteExecutor
 
 
 class GeneratorEvent(EventBase):
