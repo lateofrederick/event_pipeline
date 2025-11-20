@@ -1,6 +1,6 @@
-from event_pipeline import EventBase
-from event_pipeline.executors.remote_executor import RemoteExecutor
-from event_pipeline.executors.grpc_executor import GRPCExecutor
+from volnux import EventBase
+from volnux.executors.grpc_executor import GRPCExecutor
+from volnux.executors.remote_executor import RemoteExecutor
 
 
 class GeneratorEvent(EventBase):
@@ -17,28 +17,24 @@ class GeneratorEvent(EventBase):
 
 
 class ParallelAEvent(EventBase):
-
     def process(self, *args, **kwargs):
         previous_value = self.previous_result[0].content
         return True, previous_value
 
 
 class ParallelBEvent(EventBase):
-
     def process(self, *args, **kwargs):
         previous_value = self.previous_result[0].content
         return True, previous_value
 
 
 class ParallelCEvent(EventBase):
-
     def process(self, *args, **kwargs):
         previous_value = self.previous_result[0].content
         return True, previous_value
 
 
 class PrinterEvent(EventBase):
-
     def process(self, *args, **kwargs):
         for e in self.previous_result:
             print(f"{e.event_name} -> {e.content}")

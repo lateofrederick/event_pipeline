@@ -1,6 +1,6 @@
 import typing
 
-from event_pipeline import EventBase
+from volnux import EventBase
 
 
 class SaveToDB(EventBase):

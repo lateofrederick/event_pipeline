@@ -1,7 +1,7 @@
-from event_pipeline.pipeline import Pipeline, BatchPipeline
-from event_pipeline.fields import InputDataField
-from event_pipeline.signal.signals import pipeline_execution_start
-from event_pipeline.decorators import listener
+from volnux.decorators import listener
+from volnux.fields import InputDataField
+from volnux.pipeline import BatchPipeline, Pipeline
+from volnux.signal.signals import pipeline_execution_start
 
 
 class Simple(Pipeline):

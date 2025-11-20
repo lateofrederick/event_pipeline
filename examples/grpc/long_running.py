@@ -1,5 +1,5 @@
-from event_pipeline import EventBase
-from event_pipeline.executors.grpc_executor import GRPCExecutor
+from volnux import EventBase
+from volnux.executors.grpc_executor import GRPCExecutor
 
 
 class LongRunningTask(EventBase):

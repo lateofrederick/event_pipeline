@@ -2,8 +2,8 @@ import pytest
 import pickle
 from unittest.mock import MagicMock, patch
 from pydantic_mini import BaseModel
-from event_pipeline.backends.stores.redis_store import RedisStoreBackend
-from event_pipeline.exceptions import ObjectDoesNotExist, ObjectExistError
+from volnux.backends.stores.redis_store import RedisStoreBackend
+from volnux.exceptions import ObjectDoesNotExist, ObjectExistError
 
 
 class MockRecord(BaseModel):

@@ -1,21 +1,15 @@
-from unittest import TestCase
 import time
+from unittest import TestCase
+from unittest.mock import Mock, patch
 
 import pytest
-from event_pipeline.typing import ConfigState
-from event_pipeline.result import ResultSet, EventResult
-from event_pipeline.constants import EMPTY
-from event_pipeline.exceptions import StopProcessingError, SwitchTask
-from unittest.mock import Mock, patch
-from event_pipeline.base import _RetryMixin, RetryPolicy
-from event_pipeline.exceptions import MaxRetryError
-from event_pipeline.constants import MAX_BACKOFF, MAX_BACKOFF_FACTOR
 
-from event_pipeline.base import (
-    EventBase,
-    RetryPolicy,
-    ExecutorInitializerConfig,
-)
+from volnux.base import (EventBase, ExecutorInitializerConfig, RetryPolicy,
+                         _RetryMixin)
+from volnux.constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR
+from volnux.exceptions import MaxRetryError, StopProcessingError, SwitchTask
+from volnux.result import EventResult, ResultSet
+from volnux.typing import ConfigState
 
 
 class TestRetryPolicy(TestCase):
@@ -172,8 +166,8 @@ class TestGotoMethod(TestCase):
         self.event._call_args = {"arg1": "value1"}
         self.event._init_args = {"init_arg1": "init_value1"}
 
-    @patch("event_pipeline.base.EventBase.on_success")
-    @patch("event_pipeline.base.EventBase.on_failure")
+    @patch("volnux.base.EventBase.on_success")
+    @patch("volnux.base.EventBase.on_failure")
     def test_goto_with_success(self, mock_on_failure, mock_on_success):
         mock_on_success.return_value = EventResult(
             error=False,
@@ -202,8 +196,8 @@ class TestGotoMethod(TestCase):
         mock_on_success.assert_called_once_with({"key": "value"})
         mock_on_failure.assert_not_called()
 
-    @patch("event_pipeline.base.EventBase.on_success")
-    @patch("event_pipeline.base.EventBase.on_failure")
+    @patch("volnux.base.EventBase.on_success")
+    @patch("volnux.base.EventBase.on_failure")
     def test_goto_with_failure(self, mock_on_failure, mock_on_success):
         mock_on_failure.return_value = EventResult(
             error=True,
@@ -281,9 +275,9 @@ class TestEventBaseCallMethod(TestCase):
         self.event._call_args = {"arg1": "value1"}
         self.event._init_args = {"init_arg1": "init_value1"}
 
-    @patch("event_pipeline.base.EventBase.on_success")
-    @patch("event_pipeline.base.EventBase.on_failure")
-    @patch("event_pipeline.base.EventBase.can_bypass_current_event")
+    @patch("volnux.base.EventBase.on_success")
+    @patch("volnux.base.EventBase.on_failure")
+    @patch("volnux.base.EventBase.can_bypass_current_event")
     def test_call_with_bypass(self, mock_can_bypass, mock_on_failure, mock_on_success):
         self.event.run_bypass_event_checks = True
         mock_can_bypass.return_value = (True, {"bypass_data": "value"})
@@ -309,8 +303,8 @@ class TestEventBaseCallMethod(TestCase):
         mock_on_success.assert_called_once()
         mock_on_failure.assert_not_called()
 
-    @patch("event_pipeline.base.EventBase.on_success")
-    @patch("event_pipeline.base.EventBase.on_failure")
+    @patch("volnux.base.EventBase.on_success")
+    @patch("volnux.base.EventBase.on_failure")
     def test_call_with_successful_execution(self, mock_on_failure, mock_on_success):
         mock_on_success.return_value = EventResult(
             error=False,
@@ -327,9 +321,9 @@ class TestEventBaseCallMethod(TestCase):
         mock_on_success.assert_called_once_with({"key": "value"})
         mock_on_failure.assert_not_called()
 
-    @patch("event_pipeline.base.EventBase.on_success")
-    @patch("event_pipeline.base.EventBase.on_failure")
-    @patch("event_pipeline.base.EventBase.retry")
+    @patch("volnux.base.EventBase.on_success")
+    @patch("volnux.base.EventBase.on_failure")
+    @patch("volnux.base.EventBase.retry")
     def test_call_with_retry_failure(
         self, mock_retry, mock_on_failure, mock_on_success
     ):
@@ -350,9 +344,9 @@ class TestEventBaseCallMethod(TestCase):
         mock_on_failure.assert_called_once()
         mock_on_success.assert_not_called()
 
-    @patch("event_pipeline.base.EventBase.on_success")
-    @patch("event_pipeline.base.EventBase.on_failure")
-    @patch("event_pipeline.base.EventBase.retry")
+    @patch("volnux.base.EventBase.on_success")
+    @patch("volnux.base.EventBase.on_failure")
+    @patch("volnux.base.EventBase.retry")
     def test_call_with_general_exception(
         self, mock_retry, mock_on_failure, mock_on_success
     ):

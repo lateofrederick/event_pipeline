@@ -5,10 +5,10 @@ import unittest
 import pytest
 from treelib import Tree
 
-from event_pipeline import EventBase, Pipeline
-from event_pipeline.constants import PIPELINE_FIELDS, PIPELINE_STATE
-from event_pipeline.exceptions import EventDoesNotExist, EventDone
-from event_pipeline.fields import FileInputDataField, InputDataField
+from volnux import EventBase, Pipeline
+from volnux.constants import PIPELINE_FIELDS, PIPELINE_STATE
+from volnux.exceptions import EventDoesNotExist, EventDone
+from volnux.fields import FileInputDataField, InputDataField
 
 # fix deadlock in python3.11 for state management
 multiprocessing.set_start_method("spawn", force=True)

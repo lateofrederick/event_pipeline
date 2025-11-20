@@ -1,7 +1,7 @@
 import typing
 
-from event_pipeline import EventBase
-from event_pipeline.base import RetryPolicy
+from volnux import EventBase
+from volnux.base import RetryPolicy
 
 
 class Serialise(EventBase):

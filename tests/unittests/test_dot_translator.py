@@ -1,6 +1,8 @@
-import pytest
 from unittest.mock import MagicMock
-from event_pipeline.translator.dot import generate_dot_from_task_state, PipeType
+
+import pytest
+
+from volnux.translator.dot import PipeType, generate_dot_from_task_state
 
 
 def test_generate_dot_from_task_state_simple():

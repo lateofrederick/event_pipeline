@@ -1,6 +1,6 @@
-from event_pipeline.signal.signals import *
-from event_pipeline.decorators import listener
-from event_pipeline.execution.context import ExecutionContext
+from volnux.decorators import listener
+from volnux.signal.signals import *
+from volnux.execution.context import ExecutionContext
 
 
 @listener(

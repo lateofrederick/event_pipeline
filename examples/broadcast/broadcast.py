@@ -1,5 +1,5 @@
-from event_pipeline import Pipeline
-from event_pipeline.fields import InputDataField
+from volnux import Pipeline
+from volnux.fields import InputDataField
 
 
 class BroadcastPipeline(Pipeline):

@@ -1,15 +1,12 @@
 import inspect
 from unittest import mock
-from event_pipeline.parser.options import StopCondition
-from event_pipeline.utils import (
-    generate_unique_id,
-    get_function_call_args,
-    build_event_arguments_from_pipeline,
-    _extend_recursion_depth,
-    get_expected_args,
-    get_obj_state,
-    get_obj_klass_import_str,
-)
+
+from volnux.parser.options import StopCondition
+from volnux.utils import (_extend_recursion_depth,
+                          build_event_arguments_from_pipeline,
+                          generate_unique_id, get_expected_args,
+                          get_function_call_args, get_obj_klass_import_str,
+                          get_obj_state)
 
 
 def test_generate_unique_id():
@@ -63,8 +60,8 @@ def test_get_function_call_args():
 
 
 def test_build_event_arguments_from_pipeline():
-    from event_pipeline import EventBase, Pipeline
-    from event_pipeline.fields import InputDataField
+    from volnux import EventBase, Pipeline
+    from volnux.fields import InputDataField
 
     class A(EventBase):
         def process(self, name, school):

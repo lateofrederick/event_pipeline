@@ -1,7 +1,7 @@
-from event_pipeline.pipeline import Pipeline
-from event_pipeline.fields import InputDataField
-from event_pipeline.signal.signals import pipeline_execution_start
-from event_pipeline.decorators import listener
+from volnux.pipeline import Pipeline
+from volnux.fields import InputDataField
+from volnux.signal.signals import pipeline_execution_start
+from volnux.decorators import listener
 from .events import LoadData, ProcessData, GraphData
 
 
