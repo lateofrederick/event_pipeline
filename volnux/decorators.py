@@ -1,10 +1,16 @@
 import typing
 import warnings
+import functools
+import inspect
 from concurrent.futures import Executor
-from functools import wraps
 
 from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
 from .executors.default_executor import DefaultExecutor
+from .result_evaluators import (
+    ExecutionResultEvaluationStrategyBase,
+    ResultEvaluationStrategies,
+)
+from .utils import validate_event_process_method
 
 if typing.TYPE_CHECKING:
     from .signal import SoftSignal
@@ -20,58 +26,153 @@ def event(
     executor: typing.Optional[typing.Type[Executor]] = None,
     retry_policy: typing.Optional[RetryPolicy] = None,
     executor_config: typing.Optional[ExecutorInitializerConfig] = None,
+    result_evaluation_strategy: ExecutionResultEvaluationStrategyBase = ResultEvaluationStrategies.ALL_MUST_SUCCEED,
 ) -> typing.Callable[[F], typing.Type[EventBase]]:
     """
     Decorator to create an Event class from a function.
 
+    This decorator transforms a function into a fully-featured Event class
+    that inherits from EventBase, with configurable execution and retry behavior.
+
     Args:
-        executor: Executor class to use (defaults to DefaultExecutor)
-        retry_policy: Retry configuration
-        executor_config: Executor configuration
-        name: Custom name for the event (defaults to function name)
+        name: Custom name for the event. If not provided, uses the function name.
+        executor: Executor class to use for event execution. Defaults to DefaultExecutor.
+        retry_policy: Retry configuration for failed executions. Defaults to RetryPolicy().
+        executor_config: Executor initialization configuration. Defaults to ExecutorInitializerConfig().
+        result_evaluation_strategy: Strategy to use in evaluating the executing results of event. Defaults to ALL_MUST_SUCCEED
 
     Returns:
-        Event class that can be instantiated and executed
+        A decorator function that transforms the input function into an Event class.
 
     Example:
-        @event(retry_policy=RetryPolicy(max_attempts=5))
-        def process_data(data: dict) -> typing.Tuple[bool, typing.Any]:
-            # Process the data
-            return True, "processed"
+        @event(
+            name="DataProcessor",
+            retry_policy=RetryPolicy(max_attempts=5, backoff_factor=2.0)
+        )
+        def process_data(self, data: dict) -> Tuple[bool, Any]:
+            '''Process incoming data and return success status with result.'''
+            processed = {"result": data.get("value", 0) * 2}
+            return True, processed
     """
 
     def decorator(func: F) -> typing.Type[EventBase]:
         event_name = name or func.__name__
         executor_class = executor or DefaultExecutor
-        _retry_policy = retry_policy or RetryPolicy
+        _retry_policy = retry_policy or RetryPolicy()
         _executor_config = executor_config or ExecutorInitializerConfig()
+        _result_evaluation_strategy = (
+            result_evaluation_strategy or ResultEvaluationStrategies.ALL_MUST_SUCCEED
+        )
 
-        class GeneratedEvent(EventBase):
-            """Dynamically generated event class."""
+        # Validate that func has the correct signature
+        validate_event_process_method(func)
 
-            executor = executor_class
-            executor_config = _executor_config
-            retry_policy = _retry_policy  # type: ignore
+        def process(
+            self,
+            *args: typing.Any,
+            **kwargs: typing.Any,
+        ) -> typing.Tuple[bool, typing.Any]:
+            """
+            Execute the wrapped function with provided arguments.
 
-            def process(
-                self,
-                *args: typing.Tuple[typing.Any],
-                **kwargs: typing.Dict[str, typing.Any],
-            ) -> typing.Tuple[bool, typing.Any]:
-                return func(self, *args, **kwargs)
+            Returns:
+                Tuple of (success: bool, result: Any)
+            """
+            return func(self, *args, **kwargs)
 
-        # Set class name and module for better debugging
-        GeneratedEvent.__name__ = f"{event_name}"
-        GeneratedEvent.__qualname__ = f"{event_name}"
-        GeneratedEvent.__module__ = func.__module__
+        # Create the class dynamically with the desired name
+        generated_event = type(
+            event_name,
+            (EventBase,),  # Base classes
+            {
+                "__module__": func.__module__,
+                "__doc__": func.__doc__ or f"Dynamically generated event: {event_name}",
+                "__qualname__": event_name,
+                "executor": executor_class,
+                "executor_config": _executor_config,
+                "retry_policy": _retry_policy,
+                "result_evaluation_strategy": _result_evaluation_strategy,
+                "process": process,
+                "_original_func": func,
+                "_event_name": event_name,
+            },
+        )
 
-        # Preserve original function metadata
-        GeneratedEvent._original_func = func  # type: ignore
-        GeneratedEvent._event_name = event_name  # type: ignore
+        generated_event = typing.cast(typing.Type[EventBase], generated_event)
+        generated_event._original_func = func  # type: ignore[attr-defined]
+        generated_event._event_name = event_name  # type: ignore[attr-defined]
 
-        return GeneratedEvent
+        # Copy function annotations for better IDE support
+        if hasattr(func, "__annotations__"):
+            generated_event.process.__annotations__ = func.__annotations__.copy()
+
+        # Use functools.wraps equivalent for the class
+        functools.update_wrapper(
+            generated_event, func, assigned=("__module__", "__doc__"), updated=()
+        )
+
+        return generated_event
 
     return decorator
+
+
+# def event(
+#     name: typing.Optional[str] = None,
+#     executor: typing.Optional[typing.Type[Executor]] = None,
+#     retry_policy: typing.Optional[RetryPolicy] = None,
+#     executor_config: typing.Optional[ExecutorInitializerConfig] = None,
+# ) -> typing.Callable[[F], typing.Type[EventBase]]:
+#     """
+#     Decorator to create an Event class from a function.
+#
+#     Args:
+#         executor: Executor class to use (defaults to DefaultExecutor)
+#         retry_policy: Retry configuration
+#         executor_config: Executor configuration
+#         name: Custom name for the event (defaults to function name)
+#
+#     Returns:
+#         Event class that can be instantiated and executed
+#
+#     Example:
+#         @event(retry_policy=RetryPolicy(max_attempts=5))
+#         def process_data(data: dict) -> typing.Tuple[bool, typing.Any]:
+#             # Process the data
+#             return True, "processed"
+#     """
+#
+#     def decorator(func: F) -> typing.Type[EventBase]:
+#         event_name = name or func.__name__
+#         executor_class = executor or DefaultExecutor
+#         _retry_policy = retry_policy or RetryPolicy
+#         _executor_config = executor_config or ExecutorInitializerConfig()
+#
+#         class GeneratedEvent(EventBase):
+#             """Dynamically generated event class."""
+#
+#             executor = executor_class
+#             executor_config = _executor_config
+#             retry_policy = _retry_policy  # type: ignore
+#
+#             def process(
+#                 self,
+#                 *args: typing.Tuple[typing.Any],
+#                 **kwargs: typing.Dict[str, typing.Any],
+#             ) -> typing.Tuple[bool, typing.Any]:
+#                 return func(self, *args, **kwargs)
+#
+#         # Set class name and module for better debugging
+#         GeneratedEvent.__name__ = f"{event_name}"
+#         GeneratedEvent.__qualname__ = f"{event_name}"
+#         GeneratedEvent.__module__ = func.__module__
+#
+#         # Preserve original function metadata
+#         GeneratedEvent._original_func = func  # type: ignore
+#         GeneratedEvent._event_name = event_name  # type: ignore
+#
+#         return GeneratedEvent
+#
+#     return decorator
 
 
 def listener(

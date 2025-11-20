@@ -1,6 +1,17 @@
 from enum import Enum
-from typing import (Any, Callable, Collection, Deque, Generator, Iterator,
-                    List, Optional, TypeAlias, TypeVar, Union)
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Deque,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
 
 class ConfigState(Enum):

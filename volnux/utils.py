@@ -5,6 +5,7 @@ import sys
 import time
 import typing
 import uuid
+import warnings
 from io import BytesIO
 
 try:
@@ -69,6 +70,52 @@ def generate_unique_id(obj: object) -> str:
         pk = f"{obj.__class__.__name__}-{time.time()}-{str(uuid.uuid4())}"
         setattr(obj, "_id", pk)
     return pk
+
+
+def validate_event_process_method(
+    func: typing.Callable[[...], typing.Tuple[bool, typing.Any]],
+) -> None:
+    """
+    Validate event process method and functions
+
+    Args:
+        func: Function to validate
+
+    Raises:
+        TypeError: if wrong arguments specify
+    """
+    sig = signature(func)
+    type_hints = (
+        typing.get_type_hints(func) if hasattr(typing, "get_type_hints") else {}
+    )
+
+    # Check that first parameter is 'self'
+    params = list(sig.parameters.values())
+    if not params or params[0].name != "self":
+        raise TypeError(
+            f"Event function '{func.__name__}' must have 'self' as first parameter. "
+            f"Found: {[p.name for p in params]}"
+        )
+
+    # Validate return type if specified
+    return_annotation = type_hints.get("return")
+    if return_annotation is not None:
+        # Check if it's a Tuple[bool, Any] or similar
+        origin = typing.get_origin(return_annotation)
+        if origin is tuple:
+            args = typing.get_args(return_annotation)
+            if len(args) >= 2 and args[0] is not bool:
+                raise TypeError(
+                    f"Event function '{func.__name__}' must return Tuple[bool, Any]. "
+                    f"Found return type: {return_annotation}"
+                )
+        elif return_annotation != typing.Tuple[bool, typing.Any]:
+            warnings.warn(
+                f"Event function '{func.__name__}' should return Tuple[bool, Any]. "
+                f"Found: {return_annotation}",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 def build_event_arguments_from_pipeline(

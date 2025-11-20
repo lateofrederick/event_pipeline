@@ -13,12 +13,10 @@ from volnux.executors import BaseExecutor
 from volnux.import_utils import import_string
 from volnux.mixins import ObjectIdentityMixin
 from volnux.parser.operator import PipeType
-from volnux.parser.protocols import (TaskGroupingProtocol, TaskProtocol,
-                                     TaskType)
+from volnux.parser.protocols import TaskGroupingProtocol, TaskProtocol, TaskType
 from volnux.signal import SoftSignal
 from volnux.signal.signals import event_execution_end, event_execution_start
-from volnux.utils import (build_event_arguments_from_pipeline,
-                          get_function_call_args)
+from volnux.utils import build_event_arguments_from_pipeline, get_function_call_args
 
 if typing.TYPE_CHECKING:
     from volnux import Event
@@ -126,9 +124,9 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         if pointer_type == PipeType.PIPE_POINTER:
             # TODO: get result from context state
             if self.context.previous_context:
-                event_init_args[
-                    "previous_result"
-                ] = self.context.previous_context.state.results
+                event_init_args["previous_result"] = (
+                    self.context.previous_context.state.results
+                )
             else:
                 event_init_args["previous_result"] = EMPTY
 

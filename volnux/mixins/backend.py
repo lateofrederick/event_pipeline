@@ -8,10 +8,12 @@ from volnux.conf import ConfigLoader
 from volnux.exceptions import ObjectExistError, StopProcessingError
 from volnux.import_utils import import_string
 from volnux.mixins.identity import ObjectIdentityMixin
-from volnux.mixins.utils.connector import (BaseConnectorManager,
-                                           ConnectionMode,
-                                           ConnectorManagerFactory,
-                                           connector_action_register)
+from volnux.mixins.utils.connector import (
+    BaseConnectorManager,
+    ConnectionMode,
+    ConnectorManagerFactory,
+    connector_action_register,
+)
 from volnux.utils import get_obj_klass_import_str
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,6 @@ from volnux.utils import get_obj_klass_import_str, get_obj_state
 
 from .exceptions import MultiValueError
 from .import_utils import import_string
-from .mixins import ObjectIdentityMixin
 
 if typing.TYPE_CHECKING:
     from typing import TypeAlias  # noqa: F401

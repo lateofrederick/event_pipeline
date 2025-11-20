@@ -3,8 +3,11 @@ import typing
 from contextlib import contextmanager
 
 from volnux.result import EventResult, ResultSet
-from volnux.result_evaluators import (EventEvaluationResult, EventEvaluator,
-                                      ExecutionResultEvaluationStrategyBase)
+from volnux.result_evaluators import (
+    EventEvaluationResult,
+    EventEvaluator,
+    ExecutionResultEvaluationStrategyBase,
+)
 
 
 class ResultProcessor:

@@ -15,9 +15,11 @@ from volnux.parser.protocols import TaskType
 from volnux.pipeline import Pipeline
 from volnux.result import EventResult, ResultSet
 from volnux.result_evaluators import EventEvaluator, ResultEvaluationStrategies
-from volnux.signal.signals import (event_execution_aborted,
-                                   event_execution_cancelled,
-                                   event_execution_failed)
+from volnux.signal.signals import (
+    event_execution_aborted,
+    event_execution_cancelled,
+    event_execution_failed,
+)
 from volnux.task import PipelineTask, PipelineTaskGrouping
 
 from .state_manager import ExecutionState, ExecutionStatus, StateManager
@@ -104,8 +106,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     def __model_init__(
         self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
-        from .state_manager import (ExecutionState, ExecutionStatus,
-                                    StateManager)
+        from .state_manager import ExecutionState, ExecutionStatus, StateManager
 
         super().__init__(*args, **kwargs)  # type: ignore
 

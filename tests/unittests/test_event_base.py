@@ -36,11 +36,11 @@ class TestEventBase(unittest.TestCase):
                 return False, "False"
 
         @event()
-        def func_with_no_args():
+        def func_with_no_args(self):
             return True, "function_with_no_args"
 
         @event()
-        def func_with_args(name):
+        def func_with_args(self, name):
             return True, name
 
         cls.WithoutParamEvent = WithoutParamEvent
@@ -52,7 +52,7 @@ class TestEventBase(unittest.TestCase):
         cls.ProcessReturnFalseEvent = ProcessReturnFalseEvent
 
     def test_get_klasses(self):
-        klasses = list(EventBase.get_event_klasses())
+        klasses = list(EventBase.get_all_event_classes())
 
         self.assertTrue(len(klasses) > 0)
 

@@ -23,8 +23,13 @@ except ImportError:
 
 from .conf import ConfigLoader
 from .constants import EMPTY, PIPELINE_FIELDS, PIPELINE_STATE, UNKNOWN
-from .exceptions import (BadPipelineError, EventDoesNotExist, EventDone,
-                         ImproperlyConfigured, PipelineConfigurationError)
+from .exceptions import (
+    BadPipelineError,
+    EventDoesNotExist,
+    EventDone,
+    ImproperlyConfigured,
+    PipelineConfigurationError,
+)
 from .execution.state_manager import ExecutionStatus
 from .fields import InputDataField
 from .import_utils import import_string
@@ -32,12 +37,18 @@ from .mixins import ObjectIdentityMixin, ScheduleMixin
 from .parser.operator import PipeType
 from .parser.protocols import TaskType
 from .pipeline_wrapper import PipelineWrapper
-from .signal.signals import (SoftSignal, batch_pipeline_finished,
-                             batch_pipeline_started, pipeline_execution_end,
-                             pipeline_execution_start,
-                             pipeline_metrics_updated, pipeline_post_init,
-                             pipeline_pre_init, pipeline_shutdown,
-                             pipeline_stop)
+from .signal.signals import (
+    SoftSignal,
+    batch_pipeline_finished,
+    batch_pipeline_started,
+    pipeline_execution_end,
+    pipeline_execution_start,
+    pipeline_metrics_updated,
+    pipeline_post_init,
+    pipeline_pre_init,
+    pipeline_shutdown,
+    pipeline_stop,
+)
 from .task import build_pipeline_flow_from_pointy_code
 from .typing import BatchProcessType
 from .utils import validate_batch_processor

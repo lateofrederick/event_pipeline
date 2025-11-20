@@ -3,9 +3,19 @@ __all__ = ["pointy_parser"]
 from ply.yacc import YaccError, yacc
 
 from . import lexer
-from .ast import (AssignmentNode, BinOpNode, BlockNode, BlockType,
-                  ConditionalNode, DescriptorNode, ExpressionGroupingNode,
-                  LiteralNode, LiteralType, ProgramNode, TaskNode)
+from .ast import (
+    AssignmentNode,
+    BinOpNode,
+    BlockNode,
+    BlockType,
+    ConditionalNode,
+    DescriptorNode,
+    ExpressionGroupingNode,
+    LiteralNode,
+    LiteralType,
+    ProgramNode,
+    TaskNode,
+)
 
 pointy_lexer = lexer.PointyLexer()
 tokens = pointy_lexer.tokens

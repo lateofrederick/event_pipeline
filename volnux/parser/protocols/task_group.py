@@ -27,5 +27,4 @@ class TaskGroupingProtocol(TaskProtocolMixin, typing.Protocol):
     # strategy for this grouping
     strategy: GroupingStrategy
 
-    def __init__(self, chains: typing.List["TaskType"]) -> None:
-        ...
+    def __init__(self, chains: typing.List["TaskType"]) -> None: ...

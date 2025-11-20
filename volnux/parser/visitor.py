@@ -2,9 +2,17 @@ import typing
 from abc import ABC, abstractmethod
 
 if typing.TYPE_CHECKING:
-    from .ast import (AssignmentNode, BinOpNode, BlockNode, ConditionalNode,
-                      DescriptorNode, ExpressionGroupingNode, LiteralNode,
-                      ProgramNode, TaskNode)
+    from .ast import (
+        AssignmentNode,
+        BinOpNode,
+        BlockNode,
+        ConditionalNode,
+        DescriptorNode,
+        ExpressionGroupingNode,
+        LiteralNode,
+        ProgramNode,
+        TaskNode,
+    )
 
 
 class ASTVisitorInterface(ABC):

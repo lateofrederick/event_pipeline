@@ -11,20 +11,31 @@ from functools import lru_cache
 
 from volnux.parser.executor_config import ExecutorInitializerConfig
 from volnux.parser.options import Options, StopCondition
-from volnux.result_evaluators import (EventEvaluator,
-                                      ExecutionResultEvaluationStrategyBase,
-                                      ResultEvaluationStrategies)
-from volnux.signal.signals import (event_called, event_execution_retry,
-                                   event_execution_retry_done, event_init)
+from volnux.result_evaluators import (
+    EventEvaluator,
+    ExecutionResultEvaluationStrategyBase,
+    ResultEvaluationStrategies,
+)
+from volnux.signal.signals import (
+    event_called,
+    event_execution_retry,
+    event_execution_retry_done,
+    event_init,
+)
 
 from .conf import ConfigLoader
 from .constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
-from .exceptions import (ImproperlyConfigured, MaxRetryError,
-                         StopProcessingError, SwitchTask)
+from .exceptions import (
+    ImproperlyConfigured,
+    MaxRetryError,
+    StopProcessingError,
+    SwitchTask,
+)
 from .executors.default_executor import DefaultExecutor
 from .executors.remote_executor import RemoteExecutor
 from .result import EventResult, ResultSet
 from .utils import get_function_call_args
+from .registry import Registry
 
 __all__ = ["EventBase", "RetryPolicy", "ExecutorInitializerConfig"]
 
@@ -33,8 +44,40 @@ logger = logging.getLogger(__name__)
 
 conf = ConfigLoader.get_lazily_loaded_config()
 
+_event_registry = Registry()
+
+
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
+
+
+def get_event_registry():
+    """Singleton for event registry"""
+    return _event_registry
+
+
+class EventMeta(abc.ABCMeta):
+    """
+    Metaclass that registers event classes at creation time.
+
+    Similar to Django's ModelBase metaclass which calls apps.register_model().
+    """
+
+    def __new__(mcs, name, bases, namespace, **kwargs):
+        """
+        Called when a new class is created.
+        Automatically registers the class with the global registry.
+        """
+        cls = super().__new__(mcs, name, bases, namespace)
+
+        # Register it if it's not the base EventBase class
+        if name != "EventBase" and any(isinstance(base, EventMeta) for base in bases):
+            try:
+                _event_registry.register(cls)
+            except RuntimeError as e:
+                logger.warning(str(e))
+
+        return cls
 
 
 class RetryConfigDict(typing.TypedDict, total=False):
@@ -401,7 +444,7 @@ class StopConditionProcessor:
         }
 
 
-class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
+class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     """
     Abstract base class for event in the pipeline system.
 
@@ -439,14 +482,6 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         ResultEvaluationStrategies.ALL_MUST_SUCCEED
     )
 
-    # Class-level registry to cache discovered subclasses
-    _subclass_registry: typing.Dict[
-        typing.Type["EventBase"], typing.Set[typing.Type["EventBase"]]
-    ] = {}
-
-    # WeakSet to automatically clean up when classes are garbage collected
-    _all_event_classes: "weakref.WeakSet[typing.Type[EventBase]]" = weakref.WeakSet()
-
     def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
         """Automatically register subclasses when they're defined"""
         # prevent the overriding of __init__
@@ -455,19 +490,12 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
                 if attr_name in cls.__dict__:
                     raise PermissionError(
                         f"Model '{cls.__name__}' cannot override {attr_name!r}. "
-                        f"Consider registering a 'listener' function for the signal 'event_init' for all your custom initialization. "
+                        f"Consider registering a 'listener' function for the signal 'event_init' "
+                        f"for all your custom initialization. "
                         f"You can also do your initialisation within the 'process' method"
                     )
 
         super().__init_subclass__(**kwargs)
-
-        # Register this class in the global registry
-        EventBase._all_event_classes.add(cls)
-
-        # Clear the cache for affected parent classes
-        for parent in cls.__mro__[1:]:  # Skip self
-            if parent in EventBase._subclass_registry:
-                del EventBase._subclass_registry[parent]
 
     def __init__(
         self,
@@ -519,6 +547,9 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         self._call_args = EMPTY
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__} executor={self.executor.__name__}>"
 
     def get_init_args(self) -> typing.Dict[str, typing.Any]:
         return self._init_args
@@ -574,16 +605,20 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
 
     @classmethod
     def register_event(cls, event_klass: typing.Type["EventBase"]) -> None:
+        """
+        Register event
+
+        Args:
+            event_klass: Class to register
+
+        Raises:
+            RuntimeError: if event is already registered
+        """
         if not issubclass(event_klass, EventBase):
             raise ValueError(f"Event '{event_klass}' must be a subclass of EventBase")
 
         # Register this class in the global registry
-        EventBase._all_event_classes.add(cls)
-
-        # Clear the cache for affected parent classes
-        for parent in cls.__mro__[1:]:  # Skip self
-            if parent in EventBase._subclass_registry:
-                del EventBase._subclass_registry[parent]
+        _event_registry.register(event_klass)
 
     @classmethod
     def evaluator(cls) -> EventEvaluator:
@@ -731,44 +766,11 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
         return self.event_result(True, execution_result)
 
     @classmethod
-    @lru_cache(maxsize=128)
-    def get_event_klasses(cls) -> frozenset:
-        """
-        Optimized version using breadth-first search with caching.
-        Returns frozenset for immutability and better caching.
-        """
-        if cls in cls._subclass_registry:
-            return frozenset(cls._subclass_registry[cls])
-
-        # Use BFS instead of DFS to avoid deep recursion
-        discovered = set()
-        queue = deque([cls])
-        visited = set()
-
-        while queue:
-            current_class = queue.popleft()
-
-            if current_class in visited:
-                continue
-            visited.add(current_class)
-
-            # Get direct subclasses
-            for subclass in current_class.__subclasses__():
-                if subclass not in discovered:
-                    discovered.add(subclass)
-                    queue.append(subclass)
-
-        # Cache the result
-        cls._subclass_registry[cls] = discovered
-        return frozenset(discovered)
-
-    @classmethod
-    def get_all_event_classes(cls) -> typing.Set[typing.Type["EventBase"]]:
+    def get_all_event_classes(cls) -> typing.FrozenSet[typing.Type["EventBase"]]:
         """
         return all registered event classes.
-        This is O(1) but returns ALL event classes, not just subclasses.
         """
-        return set(cls._all_event_classes)
+        return _event_registry.list_all_classes()  # type:ignore
 
     @classmethod
     def get_direct_subclasses(cls) -> typing.Set[typing.Type["EventBase"]]:
@@ -778,9 +780,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, abc.ABC):
     @classmethod
     def clear_class_cache(cls) -> None:
         """Clear the cached subclass registry"""
-        cls._subclass_registry.clear()
-        # Clear LRU cache
-        cls.get_event_klasses.cache_clear()
+        _event_registry.clear()
 
     def __call__(
         self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
