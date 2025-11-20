@@ -34,7 +34,8 @@ def event(
         executor: Executor class to use for event execution. Defaults to DefaultExecutor.
         retry_policy: Retry configuration for failed executions. Defaults to RetryPolicy().
         executor_config: Executor initialization configuration. Defaults to ExecutorInitializerConfig().
-        result_evaluation_strategy: Strategy to use in evaluating the executing results of event. Defaults to ALL_MUST_SUCCEED
+        result_evaluation_strategy: Strategy to use in evaluating the executing results of event.
+         Defaults to ALL_MUST_SUCCEED
 
     Returns:
         A decorator function that transforms the input function into an Event class.
