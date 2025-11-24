@@ -1,0 +1,9 @@
+import typing
+from volnux import Event
+
+
+class {template_event}(Event):
+
+    def process(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Tuple[bool, typing.Any]:
+        # implement your event logic here
+        pass

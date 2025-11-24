@@ -113,7 +113,7 @@ def event(
 
 
 def listener(
-    signal: typing.Union["SoftSignal", typing.Iterable["SoftSignal"]],
+    signal: typing.Union["SoftSignal", typing.Sequence["SoftSignal"]],
     sender: typing.Type[typing.Any] = None,
 ) -> typing.Any:
     """

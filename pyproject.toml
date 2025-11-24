@@ -20,7 +20,7 @@ dependencies = [
     "treelib==1.7.0",
     "graphviz==0.20.3",
     "more-itertools>=8.10.0",
-    "pydantic_mini>=1.1.5",
+    "pydantic_mini>=1.1.6",
     "apscheduler<=3.11.0",
     "typing-extensions==4.12.2",
     "cloudpickle>=3.0.0",
@@ -81,6 +81,7 @@ packages = [
     "volnux.translator",
     "volnux.protos",
     "volnux.parser",
+    "volnux.parser.protocols",
     "volnux.executors",
     "volnux.manager",
     "volnux.mixins",
@@ -89,7 +90,12 @@ packages = [
     "volnux.backends",
     "volnux.backends.stores",
     "volnux.backends.connectors",
-    "volnux.telemetry"
+    "volnux.telemetry",
+    "volnux.execution",
+    "volnux.engine",
+    "volnux.task",
+    "volnux.flows",
+    "volnux.concurrency",
 ]
 
 [tool.coverage.run]
@@ -133,7 +139,7 @@ directory = "coverage_html_report"
 exclude = "protos"
 
 [tool.mypy]
-files = "event_pipeline/execution/*.py"
+files = "volnux/*.py"
 python_version = "3.8" # Set the minimum supported Python version
 # 3. Enable a high level of strictness (Highly Recommended)
 # This single option turns on many individual strictness checks.
@@ -159,3 +165,8 @@ enabled = true
 # Relax checks for a specific file or module (e.g., old/temporary code)
 disallow_untyped_defs = false
 ignore_errors = true
+
+[project.scripts]
+# Define the command name and its Python entry function
+# Format: command_name = "module.submodule:function_name"
+volnux = "volnux.cli:main.main"

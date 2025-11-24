@@ -1,0 +1,17 @@
+from volnux.engine.workflows import WorkflowConfig
+
+
+class {workflow_config_class_name}(WorkflowConfig):
+    name = {workflow_name}
+    version = {workflow_version}
+
+    def ready(self):
+        """
+        Override this to register infrastructure resources.
+
+        SHOULD DO:
+        - Register registries
+        - Set default configurations
+        - Initialize connections
+        - Load environment variables
+        """

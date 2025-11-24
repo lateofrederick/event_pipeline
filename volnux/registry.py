@@ -1,10 +1,9 @@
-import sys
 import logging
+import sys
 import threading
-import warnings
 import typing
+import warnings
 from collections import defaultdict
-
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +40,15 @@ class Registry:
         # Process ID for debugging
         self._process_id = sys.modules[__name__]
 
-    def register(self, klass: typing.Type[typing.Any]) -> None:
+    def register(
+        self, klass: typing.Type[typing.Any], name: typing.Optional[str] = None
+    ) -> None:
         """
-        Register an classes in the registry..
+        Register for classes.
 
         Args:
             klass: The event class to register
+            name: Optional name for the class
 
         Raises:
             RuntimeWarning: If event already registered (same module/name)
@@ -67,24 +69,28 @@ class Registry:
                     and klass.__module__ == existing.__module__
                 ):
                     warnings.warn(
-                        f"Event '{module_label}.{klass_name}' was already registered. "
+                        f"Class '{module_label}.{klass_name}' was already registered. "
                         f"Reloading events is not advised as it can lead to inconsistencies.",
                         RuntimeWarning,
                         stacklevel=2,
                     )
                 else:
                     raise RuntimeError(
-                        f"Conflicting '{klass_name}' events in module '{module_label}': "
+                        f"Conflicting '{klass_name}' class in module '{module_label}': "
                         f"{existing} and {klass}."
                     )
 
             module_classes[klass_name] = klass
-            self._name_registry[klass_name] = klass
+
+            if name is None:
+                self._name_registry[klass_name] = klass
+            else:
+                self._name_registry[name] = klass
 
             if not self.ready:
                 self.set_ready()
 
-            logger.info(f"Registered: {module_label}.{klass_name}")
+            logger.debug(f"Registered: {module_label}.{klass_name}")
 
     def get_class(self, module_label: str, klass_name: str) -> typing.Type[typing.Any]:
         """

@@ -3,41 +3,35 @@ import logging
 import multiprocessing as mp
 import time
 import typing
-import weakref
-from collections import deque
 from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass, field
-from functools import lru_cache
+from enum import Enum
 
 from volnux.parser.executor_config import ExecutorInitializerConfig
 from volnux.parser.options import Options, StopCondition
-from volnux.result_evaluators import (
-    EventEvaluator,
-    ExecutionResultEvaluationStrategyBase,
-    ResultEvaluationStrategies,
-)
-from volnux.signal.signals import (
-    event_called,
-    event_execution_retry,
-    event_execution_retry_done,
-    event_init,
-)
+from volnux.result_evaluators import (EventEvaluator,
+                                      ExecutionResultEvaluationStrategyBase,
+                                      ResultEvaluationStrategies)
+from volnux.signal.signals import (event_called, event_execution_retry,
+                                   event_execution_retry_done, event_init)
 
 from .conf import ConfigLoader
 from .constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
-from .exceptions import (
-    ImproperlyConfigured,
-    MaxRetryError,
-    StopProcessingError,
-    SwitchTask,
-)
+from .exceptions import (ImproperlyConfigured, MaxRetryError,
+                         StopProcessingError, SwitchTask)
 from .executors.default_executor import DefaultExecutor
 from .executors.remote_executor import RemoteExecutor
+from .registry import Registry
 from .result import EventResult, ResultSet
 from .utils import get_function_call_args
-from .registry import Registry
 
-__all__ = ["EventBase", "RetryPolicy", "ExecutorInitializerConfig"]
+__all__ = [
+    "EventBase",
+    "RetryPolicy",
+    "ExecutorInitializerConfig",
+    "EventType",
+    "get_event_registry",
+]
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +48,11 @@ if typing.TYPE_CHECKING:
 def get_event_registry():
     """Singleton for event registry"""
     return _event_registry
+
+
+class EventType(Enum):
+    SYSTEM = "system"
+    OTHER = "other"
 
 
 class EventMeta(abc.ABCMeta):
@@ -481,6 +480,8 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
     result_evaluation_strategy: ExecutionResultEvaluationStrategyBase = (
         ResultEvaluationStrategies.ALL_MUST_SUCCEED
     )
+
+    event_type: EventType = EventType.OTHER
 
     def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
         """Automatically register subclasses when they're defined"""
