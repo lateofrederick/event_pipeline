@@ -1,5 +1,7 @@
+import re
 import argparse
 import json
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -14,87 +16,139 @@ class StartProjectCommand(BaseCommand):
     category = CommandCategory.PROJECT_MANAGEMENT
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("name", help="Name of the project")
-        # parser.add_argument(
-        #     "--template", default="default", help="Project template to use"
-        # )
+        parser.add_argument(
+            "name",
+            help="Name of the project (alphanumeric, hyphens, and underscores only)",
+        )
+        parser.add_argument(
+            "--path",
+            default=None,
+            help="Custom path where the project should be created (default: current directory)",
+        )
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Overwrite existing project directory if it exists",
+        )
 
     def handle(self, *args, **options) -> Optional[str]:
         project_name = options["name"]
-        # template = options["template"]
+        custom_path = options.get("path")
+        force = options.get("force", False)
 
-        project_path = Path.cwd() / project_name
+        self._validate_project_name(project_name)
 
-        if project_path.exists():
-            raise CommandError(f"Project '{project_name}' already exists")
+        base_path = Path(custom_path) if custom_path else Path.cwd()
+        project_path = base_path / project_name
 
-        # Create project structure
+        self._check_project_existence(project_path, project_name, force)
+
         self.success(f"Creating Volnux project '{project_name}'...")
 
+        try:
+            self._create_directory_structure(project_path)
+            self._create_config_file(project_path, project_name)
+            self._create_readme(project_path, project_name)
+            self._create_gitignore(project_path)
+
+            self._display_success_message(project_name, project_path)
+
+        except Exception as e:
+            # Cleanup on failure
+            self._cleanup_on_failure(project_path)
+            raise CommandError(f"Failed to create project: {str(e)}")
+
+        return None
+
+    def _validate_project_name(self, name: str) -> None:
+        """Validate that the project name follows naming conventions."""
+        if not name:
+            raise CommandError("Project name cannot be empty")
+
+        # Check for valid characters (alphanumeric, hyphens, underscores)
+        if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+            raise CommandError(
+                f"Invalid project name '{name}'. "
+                "Use only letters, numbers, hyphens, and underscores."
+            )
+
+        # Check if name starts with a letter
+        if not name[0].isalpha():
+            raise CommandError("Project name must start with a letter")
+
+        # Check length
+        if len(name) > 100:
+            raise CommandError("Project name is too long (max 100 characters)")
+
+    def _check_project_existence(
+        self, project_path: Path, project_name: str, force: bool
+    ) -> None:
+        """Check if project already exists and handle accordingly."""
+        if project_path.exists():
+            if not force:
+                raise CommandError(
+                    f"Project '{project_name}' already exists at {project_path}. "
+                    "Use --force to overwrite."
+                )
+            else:
+                self.warning(f"Overwriting existing project at {project_path}")
+                shutil.rmtree(project_path)
+
+    def _create_directory_structure(self, project_path: Path) -> None:
+        """Create the project directory structure."""
         dirs = [
             project_path,
             project_path / "workflows",
-            project_path / "workflows",
             project_path / "commands",
-            project_path / "config",
             project_path / "logs",
+            project_path / "tests",
         ]
 
         for dir_path in dirs:
-            dir_path.mkdir(parents=True)
-            (dir_path / "__init__.py").touch()
+            dir_path.mkdir(parents=True, exist_ok=True)
+            if dir_path.name in ["workflows", "commands", "tests"]:
+                (dir_path / "__init__.py").touch()
 
-        # Create config file
-        config = {
-            "project_name": project_name,
-            "version": version,
-            "executor": "local",
-            "max_workers": 4,
-            "log_level": "INFO",
-        }
+    def _create_config_file(self, project_path: Path, project_name: str) -> None:
+        """Create the project configuration file."""
+        config_content = self._get_rendered_template(
+            "project_config.txt",
+            params={"version": version, "project_name": project_name},
+        )
 
-        with open(project_path / "config" / "volnux.json", "w") as f:
-            json.dump(config, f, indent=2)
+        config_file = project_path / "config.py"
+        config_file.write_text(config_content, encoding="utf-8")
 
-        # Create README
-        readme = f"""# {project_name}
+    def _create_readme(self, project_path: Path, project_name: str) -> None:
+        """Create the project README file."""
+        readme_content = self._get_rendered_template(
+            "readme_template.txt", params={"project_name": project_name}
+        )
 
-A Volnux workflow orchestration project.
+        readme_file = project_path / "README.md"
+        readme_file.write_text(readme_content, encoding="utf-8")
 
-## Getting Started
+    def _create_gitignore(self, project_path: Path) -> None:
+        """Create a .gitignore file for the project."""
+        gitignore_content = self._get_rendered_template("gitignore_template.txt", {})
+        gitignore_file = project_path / ".gitignore"
+        gitignore_file.write_text(gitignore_content, encoding="utf-8")
 
-```bash
-# List available workflows
-volnux list
+    def _cleanup_on_failure(self, project_path: Path) -> None:
+        """Remove partially created project directory on failure."""
+        if project_path.exists():
+            try:
+                shutil.rmtree(project_path)
+                self.warning(f"Cleaned up partially created project at {project_path}")
+            except Exception as cleanup_error:
+                self.error(f"Failed to cleanup: {cleanup_error}")
 
-# Run a workflow
-volnux run my_workflow
-
-# Create a new workflow
-volnux startworkflow my_workflow
-
-# Validate workflows
-volnux validate
-```
-
-## Project Structure
-
-```
-{project_name}/
-├── workflows/          # Workflow definitions
-├── config/            # Configuration files
-├── logs/              # Execution logs
-└── commands/          # Custom CLI commands
-```
-"""
-
-        with open(project_path / "README.md", "w") as f:
-            f.write(readme)
-
-        self.success(f"\nProject '{project_name}' created successfully!")
-        self.stdout.write(f"\nNext steps:")
-        self.stdout.write(f"  cd {project_name}")
-        self.stdout.write(f"  volnux list")
-        self.stdout.write(f"  volnux run sample_workflow\n")
-
-        return None
+    def _display_success_message(self, project_name: str, project_path: Path) -> None:
+        """Display success message and next steps."""
+        self.success(
+            f"\n✓ Project '{project_name}' created successfully at {project_path}!"
+        )
+        self.stdout.write("\nNext steps:")
+        self.stdout.write(f"  1. cd {project_name}")
+        self.stdout.write(f"  2. volnux list")
+        self.stdout.write(f"  3. volnux run sample_workflow\n")

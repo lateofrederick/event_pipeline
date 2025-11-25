@@ -9,16 +9,26 @@ from enum import Enum
 
 from volnux.parser.executor_config import ExecutorInitializerConfig
 from volnux.parser.options import Options, StopCondition
-from volnux.result_evaluators import (EventEvaluator,
-                                      ExecutionResultEvaluationStrategyBase,
-                                      ResultEvaluationStrategies)
-from volnux.signal.signals import (event_called, event_execution_retry,
-                                   event_execution_retry_done, event_init)
+from volnux.result_evaluators import (
+    EventEvaluator,
+    ExecutionResultEvaluationStrategyBase,
+    ResultEvaluationStrategies,
+)
+from volnux.signal.signals import (
+    event_called,
+    event_execution_retry,
+    event_execution_retry_done,
+    event_init,
+)
 
 from .conf import ConfigLoader
 from .constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
-from .exceptions import (ImproperlyConfigured, MaxRetryError,
-                         StopProcessingError, SwitchTask)
+from .exceptions import (
+    ImproperlyConfigured,
+    MaxRetryError,
+    StopProcessingError,
+    SwitchTask,
+)
 from .executors.default_executor import DefaultExecutor
 from .executors.remote_executor import RemoteExecutor
 from .registry import Registry

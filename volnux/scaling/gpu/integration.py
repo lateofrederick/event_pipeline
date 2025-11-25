@@ -1,7 +1,6 @@
 import os
 import time
-from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor,
-                                as_completed)
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from enum import Enum
 from typing import Any, Callable, List, Optional
 

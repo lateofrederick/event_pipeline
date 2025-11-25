@@ -2,6 +2,8 @@ from volnux import Pipeline
 from volnux.fields import InputDataField
 
 
+# Define your pipeline input fields
+
 class {template_pipeline_name}(Pipeline):
     # your pipeline input fields
     pass

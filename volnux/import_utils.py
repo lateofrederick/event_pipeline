@@ -1,6 +1,9 @@
 import sys
 import typing
+import types
+import importlib.util
 from importlib import import_module
+from pathlib import Path
 
 
 def cached_import(module_path: str, class_name: str) -> typing.Type[typing.Any]:
@@ -46,3 +49,33 @@ def import_string(dotted_path: str) -> typing.Type[typing.Any]:
             'Module "%s" does not define a "%s" attribute/class'
             % (module_path, class_name)
         ) from err
+
+
+def load_module_from_path(module_name: str, file_path: Path) -> types.ModuleType:
+    """
+    Dynamically load a Python module from a file path.
+
+    Args:
+        module_name: Name to assign to the loaded module
+        file_path: Path to the Python file
+
+    Returns:
+        The loaded module object
+    Raises:
+        ImportError: If the module cannot be imported
+        AttributeError: If the module cannot be imported
+        Exception: If the module cannot be imported
+    """
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load module from {file_path}")
+
+    module = importlib.util.module_from_spec(spec)
+
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        raise
+
+    return module

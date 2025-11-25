@@ -124,7 +124,7 @@ class WorkflowRegistry:
         """Get a workflow configuration by name."""
         return self._workflows.get(name)
 
-    def get_workflow_configs(self) -> List[WorkflowConfig]:
+    def get_workflow_configs(self) -> List["WorkflowConfig"]:
         """Get all registered workflow configurations."""
         return list(self._workflows.values())
 

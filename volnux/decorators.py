@@ -4,8 +4,10 @@ from concurrent.futures import Executor
 
 from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
 from .executors.default_executor import DefaultExecutor
-from .result_evaluators import (ExecutionResultEvaluationStrategyBase,
-                                ResultEvaluationStrategies)
+from .result_evaluators import (
+    ExecutionResultEvaluationStrategyBase,
+    ResultEvaluationStrategies,
+)
 from .utils import validate_event_process_method
 
 if typing.TYPE_CHECKING:

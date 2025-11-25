@@ -1,8 +1,13 @@
 import argparse
 from typing import Optional
 
-from ..base import (BaseCommand, CommandCategory, CommandError,
-                    get_command_registry, get_commands_by_category)
+from ..base import (
+    BaseCommand,
+    CommandCategory,
+    CommandError,
+    get_command_registry,
+    get_commands_by_category,
+)
 
 
 class HelpCommand(BaseCommand):
