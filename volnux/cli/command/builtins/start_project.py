@@ -148,7 +148,7 @@ class StartProjectCommand(BaseCommand):
         self.success(
             f"\n✓ Project '{project_name}' created successfully at {project_path}!"
         )
-        self.stdout.write("\nNext steps:")
-        self.stdout.write(f"  1. cd {project_name}")
-        self.stdout.write(f"  2. volnux list")
+        self.stdout.write("\nNext steps:\n")
+        self.stdout.write(f"  1. cd {project_name}\n")
+        self.stdout.write(f"  2. volnux list\n")
         self.stdout.write(f"  3. volnux run sample_workflow\n")

@@ -97,10 +97,25 @@ class StartWorkflowCommand(BaseCommand):
                 shutil.rmtree(workflow_dir)
             raise CommandError(f"Failed to create workflow: {str(e)}")
 
+        try:
+            self._register_workflow_in_config(project_dir, workflow_name)
+        except Exception as e:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Warning: Could not automatically register workflow in config.py: {str(e)}"
+                )
+            )
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Please manually add 'workflows.{workflow_name}.workflow.{get_workflow_config_name(workflow_name)}' "
+                    f"to WORKFLOWS list in config.py"
+                )
+            )
+
         # Success message
         self.success(f"Workflow '{workflow_name}' created successfully!")
-        self.stdout.write(f"\nWorkflow structure:")
-        self.stdout.write(f"  workflows/{workflow_name}/")
+        self.stdout.write(f"\nWorkflow structure:\n")
+        self.stdout.write(f"  workflows/{workflow_name}/\n")
         self.stdout.write(f"    ├── __init__.py\n")
         self.stdout.write(f"    ├── workflow.py\n")
         self.stdout.write(f"    ├── pipeline.py\n")
@@ -108,7 +123,7 @@ class StartWorkflowCommand(BaseCommand):
             self.stdout.write(f"    ├── batch_pipeline.py\n")
         self.stdout.write(f"    ├── events.py\n")
         self.stdout.write(f"    └── {get_workflow_class_name(workflow_name).lower()}.pty\n")
-        self.stdout.write(f"\nNext steps:")
+        self.stdout.write(f"\nNext steps:\n")
         self.stdout.write(f"  1. Edit workflow configuration: workflows/{workflow_name}/workflow.py\n")
         self.stdout.write(f"  2. Define pipeline logic: workflows/{workflow_name}/pipeline.py\n")
         self.stdout.write(f"  3. Configure events: workflows/{workflow_name}/events.py\n")
@@ -254,3 +269,69 @@ class StartWorkflowCommand(BaseCommand):
         __all__ = ["{pipeline_class_name}"]
         '''
         init_file.write_text(init_content, encoding="utf-8")
+
+    def _register_workflow_in_config(
+            self, project_dir: Path, workflow_name: str
+    ) -> None:
+        """Register the workflow in config.py WORKFLOWS list."""
+        config_file = project_dir / "config.py"
+
+        if not config_file.exists():
+            raise FileNotFoundError(f"config.py not found at {config_file}")
+
+        # Read the config file
+        config_content = config_file.read_text(encoding="utf-8")
+
+        # Generate the dotted path notation
+        workflow_config_class = get_workflow_config_name(workflow_name)
+        workflow_path = f"workflows.{workflow_name}.workflow.{workflow_config_class}"
+
+        # Check if workflow is already registered
+        if workflow_path in config_content:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Workflow '{workflow_path}' already registered in config.py"
+                )
+            )
+            return
+
+        # Find the WORKFLOWS list and add the new workflow
+        import re
+
+        # Pattern to match WORKFLOWS = [...] with various formatting
+        workflows_pattern = r'(WORKFLOWS\s*=\s*\[)(.*?)(\])'
+
+        match = re.search(workflows_pattern, config_content, re.DOTALL)
+
+        if not match:
+            raise ValueError("WORKFLOWS list not found in config.py")
+
+        before, workflows_content, after = match.groups()
+
+        # Check if the list is empty or has items
+        workflows_content = workflows_content.strip()
+
+        if workflows_content:
+            # List has items, add comma and new workflow
+            # Remove trailing comma if it exists
+            workflows_content = workflows_content.rstrip(',').strip()
+            new_workflows_content = f'{workflows_content},\n    "{workflow_path}",\n'
+        else:
+            # Empty list, just add the workflow
+            new_workflows_content = f'\n    "{workflow_path}",\n'
+
+        # Reconstruct the file content
+        new_config_content = config_content.replace(
+            match.group(0),
+            f'{before}{new_workflows_content}{after}'
+        )
+
+        # Write back to config.py
+        config_file.write_text(new_config_content, encoding="utf-8")
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"✓ Registered '{workflow_path}' in config.py"
+            )
+        )
+

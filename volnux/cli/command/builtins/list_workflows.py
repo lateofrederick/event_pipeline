@@ -1,6 +1,11 @@
+import typing
+import logging
+import importlib
 from pathlib import Path
 from typing import Optional
 
+from volnux.import_utils import load_module_from_path
+from volnux.engine.workflows import WorkflowConfig
 from ..base import BaseCommand, CommandCategory, CommandError
 
 
@@ -10,25 +15,38 @@ class ListWorkflowsCommand(BaseCommand):
     category = CommandCategory.WORKFLOW_MANAGEMENT
 
     def handle(self, *args, **options) -> Optional[str]:
-        workflows_dir = Path.cwd() / "workflows"
-        if not workflows_dir.exists():
-            raise CommandError(
-                "Not in a Volnux project. Run 'volnux startproject' first."
-            )
+        config_module = self.load_project_config()
+        if not config_module:
+            raise CommandError("You are not in any active project. Run 'volnux startproject' first.")
 
         self.stdout.write(self.style.BOLD("\nAvailable Workflows:\n"))
 
-        workflows = list(workflows_dir.glob("*.py"))
-        workflows = [w for w in workflows if not w.name.startswith("_")]
+        project_name = getattr(config_module, "PROJECT_NAME", None)
+        if not project_name:
+            raise CommandError("You are not in any project. Run 'volnux startproject' first.")
 
-        if not workflows:
-            self.warning("No workflows found.")
+        project_dir: Path = getattr(config_module, "PROJECT_DIR", None)
+        if not project_dir:
+            raise CommandError("You are not in any project. Run 'volnux startproject' first.")
+
+        registered_workflows = getattr(config_module, "WORKFLOWS", [])
+        if not registered_workflows:
+            self.warning("No registered workflows found.")
             return None
 
-        for workflow_file in sorted(workflows):
-            workflow_name = workflow_file.stem
-            self.stdout.write(f"  • {workflow_name}")
+        num_workflows = 0
 
-        self.stdout.write(f"\nTotal: {len(workflows)} workflow(s)\n")
+        package = importlib.import_module(project_dir.name)
+
+        for workflow_dotted_path in registered_workflows:
+            try:
+                workflow = typing.cast(typing.Type[WorkflowConfig], importlib.import_module(workflow_dotted_path, package.__name__))
+                num_workflows += 1
+                self.stdout.write(f"  • {workflow.name}")
+            except ModuleNotFoundError as e:
+                logging.error(e, exc_info=True)
+                self.warning(f"{workflow_dotted_path} is not a valid registered workflow.")
+
+        self.stdout.write(f"\nTotal: {num_workflows} workflow(s)\n")
 
         return None
