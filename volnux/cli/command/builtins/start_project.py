@@ -47,6 +47,14 @@ class StartProjectCommand(BaseCommand):
 
         try:
             self._create_directory_structure(project_path)
+
+            workflow_initializer_file = project_path / "init.py"
+            workflow_initializer_file.touch(exist_ok=True)
+            initialiser_content = self._get_rendered_template(
+                "workflow_initialiser_template.txt", params={}
+            )
+            workflow_initializer_file.write_text(initialiser_content, encoding="utf-8")
+
             self._create_config_file(project_path, project_name)
             self._create_readme(project_path, project_name)
             self._create_gitignore(project_path)

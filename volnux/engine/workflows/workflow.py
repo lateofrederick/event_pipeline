@@ -18,11 +18,15 @@ import importlib
 import logging
 import typing
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from .registry import RegistrySource, WorkflowRegistry, WorkflowSource
+from .registry import (
+    RegistrySource,
+    WorkflowRegistry,
+    WorkflowSource,
+    get_workflow_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +84,9 @@ class WorkflowConfig(ABC):
             pass
 
         # Registry storage
-        self._registries: Dict[str, "WorkflowRegistry"] = {}
-        self._registry_sources: Dict[str, "WorkflowSource"] = {}
+        self._registry = None
+        # self._registries: Dict[str, "WorkflowRegistry"] = {}
+        # self._registry_sources: Dict[str, "WorkflowSource"] = {}
         self._settings: Dict[str, Any] = {}
 
         # User code modules (loaded but not executed by config)
@@ -93,18 +98,7 @@ class WorkflowConfig(ABC):
         self._discover_user_code()
 
         # Call ready hook for infrastructure setup
-        self.load_local()
         self.ready()
-
-    def load_local(self):
-        self.register_registry_source(
-            WorkflowSource(
-                name=self.name,
-                location=self.path,  # type: ignore
-                source_type=RegistrySource.LOCAL,
-                version=self.version,
-            )
-        )
 
     @abstractmethod
     def ready(self):
@@ -119,117 +113,14 @@ class WorkflowConfig(ABC):
         """
         pass
 
-    def _init_registries(self):
-        """Initialize registries."""
-        for source in self._registry_sources.values():
-            registry = WorkflowRegistry()
-            registry._workflow_source = source
-            self._registries[source.name] = registry
+    def get_registry(self):
+        if self._registry is None:
+            self._registry = get_workflow_registry()
+        return self._registry
 
-    def _get_unready_registries(self) -> Set[WorkflowRegistry]:
-        """Get unready registries."""
-        registries = set()
-        for registry in self._registries.values():
-            if not registry.is_ready():
-                registries.add(registry)
-
-        return registries
-
-    def pull_workflows_from_registry_source(self) -> bool:
-        """
-        Pull workflows from all registry sources concurrently.
-
-        Returns:
-            bool: True if all workflows were loaded successfully, False otherwise.
-
-        Raises:
-            ValueError: If no registries were initialized.
-        """
-        self._init_registries()
-
-        if not self._registries:
-            raise ValueError("No registries were initialized.")
-
-        unready_registries = self._get_unready_registries()
-        if not unready_registries:
-            logger.info("All registries are already ready. No workflows to pull.")
-            return True
-
-        logger.info(f"Loading workflows from {len(unready_registries)} registries...")
-
-        success_count = 0
-        failed_registries: List[tuple] = []
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_registry = {
-                executor.submit(self._load_registry_workflows, reg): reg
-                for reg in unready_registries
-            }
-
-            # Process completed tasks as they finish
-            for future in as_completed(future_to_registry):
-                registry = future_to_registry[future]
-                try:
-                    future.result(timeout=self.default_timeout)
-                    success_count += 1
-                    logger.debug(
-                        f"Successfully loaded workflows from registry: {registry}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to load workflows from registry {registry}: {e}",
-                        exc_info=True,
-                    )
-                    failed_registries.append((registry, str(e)))
-
-        # Log summary
-        total = len(unready_registries)
-        logger.info(
-            f"Workflow loading complete: {success_count}/{total} succeeded, "
-            f"{len(failed_registries)} failed"
-        )
-
-        if failed_registries:
-            logger.warning(
-                f"Failed registries: {[str(reg) for reg, _ in failed_registries]}"
-            )
-
-        return len(failed_registries) == 0
-
-    def _load_registry_workflows(self, registry: "WorkflowRegistry") -> None:
-        """
-        Load workflows from a single registry.
-
-        Args:
-            registry: The workflow registry to load from.
-
-        Raises:
-            Exception: If loading fails for any reason.
-        """
-        registry.load_workflows_from_source()
-
-    def register_registry_source(self, source: "WorkflowSource"):
-        """Register a registry (infrastructure resource)."""
-        if source.name in self._registry_sources:
-            raise ValueError(f"Registry '{source.name}' already registered")
-        self._registry_sources[source.name] = source
-
-    def get_registry(self, name: str) -> Optional["WorkflowRegistry"]:
-        """Get a registry by name."""
-        return self._registries.get(name)
-
-    def get_registries(
-        self, registry_source: Optional[RegistrySource] = None
-    ) -> List["WorkflowRegistry"]:
-        """Get all registries, optionally filtered by type."""
-        registries = list(self._registries.values())
-        if registry_source:
-            registries = [
-                r
-                for r in registries
-                if r._workflow_source.source_type == registry_source
-            ]
-        return sorted(registries, key=lambda r: r.priority)
+    def register_registry_source(self, source: "WorkflowSource") -> None:
+        """Register a registry source (infrastructure resource)."""
+        self.get_registry().add_workflow_source(source)
 
     def set_setting(self, key: str, value: Any):
         """Set a configuration setting."""
@@ -285,15 +176,15 @@ class WorkflowConfig(ABC):
         issues = []
 
         # Check registries
-        if not self._registries:
-            issues.append(f"Workflow '{self.name}' has no registries registered")
-
-        for name, registry in self._registry_sources.items():
-            if not registry.location:
-                issues.append(f"Registry '{name}' has no location configured")
-
-            if registry.credentials and not registry.credentials.is_valid():
-                issues.append(f"Registry '{name}' has invalid credentials")
+        # if not self.get_registry().get_workflow_config(self.name):
+        #     issues.append(f"Workflow '{self.name}' has no registries registered")
+        #
+        # for name, registry in self.get_registry().get_workflow_source(self.name):
+        #     if not registry.location:
+        #         issues.append(f"Registry '{name}' has no location configured")
+        #
+        #     if registry.credentials and not registry.credentials.is_valid():
+        #         issues.append(f"Registry '{name}' has invalid credentials")
 
         # Check user code exists (but don't validate its logic)
         if not self._event_module:

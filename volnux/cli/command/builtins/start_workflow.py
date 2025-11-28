@@ -22,8 +22,7 @@ class StartWorkflowCommand(BaseCommand):
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Add command-line arguments for workflow creation."""
         parser.add_argument(
-            "name",
-            help="Name of the workflow (e.g., 'data_processing')"
+            "name", help="Name of the workflow (e.g., 'data_processing')"
         )
         parser.add_argument(
             "--mode",
@@ -122,12 +121,22 @@ class StartWorkflowCommand(BaseCommand):
         if should_create_batch_pipeline:
             self.stdout.write(f"    ├── batch_pipeline.py\n")
         self.stdout.write(f"    ├── events.py\n")
-        self.stdout.write(f"    └── {get_workflow_class_name(workflow_name).lower()}.pty\n")
+        self.stdout.write(
+            f"    └── {get_workflow_class_name(workflow_name).lower()}.pty\n"
+        )
         self.stdout.write(f"\nNext steps:\n")
-        self.stdout.write(f"  1. Edit workflow configuration: workflows/{workflow_name}/workflow.py\n")
-        self.stdout.write(f"  2. Define pipeline logic: workflows/{workflow_name}/pipeline.py\n")
-        self.stdout.write(f"  3. Configure events: workflows/{workflow_name}/events.py\n")
-        self.stdout.write(f"  4. Define structure of your workflow: workflows/{workflow_name}/{get_workflow_class_name(workflow_name).lower()}.pty\n")
+        self.stdout.write(
+            f"  1. Edit workflow configuration: workflows/{workflow_name}/workflow.py\n"
+        )
+        self.stdout.write(
+            f"  2. Define pipeline logic: workflows/{workflow_name}/pipeline.py\n"
+        )
+        self.stdout.write(
+            f"  3. Configure events: workflows/{workflow_name}/events.py\n"
+        )
+        self.stdout.write(
+            f"  4. Define structure of your workflow: workflows/{workflow_name}/{get_workflow_class_name(workflow_name).lower()}.pty\n"
+        )
 
         return None
 
@@ -143,23 +152,18 @@ class StartWorkflowCommand(BaseCommand):
             )
 
         if name[0].isdigit():
-            raise CommandError(
-                f"Workflow name '{name}' cannot start with a digit"
-            )
+            raise CommandError(f"Workflow name '{name}' cannot start with a digit")
 
         # Check for reserved Python keywords
         if keyword.iskeyword(name):
-            raise CommandError(
-                f"Workflow name '{name}' is a reserved Python keyword"
-            )
+            raise CommandError(f"Workflow name '{name}' is a reserved Python keyword")
 
     def _get_project_directory(self) -> Path:
         """Load project configuration and return project directory."""
         project_config = self.load_project_config()
         if not project_config:
             raise CommandError(
-                "Project configuration not found. "
-                "Run 'volnux startproject' first."
+                "Project configuration not found. " "Run 'volnux startproject' first."
             )
 
         project_dir = getattr(project_config, "PROJECT_DIR", None)
@@ -179,7 +183,7 @@ class StartWorkflowCommand(BaseCommand):
         return project_dir
 
     def _create_workflow_config(
-            self, workflow_dir: Path, workflow_name: str, mode: str
+        self, workflow_dir: Path, workflow_name: str, mode: str
     ) -> None:
         """Create workflow configuration file."""
         workflow_config_file = workflow_dir / "workflow.py"
@@ -208,7 +212,7 @@ class StartWorkflowCommand(BaseCommand):
         self.stdout.write(f"  Created: pipeline.py")
 
     def _create_batch_pipeline_file(
-            self, workflow_dir: Path, workflow_name: str
+        self, workflow_dir: Path, workflow_name: str
     ) -> None:
         """Create batch pipeline file."""
         batch_pipeline_file = workflow_dir / "batch_pipeline.py"
@@ -218,7 +222,7 @@ class StartWorkflowCommand(BaseCommand):
             params={
                 "template_pipeline_name": get_workflow_class_name(workflow_name),
                 "template_batch_pipeline": (
-                        get_workflow_class_name(workflow_name) + "Batch"
+                    get_workflow_class_name(workflow_name) + "Batch"
                 ),
             },
         )
@@ -240,38 +244,37 @@ class StartWorkflowCommand(BaseCommand):
         self.stdout.write(f"  Created: events.py ({event_template}-based)")
 
     def _create_pointy_script(
-            self, workflow_dir: Path, workflow_name: str, mode: str
+        self, workflow_dir: Path, workflow_name: str, mode: str
     ) -> None:
         """Create pointy script file."""
         pointy_script_file = (
-                workflow_dir / f"{get_workflow_class_name(workflow_name).lower()}.pty"
+            workflow_dir / f"{get_workflow_class_name(workflow_name).lower()}.pty"
         )
 
         pointy_script_content = self._get_rendered_template(
-            "pointy_template.txt",
-            params={"mode": mode}
+            "pointy_template.txt", params={"mode": mode}
         )
         pointy_script_file.write_text(pointy_script_content, encoding="utf-8")
         self.stdout.write(
             f"  Created: {get_workflow_class_name(workflow_name).lower()}.py"
         )
 
-    def _create_init_file(self, workflow_dir: Path, workflow_name:str) -> None:
+    def _create_init_file(self, workflow_dir: Path, workflow_name: str) -> None:
         """Create __init__.py to make the workflow directory a Python package."""
         init_file = workflow_dir / "__init__.py"
         pipeline_class_name = get_workflow_class_name(workflow_name)
 
         init_content = f'''"""Workflow package initialization."""
-        # This was autogenerated by volnux {version}
+# This was autogenerated by volnux {version}
 
-        from .pipeline import {pipeline_class_name}
+from .pipeline import {pipeline_class_name}
 
-        __all__ = ["{pipeline_class_name}"]
+__all__ = ["{pipeline_class_name}"]
         '''
         init_file.write_text(init_content, encoding="utf-8")
 
     def _register_workflow_in_config(
-            self, project_dir: Path, workflow_name: str
+        self, project_dir: Path, workflow_name: str
     ) -> None:
         """Register the workflow in config.py WORKFLOWS list."""
         config_file = project_dir / "config.py"
@@ -299,7 +302,7 @@ class StartWorkflowCommand(BaseCommand):
         import re
 
         # Pattern to match WORKFLOWS = [...] with various formatting
-        workflows_pattern = r'(WORKFLOWS\s*=\s*\[)(.*?)(\])'
+        workflows_pattern = r"(WORKFLOWS\s*=\s*\[)(.*?)(\])"
 
         match = re.search(workflows_pattern, config_content, re.DOTALL)
 
@@ -314,7 +317,7 @@ class StartWorkflowCommand(BaseCommand):
         if workflows_content:
             # List has items, add comma and new workflow
             # Remove trailing comma if it exists
-            workflows_content = workflows_content.rstrip(',').strip()
+            workflows_content = workflows_content.rstrip(",").strip()
             new_workflows_content = f'{workflows_content},\n    "{workflow_path}",\n'
         else:
             # Empty list, just add the workflow
@@ -322,16 +325,12 @@ class StartWorkflowCommand(BaseCommand):
 
         # Reconstruct the file content
         new_config_content = config_content.replace(
-            match.group(0),
-            f'{before}{new_workflows_content}{after}'
+            match.group(0), f"{before}{new_workflows_content}{after}"
         )
 
         # Write back to config.py
         config_file.write_text(new_config_content, encoding="utf-8")
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"✓ Registered '{workflow_path}' in config.py"
-            )
+            self.style.SUCCESS(f"✓ Registered '{workflow_path}' in config.py")
         )
-

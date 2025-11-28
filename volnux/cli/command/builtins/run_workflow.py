@@ -13,7 +13,9 @@ class RunWorkflowCommand(BaseCommand):
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("workflow", help="Name of the workflow to run")
         parser.add_argument(
-            "--params", help="JSON string of parameters to pass to workflow"
+            "--params",
+            help="JSON string of parameters to pass to workflow",
+            required=False,
         )
         parser.add_argument(
             "--dry-run", action="store_true", help="Show execution plan without running"
@@ -30,7 +32,7 @@ class RunWorkflowCommand(BaseCommand):
             return None
 
         self.success(f"Running workflow: {workflow_name}")
-        self.stdout.write(f"Parameters: {params}")
+        self.stdout.write(f"\nParameters: {params}")
         self.stdout.write("\n[Workflow execution would happen here]\n")
 
         return None

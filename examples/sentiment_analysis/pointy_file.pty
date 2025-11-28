@@ -1,7 +1,5 @@
 LoadData (
-1 |-> ProcessData
-|-> AnalyzeSentiment
-|-> PlotStackedSentiments,
+1 |-> ProcessData |-> AnalyzeSentiment |-> PlotStackedSentiments,
 0 |-> DataFileJsonError,
 2 |-> NotifyDataFileMissing
 )
