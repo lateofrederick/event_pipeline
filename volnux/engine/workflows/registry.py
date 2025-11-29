@@ -215,8 +215,7 @@ class WorkflowRegistry:
         return not self._loading and self._ready
 
     def make_ready(self) -> None:
-        if not self._loading:
-            self._ready = True
+        self._ready = True
 
     def populate_local_workflow_configs(self, project_dir: Path) -> None:
         workflows_dir = project_dir / "workflows"
@@ -270,6 +269,9 @@ class WorkflowRegistry:
                         logger.error(
                             f"Failed to load config from {source}: {e}", exc_info=True
                         )
+
+            if self._workflows:
+                self.make_ready()
 
         finally:
             self._loading = False

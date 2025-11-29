@@ -1,11 +1,7 @@
 import typing
-import logging
-import importlib
 from pathlib import Path
 from typing import Optional
 
-from volnux.import_utils import load_module_from_path
-from volnux.engine.workflows import WorkflowConfig, WorkflowRegistry
 from ..base import BaseCommand, CommandCategory, CommandError
 
 
@@ -35,23 +31,12 @@ class ListWorkflowsCommand(BaseCommand):
                 "You are not in any project. Run 'volnux startproject' first."
             )
 
-        workflows_initialiser = load_module_from_path(
-            "initialiser", project_dir / "init.py"
-        )
-        if not workflows_initialiser:
-            raise CommandError(
-                f"Failed to load workflow initialiser module from path: {project_dir / 'init.py'}"
-            )
+        workflows_registry = self._initialise_workflows(project_dir)
 
-        workflows_registry = typing.cast(
-            WorkflowRegistry, workflows_initialiser.workflows
-        )
-        # if not workflows_registry.is_ready():
-        #     raise CommandError("Workflow registry is not ready yet, try again later.")
         num_of_workflows = 0
         for workflow in workflows_registry.get_workflow_configs():
             num_of_workflows += 1
-            self.stdout.write(f"  • {workflow.name}")
+            self.stdout.write(f"  ✓ {workflow.name}\n")
 
         self.stdout.write(f"\nTotal: {num_of_workflows} workflow(s)\n")
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from volnux.registry import Registry
 from volnux.import_utils import load_module_from_path
+from volnux.engine.workflows import WorkflowRegistry
 
 from .style import Style
 
@@ -212,6 +213,22 @@ class BaseCommand(metaclass=CommandMeta):
             ) from e
         except (ValueError, IndexError) as e:
             raise Exception(f"Error rendering template {template_name}: {e}") from e
+
+    def _initialise_workflows(self, project_dir: Path) -> WorkflowRegistry:
+        workflows_initialiser = load_module_from_path(
+            "initialiser", project_dir / "init.py"
+        )
+        if not workflows_initialiser:
+            raise CommandError(
+                f"Failed to load workflow initialiser module from path: {project_dir / 'init.py'}"
+            )
+
+        workflows_registry = typing.cast(
+            WorkflowRegistry, workflows_initialiser.workflows
+        )
+        if not workflows_registry.is_ready():
+            raise CommandError("Workflow registry is not ready yet, try again later.")
+        return workflows_registry
 
     def load_project_config(self) -> Optional[types.ModuleType]:
         """

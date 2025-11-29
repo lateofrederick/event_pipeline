@@ -32,7 +32,6 @@ class LoadFromLocal(Event):
             module = load_module_from_path("workflow", workflow_file)
             workflow_config = None
             for attr_name in dir(module):
-                # attr_name = get_workflow_config_name(attr_name)
                 attr = getattr(module, attr_name)
                 if (
                     isinstance(attr, type)
@@ -41,7 +40,7 @@ class LoadFromLocal(Event):
                 ):
                     # Instantiate the workflow config
                     workflow_config = attr(workflow_path=workflow_dir)
-                    workflow_config.module = f"workflows.{workflow_file.name}"
+                    workflow_config.discover_workflow_submodules()
                     registry.register(workflow_config)
                     logger.info(f"  ✓ Loaded local workflow: {workflow_file.name}")
                     loading_status = True

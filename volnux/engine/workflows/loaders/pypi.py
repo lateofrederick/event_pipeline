@@ -6,7 +6,7 @@ import typing
 
 from volnux import Event
 from volnux.base import EventType
-
+from volnux.import_utils import get_package_root_path
 from .utils import get_workflow_config_name
 
 logger = logging.getLogger(__name__)
@@ -24,32 +24,32 @@ class LoadFromPyPi(Event):
         self, package_name: str, registry: "WorkflowRegistry"
     ) -> typing.Tuple[bool, typing.Any]:
         """Load a workflow from an installed PyPI package."""
+
         from ..workflow import WorkflowConfig
 
         loading_status = False
         workflow_config_class = None
 
         try:
-            # Import the workflow module
-            # Convention: package exports WorkflowConfig in __init__.py or workflow.py
             module = importlib.import_module(package_name)
 
             workflow_config_class_name = get_workflow_config_name(package_name)
 
             # Check if module has a 'workflow' attribute or submodule
             if hasattr(module, workflow_config_class_name):
-                workflow_config_class = getattr(module, workflow_config_class_name)
+                workflow_config_class: typing.Tuple[WorkflowConfig] = getattr(
+                    module, workflow_config_class_name
+                )
             elif hasattr(module, "workflow"):
                 workflow_module = module.workflow
                 for attr_name in dir(workflow_module):
-                    attr_name = get_workflow_config_name(attr_name)
                     attr = getattr(workflow_module, attr_name)
                     if (
                         isinstance(attr, type)
                         and issubclass(attr, WorkflowConfig)
                         and attr != WorkflowConfig
                     ):
-                        workflow_config_class = attr
+                        workflow_config_class: typing.Tuple[WorkflowConfig] = attr
                         break
 
             if workflow_config_class:

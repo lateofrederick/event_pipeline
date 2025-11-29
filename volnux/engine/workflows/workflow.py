@@ -16,17 +16,17 @@ workflows/
 
 import importlib
 import logging
+import types
 import typing
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .registry import (
-    RegistrySource,
-    WorkflowRegistry,
     WorkflowSource,
     get_workflow_registry,
 )
+from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,6 @@ logger = logging.getLogger(__name__)
 class WorkflowConfig(ABC):
     """
     Base class for workflow configuration.
-
-    RESPONSIBILITY: Register infrastructure resources (registries, credentials, settings)
-    NOT RESPONSIBLE FOR: Business logic, workflow steps, pipeline definitions
-
-    Like Django's AppConfig:
-    - Manages configuration and resources
-    - Provides infrastructure to user code
-    - Does NOT contain business logic
 
     Example:
         class SimpleConfig(WorkflowConfig):
@@ -64,7 +56,6 @@ class WorkflowConfig(ABC):
 
     # Paths (automatically set by registry)
     path: Optional[Path] = None
-    module: Optional[str] = None
 
     # Default settings (can override)
     default_timeout: int = 300000
@@ -83,19 +74,16 @@ class WorkflowConfig(ABC):
         if self.path is None:
             pass
 
+        self.module: Optional[types.ModuleType] = None
+
         # Registry storage
         self._registry = None
-        # self._registries: Dict[str, "WorkflowRegistry"] = {}
-        # self._registry_sources: Dict[str, "WorkflowSource"] = {}
         self._settings: Dict[str, Any] = {}
 
-        # User code modules (loaded but not executed by config)
-        self._event_module = None
-        self._pipeline_module = None
-        self._structure = None
+        self._loaded_modules: typing.Dict[str, types.ModuleType] = {}
 
         # Discover user code files
-        self._discover_user_code()
+        # self._discover_workflow_code()
 
         # Call ready hook for infrastructure setup
         self.ready()
@@ -130,43 +118,55 @@ class WorkflowConfig(ABC):
         """Get a configuration setting."""
         return self._settings.get(key, default)
 
-    def _discover_user_code(self):
+    def _load_workflow_module(self) -> typing.Optional[types.ModuleType]:
         """
-        Discover user code modules (event.py, pipeline.py, pointy.pty).
-        Config only LOADS these, it doesn't define their content.
+        Load workflow module from a path.
+        Returns:
+             (WorkflowConfig) workflow module
+        Raises:
+            ImportError: if workflow module cannot be loaded
         """
-        if not self.path or not self.module:
-            return
+        if not self.path:
+            raise ImportError(
+                "Not validate workflow module path found for workflow configuration"
+            )
 
-        # Load event module (user code)
+        if not self.module:
+            self.module = load_module_from_path(self.name, self.path)
+        return self.module
+
+    def discover_workflow_submodules(self):
+        """
+        Load workflow module components
+
+        """
+        if not self._loaded_modules:
+            return self._loaded_modules
+
         try:
-            self._event_module = importlib.import_module(f"{self.module}.event")
-        except ImportError:
-            pass
+            module = self._load_workflow_module()
+        except ImportError as e:
+            raise RuntimeError(
+                f"Failed to load workflow module from path: {self.path}"
+            ) from e
 
-        # Load pipeline module (user code)
-        try:
-            self._pipeline_module = importlib.import_module(f"{self.module}.pipeline")
-        except ImportError:
-            pass
-
-        # Load structure file (user code)
-        pty_file = self.path / "pointy.pty"
-        if pty_file.exists():
-            with open(pty_file, "r") as f:
-                self._structure = f.read()
+        self._loaded_modules = load_multiple_submodules(
+            module, self.path, ["event", "pipeline"]
+        )
+        return self._loaded_modules
 
     def get_event_module(self):
         """Get the event module (user code)."""
-        return self._event_module
+        return self._loaded_modules.get("event")
 
     def get_pipeline_module(self):
         """Get the pipeline module (user code)."""
-        return self._pipeline_module
+        return self._loaded_modules.get("pipeline")
 
-    def get_structure(self) -> Optional[str]:
-        """Get the workflow structure definition (user code)."""
-        return self._structure
+    #
+    # def get_structure(self) -> Optional[str]:
+    #     """Get the workflow structure definition (user code)."""
+    #     return self._structure
 
     def check(self) -> List[str]:
         """
@@ -187,13 +187,10 @@ class WorkflowConfig(ABC):
         #         issues.append(f"Registry '{name}' has invalid credentials")
 
         # Check user code exists (but don't validate its logic)
-        if not self._event_module:
-            issues.append(f"Workflow '{self.name}' has no event.py file")
+        if not self.get_event_module():
+            issues.append(f"Workflow '{self.name}' has no event")
 
-        if not self._pipeline_module:
-            issues.append(f"Workflow '{self.name}' has no pipeline.py file")
-
-        if not self._structure:
-            issues.append(f"Workflow '{self.name}' has no pointy.pty file")
+        if not self.get_pipeline_module():
+            issues.append(f"Workflow '{self.name}' has no pipeline")
 
         return issues

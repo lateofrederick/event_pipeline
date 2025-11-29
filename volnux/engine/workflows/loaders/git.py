@@ -65,8 +65,8 @@ class LoadFromGit(Event):
                     and attr != WorkflowConfig
                 ):
                     # Instantiate the workflow config
-                    workflow_config = attr(workflow_path=workflow_dir)
-                    workflow_config.module = f"github.{repo}.{workflow_name}"
+                    workflow_config: WorkflowConfig = attr(workflow_path=workflow_dir)
+                    workflow_config.discover_workflow_submodules()
                     registry.register(workflow_config)
                     logger.info(f"  ✓ Loaded workflow from GitHub: {workflow_name}")
                     loading_status = True
@@ -99,10 +99,10 @@ class LoadFromGit(Event):
 
         cache_dir = self.options.extras.get("cache_dir")
         if cache_dir is None:
-            print("  <UNK> No cache directory configured")
+            logger.error("  <UNK> No cache directory configured")
             return False, None
 
-        print(f"Installing workflow from Git: {location}")
+        logger.info(f"Installing workflow from Git: {location}")
 
         # Create cache directory using hash of git URL
         url_hash = hashlib.md5(location.encode()).hexdigest()[:8]
@@ -122,7 +122,7 @@ class LoadFromGit(Event):
             # Find workflow directory
             workflow_dir = repo_cache / workflow_name
             if not workflow_dir.exists():
-                print(f"  ✗ Workflow '{workflow_name}' not found in repository")
+                logger.error(f"  ✗ Workflow '{workflow_name}' not found in repository")
                 return False, None
 
             # Load the workflow (reuse GitHub loader)
@@ -131,5 +131,5 @@ class LoadFromGit(Event):
             )
 
         except subprocess.CalledProcessError as e:
-            print(f"  ✗ Failed to clone/update repository: {e}")
+            logger.error(f"  ✗ Failed to clone/update repository: {e}")
             return False, None
