@@ -26,7 +26,10 @@ class ListWorkflowsCommand(BaseCommand):
         num_of_workflows = 0
         for workflow in workflows_registry.get_workflow_configs():
             num_of_workflows += 1
-            self.stdout.write(f"  ✓ {workflow.name}\n")
+            if workflow.is_executable:
+                self.stdout.write(f"  ✓ {workflow.name}\n")
+            else:
+                self.stdout.write(f"  ✗ {workflow.name}\n")
 
         self.stdout.write(f"\nTotal: {num_of_workflows} workflow(s)\n")
 

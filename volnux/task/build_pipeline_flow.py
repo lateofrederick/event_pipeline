@@ -34,7 +34,7 @@ def build_pipeline_flow_from_pointy_code(code: str):
     """
     if not is_workflow_executable(code):
         raise PointyNotExecutable(
-            "Does not point to a Pointy executable: {}".format(code)
+            "Does not contain executable pointy script: {}".format(code)
         )
 
     ast = pointy_parser(code)
