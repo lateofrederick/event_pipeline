@@ -19,17 +19,7 @@ class ListWorkflowsCommand(BaseCommand):
 
         self.stdout.write(self.style.BOLD("\nAvailable Workflows:\n"))
 
-        project_name = getattr(config_module, "PROJECT_NAME", None)
-        if not project_name:
-            raise CommandError(
-                "You are not in any project. Run 'volnux startproject' first."
-            )
-
-        project_dir: Path = getattr(config_module, "PROJECT_DIR", None)
-        if not project_dir:
-            raise CommandError(
-                "You are not in any project. Run 'volnux startproject' first."
-            )
+        project_dir, _ = self.get_project_root_and_config_module()
 
         workflows_registry = self._initialise_workflows(project_dir)
 

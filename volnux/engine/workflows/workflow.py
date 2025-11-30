@@ -9,26 +9,31 @@ workflows/
 ├── docker_registry/
 │   ├── __init__.py
 │   ├── workflow.py      # WorkflowConfig - ONLY registries/infrastructure
-│   ├── event.py         # USER CODE - event definitions
+│   ├── events.py         # USER CODE - event definitions
 │   ├── pipeline.py      # USER CODE - pipeline logic
 │   └── pointy.pty       # USER CODE - workflow structure
 """
 
-import importlib
 import logging
 import types
 import typing
+import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from .registry import (
     WorkflowSource,
     get_workflow_registry,
 )
+from volnux.pipeline import Pipeline, BatchPipeline
 from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
 logger = logging.getLogger(__name__)
+
+
+class WorkflowExecutionError(Exception):
+    """Exception raised when pipeline execution fails."""
 
 
 class WorkflowConfig(ABC):
@@ -64,6 +69,10 @@ class WorkflowConfig(ABC):
 
     def __init__(self, workflow_path: Optional[Path] = None):
         """Initialize workflow configuration."""
+
+        # Set by loaders
+        self.is_executable = False
+
         if self.name is None:
             raise ValueError("WorkflowConfig.name must be set")
 
@@ -81,9 +90,6 @@ class WorkflowConfig(ABC):
         self._settings: Dict[str, Any] = {}
 
         self._loaded_modules: typing.Dict[str, types.ModuleType] = {}
-
-        # Discover user code files
-        # self._discover_workflow_code()
 
         # Call ready hook for infrastructure setup
         self.ready()
@@ -126,21 +132,23 @@ class WorkflowConfig(ABC):
         Raises:
             ImportError: if workflow module cannot be loaded
         """
-        if not self.path:
+        if not self.path or not self.path.exists():
             raise ImportError(
                 "Not validate workflow module path found for workflow configuration"
             )
 
         if not self.module:
-            self.module = load_module_from_path(self.name, self.path)
+            workflow_init_file = self.path / "__init__.py"
+            self.module = load_module_from_path(self.name, workflow_init_file)
         return self.module
 
     def discover_workflow_submodules(self):
         """
         Load workflow module components
-
+        Raises:
+            RuntimeError: if workflow module cannot be loaded
         """
-        if not self._loaded_modules:
+        if self._loaded_modules:
             return self._loaded_modules
 
         try:
@@ -151,22 +159,21 @@ class WorkflowConfig(ABC):
             ) from e
 
         self._loaded_modules = load_multiple_submodules(
-            module, self.path, ["event", "pipeline"]
+            module, self.path, ["events", "pipeline", "batch_pipeline"]
         )
         return self._loaded_modules
 
     def get_event_module(self):
         """Get the event module (user code)."""
-        return self._loaded_modules.get("event")
+        return self._loaded_modules.get("events")
 
     def get_pipeline_module(self):
         """Get the pipeline module (user code)."""
         return self._loaded_modules.get("pipeline")
 
-    #
-    # def get_structure(self) -> Optional[str]:
-    #     """Get the workflow structure definition (user code)."""
-    #     return self._structure
+    def get_batch_pipeline_module(self):
+        """Get the batch pipeline module (user code)."""
+        return self._loaded_modules.get("batch_pipeline")
 
     def check(self) -> List[str]:
         """
@@ -174,6 +181,9 @@ class WorkflowConfig(ABC):
         Only validates infrastructure, not user business logic.
         """
         issues = []
+
+        if not self.is_executable:
+            issues.append(f"Workflow '{self.name}' is not executable")
 
         # Check registries
         # if not self.get_registry().get_workflow_config(self.name):
@@ -194,3 +204,92 @@ class WorkflowConfig(ABC):
             issues.append(f"Workflow '{self.name}' has no pipeline")
 
         return issues
+
+    def get_pipeline_class(self) -> typing.Type[Pipeline]:
+        """
+        Get the pipeline class (user code).
+        Returns:
+            (Pipeline) pipeline class
+        Raises:
+            RuntimeError: if pipeline class cannot be loaded or found
+        """
+        module = self.get_pipeline_module()
+        if not module:
+            raise RuntimeError(f"Workflow '{self.name}' has no pipeline defined")
+
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (
+                inspect.isclass(attr)
+                and attr != Pipeline
+                and issubclass(attr, Pipeline)
+            ):
+                return typing.cast(typing.Type[Pipeline], attr)
+        raise RuntimeError(f"Workflow '{self.name}' has no pipeline defined")
+
+    def get_batch_pipeline_class(self) -> typing.Type[BatchPipeline]:
+        """
+        Get the batch pipeline class (user code).
+        Returns:
+            (BatchPipeline) batch pipeline class
+        Raises:
+            RuntimeError: if batch pipeline class cannot be loaded or found
+        """
+        module = self.get_batch_pipeline_module()
+        if not module:
+            raise RuntimeError(f"Workflow '{self.name}' has no batch pipeline defined")
+
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (
+                inspect.isclass(attr)
+                and issubclass(attr, BatchPipeline)
+                and attr != BatchPipeline
+            ):
+                return typing.cast(typing.Type[BatchPipeline], attr)
+
+        raise RuntimeError(f"Workflow '{self.name}' has no batch pipeline defined")
+
+    def run_workflow(
+        self,
+        params: typing.Dict[str, typing.Any],
+        run_type: typing.Literal["batch", "single"] = "single",
+    ) -> typing.Union[Pipeline, BatchPipeline, None]:
+        """
+        Run a workflow.
+
+        Args:
+            params (dict): workflow parameters
+            run_type (str): workflow run type ('batch' or 'single')
+        Returns:
+            Pipeline or BatchPipeline or None
+        Raises:
+            RuntimeError: if a workflow run type is not 'batch' or 'single'
+            WorkflowExecutionError: if workflow execution fails
+        """
+        issues = self.check()
+        if issues:
+            for issue in issues:
+                logger.warning(f"  <UNK> {issue}")
+            return None
+
+        if run_type == "single":
+            pipeline_class = self.get_pipeline_class()
+            try:
+                pipeline = pipeline_class(**params)
+                pipeline.start(force_rerun=True)
+                return pipeline
+            except Exception as e:
+                logger.error(f"  <UNK> {e}")
+                raise WorkflowExecutionError("Failed to run workflow") from e
+        elif run_type == "batch":
+            batch_pipeline_class = self.get_batch_pipeline_class()
+            try:
+                batch_pipeline = batch_pipeline_class(**params)
+                batch_pipeline.execute()
+                return batch_pipeline
+            except Exception as e:
+                logger.error(f"  <UNK> {e}")
+                raise WorkflowExecutionError("Failed to run batched workflow") from e
+        else:
+            raise RuntimeError(f"Unknown run type '{run_type}'")

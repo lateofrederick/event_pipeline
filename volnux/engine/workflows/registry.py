@@ -217,7 +217,15 @@ class WorkflowRegistry:
     def make_ready(self) -> None:
         self._ready = True
 
-    def populate_local_workflow_configs(self, project_dir: Path) -> None:
+    def populate_local_workflow_configs(
+        self, project_dir: Path, workflow_name: typing.Optional[str] = None
+    ) -> None:
+        """
+        Populate local workflow configurations.
+        :param project_dir: Project root directory.
+        :param workflow_name: Name of the workflow to load. If None load all workflows.
+        :return:
+        """
         workflows_dir = project_dir / "workflows"
 
         for workflows_dir in workflows_dir.iterdir():
@@ -231,6 +239,9 @@ class WorkflowRegistry:
                     version=version,
                 )
                 self._workflow_local_sources[dirname] = local
+
+                if workflow_name is not None and workflow_name == dirname:
+                    break
 
     def load_workflow_configs(self) -> None:
         """

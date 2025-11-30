@@ -8,7 +8,15 @@ if typing.TYPE_CHECKING:
 __all__ = ["initialise_workflows"]
 
 
-def initialise_workflows(project_path: Path) -> "WorkflowRegistry":
+def initialise_workflows(
+    project_path: Path, workflow_name: typing.Optional[str] = None
+) -> "WorkflowRegistry":
+    """
+    Initialise workflow registry.
+    :param project_path: Project root directory.
+    :param workflow_name: The workflow name. If None, load all workflows.
+    :return: Registry.
+    """
     from volnux.engine.workflows import get_workflow_registry
     from volnux.conf import ConfigLoader
 
@@ -18,6 +26,6 @@ def initialise_workflows(project_path: Path) -> "WorkflowRegistry":
 
     workflow_registry = get_workflow_registry()
     if not workflow_registry.is_ready():
-        workflow_registry.populate_local_workflow_configs(project_path)
+        workflow_registry.populate_local_workflow_configs(project_path, workflow_name)
         workflow_registry.load_workflow_configs()
     return workflow_registry

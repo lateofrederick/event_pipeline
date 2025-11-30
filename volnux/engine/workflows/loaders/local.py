@@ -1,10 +1,11 @@
-import importlib
+import sys
 import logging
 import typing
 from pathlib import Path
 
 from volnux import Event
 from volnux.base import EventType
+from volnux.exceptions import PointyNotExecutable
 from volnux.import_utils import load_module_from_path
 from .utils import get_workflow_config_name
 
@@ -40,7 +41,11 @@ class LoadFromLocal(Event):
                 ):
                     # Instantiate the workflow config
                     workflow_config = attr(workflow_path=workflow_dir)
-                    workflow_config.discover_workflow_submodules()
+                    try:
+                        workflow_config.discover_workflow_submodules()
+                        workflow_config.is_executable = True
+                    except PointyNotExecutable:
+                        workflow_config.is_executable = False
                     registry.register(workflow_config)
                     logger.info(f"  ✓ Loaded local workflow: {workflow_file.name}")
                     loading_status = True
@@ -48,7 +53,9 @@ class LoadFromLocal(Event):
 
             return loading_status, workflow_config
         except ImportError as e:
-            logger.error(f"  ✗ Error loading workflow '{workflow_file}': {e}")
+            logger.error(
+                f"  ✗ Error loading workflow '{workflow_file}': {e}", exc_info=e
+            )
             loading_status = False
 
         return loading_status, None
@@ -60,6 +67,10 @@ class LoadFromLocal(Event):
             return False, f"Workflows directory not found: {workflow_dir}"
 
         logger.info(f"Discovering local workflows in: {workflow_dir}")
+
+        workflow_dir_str = str(workflow_dir.parent)
+        if workflow_dir_str not in sys.path:
+            sys.path.insert(0, workflow_dir_str)
 
         # Check if workflow.py exists
         workflow_file = workflow_dir / "workflow.py"

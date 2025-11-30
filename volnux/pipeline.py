@@ -29,6 +29,7 @@ from .exceptions import (
     EventDone,
     ImproperlyConfigured,
     PipelineConfigurationError,
+    PointyNotExecutable,
 )
 from .execution.state_manager import ExecutionStatus
 from .fields import InputDataField
@@ -241,6 +242,8 @@ class PipelineMeta(type):
 
         try:
             workflow = build_pipeline_flow_from_pointy_code(pointy_str)
+        except PointyNotExecutable:
+            raise
         except Exception as e:
             if isinstance(e, SyntaxError):
                 raise

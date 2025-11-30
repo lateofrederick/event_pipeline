@@ -1,6 +1,9 @@
+import sys
+import code
 from typing import Optional
 
 from ..base import BaseCommand, CommandCategory
+from volnux import __version__ as version
 
 
 class ShellCommand(BaseCommand):
@@ -9,14 +12,23 @@ class ShellCommand(BaseCommand):
     category = CommandCategory.DEVELOPMENT
 
     def handle(self, *args, **options) -> Optional[str]:
-        import code
-
         self.stdout.write("Starting Volnux interactive shell...\n")
 
+        project_dir, project_config = self.get_project_root_and_config_module()
+
         local_vars = {
-            "volnux": "Volnux context loaded",
+            project_config.__name__: project_config,
         }
 
-        code.interact(local=local_vars, banner="Volnux Shell")
+        workflow_registry = self._initialise_workflows(project_dir)
+
+        for workflow in workflow_registry.get_workflow_configs():
+            local_vars[workflow.name] = workflow
+
+        shell_version = f"Python {sys.version} on {sys.platform}"
+
+        code.interact(
+            local=local_vars, banner=f"Volnux Shell {version} ({shell_version})"
+        )
 
         return None

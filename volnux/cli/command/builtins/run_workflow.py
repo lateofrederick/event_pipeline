@@ -1,8 +1,9 @@
 import argparse
 import json
 from typing import Optional
+from pathlib import Path
 
-from ..base import BaseCommand, CommandCategory
+from ..base import BaseCommand, CommandCategory, CommandError
 
 
 class RunWorkflowCommand(BaseCommand):
@@ -18,21 +19,34 @@ class RunWorkflowCommand(BaseCommand):
             required=False,
         )
         parser.add_argument(
-            "--dry-run", action="store_true", help="Show execution plan without running"
+            "--type",
+            help="Type of the workflow to run",
+            default="single",
+            choices=["single", "batch"],
         )
 
     def handle(self, *args, **options) -> Optional[str]:
         workflow_name = options["workflow"]
         params = json.loads(options["params"]) if options.get("params") else {}
-        dry_run = options.get("dry_run", False)
+        w_type = options["type"]
 
-        if dry_run:
-            self.warning(f"DRY RUN: Would execute workflow '{workflow_name}'")
-            self.stdout.write(f"Parameters: {params}")
+        project_dir, _ = self.get_project_root_and_config_module()
+
+        self.success(f"\nRunning workflow: {workflow_name}\n")
+        self.stdout.write(f"\nParameters: {params}\n")
+
+        workflow_registry = self._initialise_workflows(project_dir, workflow_name)
+
+        workflow = workflow_registry.get_workflow_config(workflow_name)
+        if not workflow:
+            raise CommandError(
+                f"Workflow {workflow_name} not found in project {project_dir}"
+            )
+
+        if not workflow.is_executable:
+            self.error(f"Workflow {workflow_name} not executable")
             return None
 
-        self.success(f"Running workflow: {workflow_name}")
-        self.stdout.write(f"\nParameters: {params}")
-        self.stdout.write("\n[Workflow execution would happen here]\n")
+        workflow.run_workflow(params=params, run_type=w_type)
 
         return None

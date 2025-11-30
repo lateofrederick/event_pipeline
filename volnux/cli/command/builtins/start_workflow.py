@@ -1,3 +1,4 @@
+import re
 import keyword
 import argparse
 import shutil
@@ -64,7 +65,6 @@ class StartWorkflowCommand(BaseCommand):
         project_dir = self._get_project_directory()
         workflows_dir = project_dir / "workflows"
 
-        # Check if workflow already exists
         workflow_dir = workflows_dir / workflow_name
         if workflow_dir.exists():
             if not force:
@@ -297,9 +297,6 @@ __all__ = ["{pipeline_class_name}"]
                 )
             )
             return
-
-        # Find the WORKFLOWS list and add the new workflow
-        import re
 
         # Pattern to match WORKFLOWS = [...] with various formatting
         workflows_pattern = r"(WORKFLOWS\s*=\s*\[)(.*?)(\])"

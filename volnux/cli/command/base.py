@@ -9,6 +9,7 @@ from typing import Optional, Any, Dict
 from pathlib import Path
 
 from volnux.registry import Registry
+from volnux.setup import initialise_workflows
 from volnux.import_utils import load_module_from_path
 from volnux.engine.workflows import WorkflowRegistry
 
@@ -214,18 +215,30 @@ class BaseCommand(metaclass=CommandMeta):
         except (ValueError, IndexError) as e:
             raise Exception(f"Error rendering template {template_name}: {e}") from e
 
-    def _initialise_workflows(self, project_dir: Path) -> WorkflowRegistry:
-        workflows_initialiser = load_module_from_path(
-            "initialiser", project_dir / "init.py"
-        )
-        if not workflows_initialiser:
-            raise CommandError(
-                f"Failed to load workflow initialiser module from path: {project_dir / 'init.py'}"
+    def _initialise_workflows(
+        self, project_dir: Path, workflow_name: typing.Optional[str] = None
+    ) -> WorkflowRegistry:
+        """
+        Initialise workflow registry.
+        :param project_dir: Project directory
+        :param workflow_name: workflow name
+        :return: Registry
+        """
+        if workflow_name is None:
+            workflows_initialiser = load_module_from_path(
+                "initialiser", project_dir / "init.py"
             )
+            if not workflows_initialiser:
+                raise CommandError(
+                    f"Failed to load workflow initialiser module from path: {project_dir / 'init.py'}"
+                )
 
-        workflows_registry = typing.cast(
-            WorkflowRegistry, workflows_initialiser.workflows
-        )
+            workflows_registry = typing.cast(
+                WorkflowRegistry, workflows_initialiser.workflows
+            )
+        else:
+            workflows_registry = initialise_workflows(project_dir, workflow_name)
+
         if not workflows_registry.is_ready():
             raise CommandError("Workflow registry is not ready yet, try again later.")
         return workflows_registry
@@ -238,11 +251,10 @@ class BaseCommand(metaclass=CommandMeta):
             Dictionary containing the configuration attributes, or None if not found.
 
         Raises:
-            CommandError: If config file exists but cannot be loaded or is invalid.
+            CommandError: If a config file exists but cannot be loaded or is invalid.
         """
         config_path = Path.cwd() / "config.py"
 
-        # Check if config file exists
         if not config_path.exists():
             self.warning("No config.py found in current directory")
             return None
@@ -253,13 +265,36 @@ class BaseCommand(metaclass=CommandMeta):
         try:
             config = load_module_from_path("project_config", config_path)
 
-            self.success(f"Loaded project configuration from {config_path}")
+            self.success(f"Loaded project configuration from {config_path}\n")
             return config
 
         except SyntaxError as e:
             raise CommandError(f"Syntax error in config.py at line {e.lineno}: {e.msg}")
         except Exception as e:
             raise CommandError(f"Failed to load config.py: {str(e)}")
+
+    def get_project_root_and_config_module(
+        self,
+    ) -> typing.Tuple[Path, types.ModuleType]:
+        """
+        Get project root directory and module path.
+        Returns:
+             Project root directory and module path.
+        Raises:
+            CommandError: If a config file exists but cannot be loaded or is invalid.
+        """
+        config_module = self.load_project_config()
+        if not config_module:
+            raise CommandError(
+                "You are not in any active project. Run 'volnux startproject' first."
+            )
+
+        project_dir: Path = getattr(config_module, "PROJECT_DIR", None)
+        if not project_dir:
+            raise CommandError(
+                "You are not in any project. Run 'volnux startproject' first."
+            )
+        return project_dir, config_module
 
     def success(self, message: str) -> None:
         """Write a success message."""

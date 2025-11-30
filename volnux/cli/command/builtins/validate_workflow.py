@@ -17,19 +17,10 @@ class ValidateWorkflowCommand(BaseCommand):
 
     def handle(self, *args, **options) -> Optional[str]:
         workflow_name = options.get("workflow")
-        config_module = self.load_project_config()
-        if not config_module:
-            raise CommandError(
-                "You are not in any active project. Run 'volnux startproject' first."
-            )
 
-        project_dir: Path = getattr(config_module, "PROJECT_DIR", None)
-        if not project_dir:
-            raise CommandError(
-                "You are not in any project. Run 'volnux startproject' first."
-            )
+        project_dir, _ = self.get_project_root_and_config_module()
 
-        workflows = self._initialise_workflows(project_dir)
+        workflows = self._initialise_workflows(project_dir, workflow_name)
 
         if workflow_name:
             self.success(f"Validating workflow: {workflow_name}\n")

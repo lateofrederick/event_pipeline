@@ -151,3 +151,7 @@ class PipelineConfigurationError(PipelineError):
 
 class ExecutorNotFound(IndexError):
     """Exception raised when an executor does not exist."""
+
+
+class PointyNotExecutable(Exception):
+    """Exception raised when a pointy script is not executable."""
