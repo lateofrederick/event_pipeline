@@ -383,7 +383,7 @@ class InputDataField(CacheInstanceFieldMixin):
 class FileInputDataField(InputDataField):
     def __init__(
         self,
-        path: typing.Union[str, os.PathLike[str], None] = None,
+        path: typing.Union[str, os.PathLike, None] = None,
         required: bool = False,
         chunk_size: int = batch_defaults.DEFAULT_CHUNK_SIZE,
         mode: str = "r",
@@ -436,7 +436,7 @@ class FileInputDataField(InputDataField):
         if instance is None:
             return self  # type: ignore
 
-        value: typing.Union[str, os.PathLike[str]] = super().__get__(instance, owner)
+        value: typing.Union[str, os.PathLike] = super().__get__(instance, owner)
 
         if value:
             kwargs: typing.Dict[str, typing.Any] = {}
