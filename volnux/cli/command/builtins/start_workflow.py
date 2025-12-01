@@ -230,7 +230,7 @@ class StartWorkflowCommand(BaseCommand):
         self.stdout.write(f"  Created: batch_pipeline.py")
 
     def _create_events_file(self, workflow_dir: Path, event_template: str) -> None:
-        """Create events file based on template type."""
+        """Create an events file based on a template type."""
         events_file = workflow_dir / "events.py"
 
         template_name = (
@@ -246,7 +246,7 @@ class StartWorkflowCommand(BaseCommand):
     def _create_pointy_script(
         self, workflow_dir: Path, workflow_name: str, mode: str
     ) -> None:
-        """Create pointy script file."""
+        """Create a pointy script file."""
         pointy_script_file = (
             workflow_dir / f"{get_workflow_class_name(workflow_name).lower()}.pty"
         )
@@ -289,7 +289,7 @@ __all__ = ["{pipeline_class_name}"]
         workflow_config_class = get_workflow_config_name(workflow_name)
         workflow_path = f"workflows.{workflow_name}.workflow.{workflow_config_class}"
 
-        # Check if workflow is already registered
+        # Check if the workflow is already registered
         if workflow_path in config_content:
             self.stdout.write(
                 self.style.WARNING(

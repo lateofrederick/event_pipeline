@@ -39,4 +39,4 @@ jobs:
 
     - name: Run mypy
       run: |
-        mypy event_pipeline --ignore-missing-imports --show-error-codes
+        mypy volnux --ignore-missing-imports --show-error-codes

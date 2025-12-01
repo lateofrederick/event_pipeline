@@ -8,6 +8,7 @@ from pathlib import Path
 
 from volnux import Event
 from volnux.base import EventType
+from volnux.exceptions import PointyNotExecutable
 
 from .utils import get_workflow_config_name
 
@@ -66,7 +67,11 @@ class LoadFromGit(Event):
                 ):
                     # Instantiate the workflow config
                     workflow_config: WorkflowConfig = attr(workflow_path=workflow_dir)
-                    workflow_config.discover_workflow_submodules()
+                    try:
+                        workflow_config.discover_workflow_submodules()
+                        workflow_config.is_executable = True
+                    except PointyNotExecutable:
+                        workflow_config.is_executable = False
                     registry.register(workflow_config)
                     logger.info(f"  ✓ Loaded workflow from GitHub: {workflow_name}")
                     loading_status = True
