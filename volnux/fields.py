@@ -26,7 +26,7 @@ class FileProxy:
 
     def __init__(
         self,
-        file_path: typing.Union[str, os.PathLike[str]],
+        file_path: typing.Union[str, os.PathLike],
         mode: str = "r",
         buffering: int = -1,
         encoding: typing.Optional[str] = None,
