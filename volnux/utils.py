@@ -73,7 +73,7 @@ def generate_unique_id(obj: object) -> str:
 
 
 def validate_event_process_method(
-    func: typing.Callable[[...], typing.Tuple[bool, typing.Any]],
+    func: typing.Callable[[typing.Any], typing.Tuple[bool, typing.Any]],
 ) -> None:
     """
     Validate event process method and functions
@@ -142,7 +142,7 @@ def build_event_arguments_from_pipeline(
 
 
 def get_function_call_args(
-    func: typing.Callable[..., typing.Any],
+    func: typing.Callable[[typing.Any], typing.Any],
     params: typing.Union[typing.Dict[str, typing.Any], "Pipeline", object],
 ) -> typing.Dict[str, typing.Any]:
     """
@@ -220,7 +220,7 @@ def validate_batch_processor(batch_processor: BatchProcessType) -> bool:
 
 
 def get_expected_args(
-    func: typing.Callable[..., typing.Any], include_type: bool = False
+    func: typing.Callable[[typing.Any], typing.Any], include_type: bool = False
 ) -> typing.Dict[str, typing.Any]:
     """
     Get the expected arguments of a function as a dictionary where the keys are argument names

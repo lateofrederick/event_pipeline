@@ -23,7 +23,7 @@ __all__ = ["EventResult", "ResultSet"]
 
 T = typing.TypeVar("T", bound="ResultSet")
 
-Result: TypeAlias = Hashable  # Placeholder for Result type
+Result: TypeAlias = Hashable  # Placeholder for a Result type
 
 
 class EventResult(BackendIntegrationMixin, BaseModel):
