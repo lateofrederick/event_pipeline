@@ -284,11 +284,11 @@ class StateManager:
             del self._ref_counts[state_id]
 
     def remove_state(self, state_id: str) -> None:
-        """Clean up state and its dedicated lock"""
+        """Cleanup state and its dedicated lock"""
         self.release_state(state_id, force=False)
 
     async def remove_state_async(self, state_id: str) -> None:
-        """Clean up state and its dedicated lock asynchronously."""
+        """Cleanup state and its dedicated lock asynchronously."""
         await to_thread(self.remove_state, state_id)
 
     def get_ref_count(self, state_id: str) -> int:

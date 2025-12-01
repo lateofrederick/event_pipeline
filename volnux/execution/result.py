@@ -41,7 +41,7 @@ class ResultProcessor:
 
     @staticmethod
     async def process_futures(
-        futures: typing.Sequence[asyncio.Future[typing.Any]],
+        futures: typing.Sequence[asyncio.Future],
     ) -> typing.Tuple[ResultSet, ResultSet]:
         """
         Process futures and separate successful results from errors.
