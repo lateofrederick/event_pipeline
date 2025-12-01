@@ -162,7 +162,7 @@ def load_multiple_submodules(
     parent_module: types.ModuleType,
     parent_path: Path,
     submodule_names: typing.Iterable[str],
-) -> dict[str, typing.Optional[types.ModuleType]]:
+) -> typing.Dict[str, typing.Optional[types.ModuleType]]:
     """
     Load multiple submodules at once.
 
