@@ -392,7 +392,7 @@ def create_client_ssl_context(
 
 def is_multiprocessing_executor(executor_class: typing.Type["BaseExecutor"]) -> bool:
     """Check if an executor is multiprocessing executor."""
-    from event_pipeline.executors import BaseExecutor, ProcessPoolExecutor
+    from volnux.executors import BaseExecutor, ProcessPoolExecutor
 
     if not issubclass(executor_class, BaseExecutor):
         return False
