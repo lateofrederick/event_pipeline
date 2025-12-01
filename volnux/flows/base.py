@@ -219,7 +219,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         event_call_kwargs: typing.Dict[str, typing.Any],
         *,
         loop: typing.Optional[asyncio.AbstractEventLoop] = None,
-    ) -> asyncio.Future[typing.Any]:
+    ) -> asyncio.Future:
         """
         Submit event for execution via the provided executor.
 
@@ -264,7 +264,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         self,
         executor: BaseExecutor,
         event_execution_config: typing.Dict["Event", typing.Any],
-    ) -> asyncio.Future[typing.Any]:
+    ) -> asyncio.Future:
         """
         Submit events to the provided executor class.
 
@@ -296,7 +296,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
             raise ValueError(f"Invalid executor config: {executor_config}")
 
     @abstractmethod
-    async def run(self) -> asyncio.Future[typing.Any]:
+    async def run(self) -> asyncio.Future:
         """
         Run the flow.
         Raises:
