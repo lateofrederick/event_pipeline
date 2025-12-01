@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import importlib.util
 import logging
 import os
@@ -100,7 +102,7 @@ class ConfigLoader:
             ):
                 self._config[field_name.upper()] = getattr(config_module, field_name)
 
-    def load_from_file(self, config_file: typing.Union[str, os.PathLike[str]]) -> None:
+    def load_from_file(self, config_file: typing.Union[str, os.PathLike]) -> None:
         """
         Load configurations from a Python config file.
         Args:
