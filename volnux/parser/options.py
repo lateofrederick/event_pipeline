@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import typing
 from enum import Enum
@@ -55,7 +57,7 @@ def resolve_str_to_enum(
 class Options(BaseModel):
     """
     Task execution configuration options that can be passed to a task or
-    task groups in pointy scripts e.g A[retry_attempts=3], {A->B}[retry_attempts=3].
+    task groups in pointy scripts, e.g., A[retry_attempts=3], {A->B}[retry_attempts=3].
     """
 
     # Core execution options with validation

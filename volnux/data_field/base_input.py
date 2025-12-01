@@ -15,6 +15,7 @@ T = typing.TypeVar("T")
 if typing.TYPE_CHECKING:
     from volnux.pipeline import Pipeline
 
+
 class CacheInstanceFieldMixin(object):
     def get_cache_key(self) -> str:
         raise NotImplementedError
@@ -66,19 +67,21 @@ class InputDataField(CacheInstanceFieldMixin):
         "batch_size",
         "help_text",
         "_batch_mode",
-        "_frozen"
+        "_frozen",
     )
 
     def __init__(
-            self,
-            name: typing.Optional[str] = None,
-            required: bool = False,
-            help_text: typing.Optional[str] = None,
-            data_type: typing.Union[typing.Type[typing.Any], typing.Tuple[typing.Type[typing.Any], ...], object] = UNKNOWN,
-            default: typing.Any = EMPTY,
-            default_factory: typing.Optional[typing.Callable[[], typing.Any]] = None,
-            batch_processor: typing.Optional[BatchProcessType] = None,
-            batch_size: int = batch_defaults.DEFAULT_BATCH_SIZE,
+        self,
+        name: typing.Optional[str] = None,
+        required: bool = False,
+        help_text: typing.Optional[str] = None,
+        data_type: typing.Union[
+            typing.Type[typing.Any], typing.Tuple[typing.Type[typing.Any], ...], object
+        ] = UNKNOWN,
+        default: typing.Any = EMPTY,
+        default_factory: typing.Optional[typing.Callable[[], typing.Any]] = None,
+        batch_processor: typing.Optional[BatchProcessType] = None,
+        batch_size: int = batch_defaults.DEFAULT_BATCH_SIZE,
     ):
         """
         Initialize an InputDataField descriptor.
@@ -99,9 +102,7 @@ class InputDataField(CacheInstanceFieldMixin):
         """
         # Validate mutually exclusive defaults
         if default is not EMPTY and default_factory is not None:
-            raise ValueError(
-                "Cannot specify both 'default' and 'default_factory'"
-            )
+            raise ValueError("Cannot specify both 'default' and 'default_factory'")
 
         self.name = name
         self.help_text = help_text
@@ -166,7 +167,7 @@ class InputDataField(CacheInstanceFieldMixin):
             )
         self.batch_processor = processor
 
-    def enable_batch_mode(self) -> 'InputDataField':
+    def enable_batch_mode(self) -> "InputDataField":
         """
         Enable batch processing mode for this field.
 
@@ -178,7 +179,7 @@ class InputDataField(CacheInstanceFieldMixin):
         self._batch_mode = True
         return self
 
-    def disable_batch_mode(self) -> 'InputDataField':
+    def disable_batch_mode(self) -> "InputDataField":
         """
         Disable batch processing mode for this field.
 
@@ -200,9 +201,9 @@ class InputDataField(CacheInstanceFieldMixin):
             self.name = name
 
     def __get__(
-            self,
-            instance: typing.Optional[object],
-            owner: typing.Optional[typing.Type] = None
+        self,
+        instance: typing.Optional[object],
+        owner: typing.Optional[typing.Type] = None,
     ) -> typing.Any:
         """
         Get field value from instance.
@@ -286,8 +287,7 @@ class InputDataField(CacheInstanceFieldMixin):
             expected = self._format_types()
             actual = type(value).__qualname__
             raise TypeError(
-                f"Field '{self.name}' expects type {expected}, "
-                f"got {actual}"
+                f"Field '{self.name}' expects type {expected}, " f"got {actual}"
             )
 
     def _validate_batch_value(self, value: typing.Any) -> None:
@@ -345,9 +345,7 @@ class InputDataField(CacheInstanceFieldMixin):
     def _format_types(self) -> str:
         """Format data types for error messages."""
         type_names = [
-            getattr(t, "__name__", str(t))
-            for t in self.data_type
-            if t is not UNKNOWN
+            getattr(t, "__name__", str(t)) for t in self.data_type if t is not UNKNOWN
         ]
 
         if len(type_names) == 1:
@@ -398,8 +396,6 @@ class InputDataField(CacheInstanceFieldMixin):
             ValueError: If trying to delete a required field
         """
         if self.required:
-            raise ValueError(
-                f"Cannot delete required field '{self.name}'"
-            )
+            raise ValueError(f"Cannot delete required field '{self.name}'")
 
         instance.__dict__.pop(self.name, None)
