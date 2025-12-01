@@ -62,12 +62,15 @@ class Options(BaseModel):
 
     # Core execution options with validation
     retry_attempts: MiniAnnotated[
-        int, Attrib(default=0, ge=0, help_text="Max number of retry attempts")
-    ]  # noqa: F722
+        int,
+        Attrib(default=0, ge=0, help_text="Max number of retry attempts"),  # noqa: F722
+    ]
     executor: MiniAnnotated[
         typing.Optional[str],
-        Attrib(default=None, help_text="Executor to use for executing tasks"),
-    ]  # noqa: F722
+        Attrib(
+            default=None, help_text="Executor to use for executing tasks"  # noqa: F722
+        ),
+    ]
 
     # Configuration dictionaries
     executor_config: MiniAnnotated[
@@ -79,10 +82,12 @@ class Options(BaseModel):
                 if isinstance(val, dict)
                 else val
             ),
-            help_text="Configuration to use for initialising executor",
+            help_text="Configuration to use for initialising executor",  # noqa: F722
         ),
-    ]   # noqa: F722
-    extras: MiniAnnotated[dict, Attrib(default_factory=dict, help_text="Extra options")]  # noqa: F722
+    ]
+    extras: MiniAnnotated[
+        dict, Attrib(default_factory=dict, help_text="Extra options")  # noqa: F722
+    ]
 
     # Execution state and control
     result_evaluation_strategy: MiniAnnotated[
@@ -92,9 +97,9 @@ class Options(BaseModel):
             pre_formatter=lambda val: resolve_str_to_enum(
                 ResultEvaluationStrategy, val, use_lower_case=False
             ),
-            help_text="Result evaluation strategy",
+            help_text="Result evaluation strategy",  # noqa: F722
         ),
-    ]  # noqa: F722
+    ]
     stop_condition: MiniAnnotated[
         typing.Union[StopCondition, None],
         Attrib(
@@ -102,9 +107,9 @@ class Options(BaseModel):
             pre_formatter=lambda val: val
             and resolve_str_to_enum(StopCondition, val, use_lower_case=False)
             or None,
-            help_text="Stop condition",
+            help_text="Stop condition",  # noqa: F722
         ),
-    ]   # noqa: F722
+    ]
     bypass_event_checks: typing.Optional[bool]
 
     class Config:
