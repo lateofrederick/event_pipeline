@@ -1,7 +1,6 @@
 import json
 import os
 import typing
-from collections.abc import Hashable, MutableSet
 from dataclasses import asdict
 from datetime import datetime
 
@@ -14,16 +13,16 @@ from volnux.utils import get_obj_klass_import_str, get_obj_state
 from .exceptions import MultiValueError
 from .import_utils import import_string
 
-if typing.TYPE_CHECKING:
+try:
     from typing import TypeAlias  # noqa: F401
-else:
+except ImportError:
     from typing_extensions import TypeAlias
 
 __all__ = ["EventResult", "ResultSet"]
 
 T = typing.TypeVar("T", bound="ResultSet")
 
-Result: TypeAlias = Hashable  # Placeholder for a Result type
+Result: TypeAlias = typing.Hashable  # Placeholder for a Result type
 
 
 class EventResult(BackendIntegrationMixin, BaseModel):
@@ -175,7 +174,7 @@ class EntityContentType:
         return f"<EntityContentType: backend={self.backend_import_str}, type={self.entity_content_type}>"
 
 
-class ResultSet(MutableSet[Result]):
+class ResultSet(typing.MutableSet[Result]):
     """A collection of Result objects with filtering and query capabilities."""
 
     # Dictionary of filter operators and their implementation
