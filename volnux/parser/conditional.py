@@ -18,6 +18,33 @@ class DescriptorConfig:
     task: "TaskProtocol"
 
 
+def _create_descriptor_property(
+    descriptor: int, attr_name: str, attr_type: typing.Type
+):
+    """Factory method to create descriptor properties with getter/setter"""
+
+    def getter(self) -> typing.Optional[attr_type]:
+        config = self.get_descriptor_config(descriptor)
+        if config:
+            return getattr(config, attr_name)
+        return None
+
+    def setter(self, value: attr_type):
+        config = self.get_descriptor_config(descriptor)
+        if config is None:
+            # Create new descriptor config
+            kwargs = {attr_name: value}
+            # Set the other attribute to None
+            other_attr = "pipe" if attr_name == "task" else "task"
+            kwargs[other_attr] = None
+            self.add_descriptor(descriptor, **kwargs)
+        else:
+            # Update existing config
+            setattr(config, attr_name, value)
+
+    return property(getter, setter)
+
+
 @dataclass
 class ConditionalNode:
     """Conditional node for branching"""
@@ -59,33 +86,6 @@ class ConditionalNode:
 
     def get_descriptors(self) -> typing.List[DescriptorConfig]:
         return list(self._descriptors.values())
-
-    @staticmethod
-    def _create_descriptor_property(
-        descriptor: int, attr_name: str, attr_type: typing.Type
-    ):
-        """Factory method to create descriptor properties with getter/setter"""
-
-        def getter(self) -> typing.Optional[attr_type]:
-            config = self.get_descriptor_config(descriptor)
-            if config:
-                return getattr(config, attr_name)
-            return None
-
-        def setter(self, value: attr_type):
-            config = self.get_descriptor_config(descriptor)
-            if config is None:
-                # Create new descriptor config
-                kwargs = {attr_name: value}
-                # Set the other attribute to None
-                other_attr = "pipe" if attr_name == "task" else "task"
-                kwargs[other_attr] = None
-                self.add_descriptor(descriptor, **kwargs)
-            else:
-                # Update existing config
-                setattr(config, attr_name, value)
-
-        return property(getter, setter)
 
     # Create properties using the factory method
     on_success_event = _create_descriptor_property(
