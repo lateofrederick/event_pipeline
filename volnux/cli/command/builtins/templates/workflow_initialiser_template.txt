@@ -1,0 +1,7 @@
+from pathlib import Path
+from volnux.setup import initialise_workflows
+
+
+project_dir = Path(__file__).parent
+
+workflows = initialise_workflows(project_dir)

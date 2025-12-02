@@ -7,8 +7,6 @@ version = "2.0.0"
 requires-python = ">=3.8"
 authors = [
     {name = "nshaibu", email = "nafiushaibu1@gmail.com"},
-    {name = "lateofrederick", email = "lateofrederick@gmail.com"},
-    {name = "darkwak", email = "darkwak@live.com"}
 ]
 description="Workflow orchestration and automation management"
 keywords=["pipeline","events","concurrency","data","pointy", "pointy-lang", "event-pipeline", "redis", "pointy", "ETL", "volnux"]
@@ -19,8 +17,8 @@ dependencies = [
     "six==1.17.0",
     "treelib==1.7.0",
     "graphviz==0.20.3",
-    "more-itertools<=10.6.0",
-    "pydantic_mini==1.0.4",
+    "more-itertools>=8.10.0",
+    "pydantic_mini>=1.1.6",
     "apscheduler<=3.11.0",
     "typing-extensions==4.12.2",
     "cloudpickle>=3.0.0",
@@ -34,7 +32,7 @@ dependencies = [
     "psutil==7.1.0",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
@@ -81,6 +79,7 @@ packages = [
     "volnux.translator",
     "volnux.protos",
     "volnux.parser",
+    "volnux.parser.protocols",
     "volnux.executors",
     "volnux.manager",
     "volnux.mixins",
@@ -89,7 +88,12 @@ packages = [
     "volnux.backends",
     "volnux.backends.stores",
     "volnux.backends.connectors",
-    "volnux.telemetry"
+    "volnux.telemetry",
+    "volnux.execution",
+    "volnux.engine",
+    "volnux.task",
+    "volnux.flows",
+    "volnux.concurrency",
 ]
 
 [tool.coverage.run]
@@ -131,3 +135,36 @@ directory = "coverage_html_report"
 
 [tool.black]
 exclude = "protos"
+
+[tool.mypy]
+files = "volnux/*.py"
+python_version = "3.8" # Set the minimum supported Python version
+# 3. Enable a high level of strictness (Highly Recommended)
+# This single option turns on many individual strictness checks.
+strict = true
+
+# 4. Optional: Fine-tune strictness (if strict=true is too much initially)
+# If strict=true is set, these are automatically enabled, but you can override:
+disallow_untyped_defs = true # Error if a function definition is missing a type hint
+warn_return_any = true       # Warn if a function returns an implicit 'Any' type
+
+# 5. Optional: Handle third-party libraries without stubs
+# This prevents errors from libraries you don't control.
+ignore_missing_imports = true
+
+# 6. Optional: Per-module/Package Overrides
+# You can relax or tighten checks for specific areas
+[tool.mypy.explicit_package_bases]
+# This is often needed if your source code is under a 'src' directory
+# and you want mypy to understand it as a package.
+enabled = true
+
+[tool.mypy-some_untyped_legacy_module]
+# Relax checks for a specific file or module (e.g., old/temporary code)
+disallow_untyped_defs = false
+ignore_errors = true
+
+[project.scripts]
+# Define the command name and its Python entry function
+# Format: command_name = "module.submodule:function_name"
+volnux = "volnux.cli:main.main"

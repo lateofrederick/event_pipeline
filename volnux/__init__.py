@@ -24,20 +24,25 @@ __author__ = "nshaibu <nafiushaibu1@gmail.com>"
 
 import logging
 
+try:
+    from typing import TypeAlias
+except ImportError:
+    from typing_extensions import TypeAlias
+
 logging.basicConfig(level=logging.INFO)
 
-from .base import (
-    EventBase,
-    EventExecutionEvaluationState,
-    RetryPolicy,
-    ExecutorInitializerConfig,
-)
-from .pipeline import Pipeline
+from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
+
+Event: TypeAlias = EventBase
+
+from .pipeline import BatchPipeline, Pipeline
+from .result_evaluators import ResultEvaluationStrategies
 
 __all__ = [
     "EventBase",
-    "EventExecutionEvaluationState",
+    "Event",
     "RetryPolicy",
     "ExecutorInitializerConfig",
     "Pipeline",
+    "BatchPipeline",
 ]

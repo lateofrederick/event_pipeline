@@ -1,5 +1,7 @@
 import socket
 import zlib
+import time
+import errno
 import ssl
 import typing
 import pickle
@@ -71,7 +73,8 @@ class RemoteTaskManager(BaseManager):
         """Create and configure the server socket with proper timeout and SSL if enabled"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(self._socket_timeout)
+        # sock.settimeout(self._socket_timeout)
+        sock.setblocking(True)
 
         if not (self._cert_path and self._key_path):
             return sock
@@ -164,11 +167,26 @@ class RemoteTaskManager(BaseManager):
             while not self._shutdown:
                 try:
                     client_sock, client_addr = self._sock.accept()
+
                     self._thread_pool.submit(
                         self._handle_client, client_sock, client_addr
                     )
-                except socket.timeout:
-                    continue  # Allow checking shutdown flag
+                except socket.error as e:
+                    # Check if the error is genuinely just "no connection ready"
+                    if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
+                        # No connection pending, wait a bit and try again
+                        time.sleep(0.1)
+                        continue
+                    elif e.errno == errno.EINTR:
+                        # Interrupted system call (e.g., a signal was received)
+                        print("Accept interrupted by signal, retrying...")
+                        continue
+                    else:
+                        # A real, fatal error occurred
+                        print(f"Fatal socket error: {e}")
+                        break
+                # except socket.timeout:
+                #     continue  # Allow checking a shutdown flag
                 except Exception as e:
                     if not self._shutdown:
                         logger.error(

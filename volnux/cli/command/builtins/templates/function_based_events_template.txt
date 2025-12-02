@@ -1,0 +1,8 @@
+from volnux.decorators import event
+
+# Define function-based events below
+
+@event()
+def example(self):
+    # implement your event logic here
+    pass
