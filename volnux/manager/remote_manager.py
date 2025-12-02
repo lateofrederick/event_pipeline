@@ -168,7 +168,7 @@ class RemoteTaskManager(BaseManager):
                         self._handle_client, client_sock, client_addr
                     )
                 except socket.timeout:
-                    continue  # Allow checking shutdown flag
+                    continue  # Allow checking a shutdown flag
                 except Exception as e:
                     if not self._shutdown:
                         logger.error(

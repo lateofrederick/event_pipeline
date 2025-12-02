@@ -16,7 +16,7 @@ if typing.TYPE_CHECKING:
     from volnux.pipeline import Pipeline
 
 
-class CacheInstanceFieldMixin(object):
+class CacheInstanceFieldMixin:
     def get_cache_key(self) -> str:
         raise NotImplementedError
 
