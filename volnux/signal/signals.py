@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import threading
 import typing
@@ -6,6 +5,7 @@ import weakref
 from inspect import Parameter, Signature
 
 from volnux.mixins import ObjectIdentityMixin
+from volnux.concurrency.async_utils import to_thread
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class SoftSignal(ObjectIdentityMixin):
         Return:
             A list of tuples containing (listener, response).
         """
-        return await asyncio.to_thread(self.emit, sender, **kwargs)
+        return await to_thread(self.emit, sender, **kwargs)
 
     def clean(self, sender: typing.Any) -> None:
         """

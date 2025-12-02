@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class RegistryNotReady(Exception):
-    """registry isn't fully populated yet."""
+    """The registry isn't fully populated yet."""
 
     pass
 
