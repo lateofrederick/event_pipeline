@@ -73,7 +73,8 @@ class RemoteTaskManager(BaseManager):
         """Create and configure the server socket with proper timeout and SSL if enabled"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(self._socket_timeout)
+        # sock.settimeout(self._socket_timeout)
+        sock.setblocking(True)
 
         if not (self._cert_path and self._key_path):
             return sock
