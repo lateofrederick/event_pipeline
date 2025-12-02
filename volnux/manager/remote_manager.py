@@ -163,10 +163,12 @@ class RemoteTaskManager(BaseManager):
 
             while not self._shutdown:
                 try:
-                    client_sock, client_addr = self._sock.accept()
-                    self._thread_pool.submit(
-                        self._handle_client, client_sock, client_addr
-                    )
+                    connection_data = self._sock.accept()
+                    if len(connection_data) == 2:
+                        client_sock, client_addr = connection_data
+                        self._thread_pool.submit(
+                            self._handle_client, client_sock, client_addr
+                        )
                 except socket.timeout:
                     continue  # Allow checking a shutdown flag
                 except Exception as e:
