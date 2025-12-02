@@ -1,5 +1,6 @@
 import socket
 import zlib
+import errno
 import ssl
 import typing
 import pickle
@@ -163,14 +164,27 @@ class RemoteTaskManager(BaseManager):
 
             while not self._shutdown:
                 try:
-                    connection_data = self._sock.accept()
-                    if len(connection_data) == 2:
-                        client_sock, client_addr = connection_data
-                        self._thread_pool.submit(
-                            self._handle_client, client_sock, client_addr
-                        )
-                except socket.timeout:
-                    continue  # Allow checking a shutdown flag
+                    client_sock, client_addr = self._sock.accept()
+
+                    self._thread_pool.submit(
+                        self._handle_client, client_sock, client_addr
+                    )
+                except socket.error as e:
+                    # Check if the error is genuinely just "no connection ready"
+                    if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
+                        # No connection pending, wait a bit and try again
+                        time.sleep(0.1)
+                        continue
+                    elif e.errno == errno.EINTR:
+                        # Interrupted system call (e.g., a signal was received)
+                        print("Accept interrupted by signal, retrying...")
+                        continue
+                    else:
+                        # A real, fatal error occurred
+                        print(f"Fatal socket error: {e}")
+                        break
+                # except socket.timeout:
+                #     continue  # Allow checking a shutdown flag
                 except Exception as e:
                     if not self._shutdown:
                         logger.error(
