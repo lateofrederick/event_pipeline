@@ -1,21 +1,35 @@
+import inspect
+import logging
 import os
 import sys
 import types
 import typing
-import logging
-import inspect
-from pathlib import Path
-from importlib import import_module
 from abc import ABC, abstractmethod
+<<<<<<< HEAD:volnux/manager/base.py
 from volnux.conf import ConfigLoader
 from volnux import EventBase
+=======
+from enum import StrEnum
+from importlib import import_module
+from pathlib import Path
+>>>>>>> 4dad8d8 (define handle task method and its implementation):nexus/manager/base.py
 
+from nexus import EventBase
+from nexus.conf import ConfigLoader
+from nexus.exceptions import RemoteExecutionError
+from nexus.executors.message import TaskMessage
 
 logger = logging.getLogger(__name__)
 
 CONF = ConfigLoader.get_lazily_loaded_config()
 
 PROJECT_ROOT = CONF.PROJECT_ROOT_DIR
+
+
+class Protocol(StrEnum):
+    GRPC = "grpc"
+    XRPC = "xrpc"
+    TCP = "tcp"
 
 
 class BaseManager(ABC):
@@ -117,6 +131,14 @@ class BaseManager(ABC):
         if module_name not in sys.modules:
             sys.modules[module_name] = module
             logger.debug(f"Registered module in sys.modules: {module_name}")
+
+    @staticmethod
+    def handle_task(data, protocol: Protocol):
+        task_message, is_task_message = TaskMessage.deserialize(data)
+
+        allowed_events = []  # todo use allowed_events from configuration
+        if task_message.event not in allowed_events:
+            raise RemoteExecutionError("EVENT_NOT_WHITELISTED")
 
     def __del__(self):
         self.shutdown()
