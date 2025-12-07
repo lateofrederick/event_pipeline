@@ -8,9 +8,15 @@ import pickle
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+<<<<<<< HEAD:volnux/manager/remote_manager.py
 from .base import BaseManager
 from volnux.conf import ConfigLoader
 from volnux.utils import (
+=======
+from .base import BaseManager, Protocol
+from nexus.conf import ConfigLoader
+from nexus.utils import (
+>>>>>>> 2f0c386 (send incoming tasks to remote manager):nexus/manager/remote_manager.py
     send_data_over_socket,
     receive_data_from_socket,
     create_server_ssl_context,
@@ -121,7 +127,9 @@ class RemoteTaskManager(BaseManager):
             except ModuleNotFoundError as e:
                 logger.error(f"Failed to decompress task data: {str(e)}", exc_info=e)
                 exception = e
-
+            
+            # send internal task representation to the base manager.
+            BaseManager.handle_task(task_message, Protocol.TCP)
             # Execute task
             if exception is None:
                 try:
