@@ -3,6 +3,8 @@ import hashlib
 import hmac
 import json
 
+from nexus.exceptions import RemoteExecutionError 
+
 ALGORITHM = "sha256"
 SECRET_KEY = "j43fheiue3xvheilmew-xmwy34mcuea"
 
@@ -20,7 +22,7 @@ def generate_signature(data: dict):
 def verify_data(data: dict) -> bool:
     """verify incoming payload's signature to check if it is the expected signature."""
     if "_signature" not in data:
-        raise ValueError("signature not found in data")
+        raise RemoteExecutionError("INVALID_CHECKSUM")
 
         received_signature = base64.b64decode(data["_signature"])
 
