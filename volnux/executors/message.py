@@ -4,6 +4,8 @@ import zlib
 
 from pydantic_mini import Attrib, BaseModel, MiniAnnotated
 
+from nexus.exceptions import RemoteExecutionError
+
 from .checksum import generate_signature, verify_data
 
 
@@ -43,7 +45,7 @@ class TaskMessage(BaseModel):
         decompressed_data = json.loads(decompressed_data)
 
         if not verify_data(decompressed_data):
-            raise ValueError("received signature does not match expected signature")
+            raise RemoteExecutionError("INVALID_CHECKSUM")
 
         # remove signature and algorithm
         decompressed_data.pop("_signature", None)
