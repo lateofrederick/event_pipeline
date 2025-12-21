@@ -1,10 +1,11 @@
 import logging
 import typing
 import grpc
+import threading
 from concurrent import futures
-from .base import BaseManager
+from .base import BaseManager, Protocol
 from volnux.protos import task_pb2, task_pb2_grpc
-from volnux.executors.message import TaskMessage
+from volnux.executors.message import TaskMessage, deserialize_message, serialize_dict, serialize_object
 
 logger = logging.getLogger(__name__)
 
@@ -12,72 +13,86 @@ logger = logging.getLogger(__name__)
 class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
     """Implementation of TaskExecutor service."""
 
+    def __init__(self, manager):
+        self.manager = manager
+
     def Execute(self, request, context):
         """Execute a task and return the result."""
         try:
-            # Deserialize arguments
-            fn, _ = TaskMessage.deserialize(request.fn)
-            args, _ = TaskMessage.deserialize(request.args)
-            kwargs, _ = TaskMessage.deserialize(request.kwargs)
+            # Reconstruct TaskMessage from request
+            # Request has: task_id, fn, name, args, kwargs
 
-            # Execute function
-            result = fn(*args, **kwargs)
+            # Deserialize args/kwargs using message.py utils
+            # The current gRPC executor serializes them individually.
 
-            # Serialize result
-            serialized_result = TaskMessage.serialize_object(result)
+            args_tuple, is_task = deserialize_message(request.args)
+            kwargs_dict, is_task = deserialize_message(request.kwargs)
 
-            return task_pb2.TaskResponse(success=True, result=serialized_result)
+            # Assuming we only use kwargs for remote execution for now.
+            combined_args = kwargs_dict if kwargs_dict else {}
+
+            event_name = request.name
+
+            # Construct TaskMessage locally
+            task_msg = TaskMessage(
+                event=event_name,
+                args=combined_args,
+                correlation_id=request.task_id if request.task_id else None
+            )
+
+            # Setup sync
+            completion_event = threading.Event()
+            client_context = {
+                "event": completion_event,
+                "result_container": {}
+            }
+
+            # Dispatch
+            self.manager.handle_task(task_msg, Protocol.GRPC, client_context)
+
+            # Wait
+            if completion_event.wait(timeout=300): # TODO: usage configurable timeout
+                result_data = client_context["result_container"].get("data")
+
+                # result_data is 'status', 'result', etc.
+                is_success = result_data.get("status") == "success"
+                error_msg = result_data.get("message", "") if not is_success else ""
+
+                # Serialize the inner result content
+                inner_result = result_data.get("result")
+                if isinstance(inner_result, dict):
+                    serialized_result = serialize_dict(inner_result)
+                else:
+                    serialized_result = serialize_object(inner_result) if not isinstance(inner_result, bytes) else inner_result
+                # Note: serialize_object returns bytes (compressed+signed)
+
+                return task_pb2.TaskResponse(
+                    success=is_success,
+                    error=error_msg,
+                    result=serialized_result
+                )
+            else:
+                return task_pb2.TaskResponse(
+                    success=False,
+                    error="TASK_TIMEOUT",
+                    result=b""
+                )
 
         except Exception as e:
             logger.error(
-                f"Error executing task {request.task_id}, name: {request.name}: {str(e)}",
+                f"Error executing task {request.task_id}: {str(e)}",
                 exc_info=e,
             )
-            serialized_result = TaskMessage.serialize_object(e)
+            # Serialize generic error
+            # We can't really serialize exception easily unless pickling, but serialize_object does json dump.
+            # Convert to string.
+            serialized_error = serialize_dict({"error": str(e)})
             return task_pb2.TaskResponse(
-                success=False, error=str(e), result=serialized_result
+                success=False, error=str(e), result=serialized_error
             )
 
     def ExecuteStream(self, request, context):
-        """Execute a task and stream status updates."""
-        try:
-            # Initial status
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.PENDING, message="Task received"
-            )
-
-            # Deserialize arguments
-            fn, _ = TaskMessage.deserialize(request.fn)
-            args, _ = TaskMessage.deserialize(request.args)
-            kwargs, _ = TaskMessage.deserialize(request.kwargs)
-
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.RUNNING, message="Task started"
-            )
-
-            # Execute with arguments
-            result = fn(*args, **kwargs)
-
-            # Serialize result
-            serialized_result = TaskMessage.serialize_object(result)
-
-            # Send completion
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.COMPLETED,
-                result=serialized_result,
-                message="Task completed",
-            )
-
-        except Exception as e:
-            logger.error(
-                f"Error in streaming task {request.task_id}: {str(e)}", exc_info=e
-            )
-            serialized_result = TaskMessage.serialize_object(e)
-            yield task_pb2.TaskStatus(
-                status=task_pb2.TaskStatus.FAILED,
-                message=str(e),
-                result=serialized_result,
-            )
+        context.abort(grpc.StatusCode.UNIMPLEMENTED, "ExecuteStream not yet refactored")
 
 
 class GRPCManager(BaseManager):
@@ -106,17 +121,41 @@ class GRPCManager(BaseManager):
         self._server = None
         self._shutdown = False
 
+    def _route_tcp_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        pass
+
+    def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        """
+        Route response back to the gRPC handler waiting on event.
+        """
+        client_context = task_info.get("client_context")
+        if not client_context:
+            logger.error("No client context for GRPC response")
+            return
+
+        completion_event = client_context.get("event")
+        result_container = client_context.get("result_container")
+
+        if result_container is not None:
+            result_container["data"] = result_data
+
+        if completion_event:
+            completion_event.set()
+
     def start(self, *args, **kwargs) -> None:
         """Start the gRPC server"""
+        # Start BaseManager components
+        super().start()
+
         try:
             # Create server
             self._server = grpc.server(
                 futures.ThreadPoolExecutor(max_workers=self._max_workers)
             )
 
-            # Add servicer
+            # Add servicer with connection to self
             task_pb2_grpc.add_TaskExecutorServicer_to_server(
-                TaskExecutorServicer(), self._server
+                TaskExecutorServicer(self), self._server
             )
 
             # Configure encryption if enabled
@@ -126,13 +165,11 @@ class GRPCManager(BaseManager):
                         "Server certificate and key required for encryption"
                     )
 
-                # Load server credentials
                 with open(self._server_key_path, "rb") as f:
                     private_key = f.read()
                 with open(self._server_cert_path, "rb") as f:
                     certificate_chain = f.read()
 
-                # Load client CA if required
                 root_certificates = None
                 if self._require_client_cert:
                     if not self._client_ca_path:
@@ -157,7 +194,6 @@ class GRPCManager(BaseManager):
             self._server.start()
             logger.info(f"gRPC server listening on {self._host}:{port}")
 
-            # Wait for shutdown
             self._server.wait_for_termination()
 
         except Exception as e:
@@ -166,6 +202,7 @@ class GRPCManager(BaseManager):
 
     def shutdown(self) -> None:
         """Shutdown the gRPC server"""
+        super().shutdown()
         if self._server:
             self._server.stop(grace=5)  # 5 seconds grace period
             self._server = None

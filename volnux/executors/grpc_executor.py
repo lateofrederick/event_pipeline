@@ -4,7 +4,7 @@ import grpc
 from threading import Lock
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from volnux.protos import task_pb2, task_pb2_grpc
-from volnux.executors.message import TaskMessage
+from volnux.executors.message import deserialize_message, serialize_dict
 
 from .rpc_executor import get_event_name
 
@@ -110,14 +110,16 @@ class GRPCExecutor(Executor):
         """Submit a task to the remote server"""
         try:
             # Serialize arguments
-            serialized_fn = TaskMessage.serialize_object(fn)
-            serialized_args = TaskMessage.serialize_object(args)
-            serialized_kwargs = TaskMessage.serialize_object(kwargs)
+            # We wrap args in a dict because serialization requires dicts for signing
+            # We ignore fn serialization as we rely on name
+
+            serialized_args = serialize_dict({"_args": args})
+            serialized_kwargs = serialize_dict(kwargs)
 
             # Create request
             request = task_pb2.TaskRequest(
                 task_id=str(id(future)),
-                fn=serialized_fn,
+                fn=b"",
                 name=get_event_name(fn),
                 args=serialized_args,
                 kwargs=serialized_kwargs,
@@ -128,7 +130,7 @@ class GRPCExecutor(Executor):
                 try:
                     for response in self._stub.ExecuteStream(request):
                         if response.status == task_pb2.TaskStatus.COMPLETED:
-                            result, _ = TaskMessage.deserialize(response.result)
+                            result, _ = deserialize_message(response.result)
                             future.set_result(result)
                             break
                         elif response.status == task_pb2.TaskStatus.FAILED:
@@ -144,7 +146,7 @@ class GRPCExecutor(Executor):
                 try:
                     response = self._stub.Execute(request)
                     if response.success:
-                        result, _ = TaskMessage.deserialize(response.result)
+                        result, _ = deserialize_message(response.result)
                         future.set_result(result)
                     else:
                         future.set_exception(Exception(response.error))
