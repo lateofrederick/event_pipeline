@@ -2,41 +2,56 @@ import base64
 import hashlib
 import hmac
 import json
+import typing
 
-from nexus.exceptions import RemoteExecutionError 
+from volnux.conf import ConfigLoader
+from volnux.exceptions import RemoteExecutionError
+
+CONF = ConfigLoader.get_lazily_loaded_config()
 
 ALGORITHM = "sha256"
-SECRET_KEY = "j43fheiue3xvheilmew-xmwy34mcuea"
 
 
-def generate_signature(data: dict):
+def get_secret_key() -> bytes:
+    """Retrieve the secret key from configuration and ensure it is bytes."""
+    key = CONF.SECRET_KEY
+    if isinstance(key, str):
+        return key.encode("utf-8")
+    return key
+
+
+def generate_signature(data: typing.Dict[str, typing.Any]) -> typing.Tuple[bytes, str]:
     """Generate a signature for the payload."""
+    data_bytes = json.dumps(data, sort_keys=True).encode("utf-8")
 
     signature = hmac.new(
-        SECRET_KEY, data.encode("utf-8"), getattr(hashlib, ALGORITHM)
+        get_secret_key(), data_bytes, getattr(hashlib, ALGORITHM)
     ).digest()
 
-    return signature, ALGORITHM
+    return base64.b64encode(signature).decode("utf-8"), ALGORITHM
 
 
-def verify_data(data: dict) -> bool:
+def verify_data(data: typing.Dict[str, typing.Any]) -> bool:
     """verify incoming payload's signature to check if it is the expected signature."""
     if "_signature" not in data:
         raise RemoteExecutionError("INVALID_CHECKSUM")
 
-        received_signature = base64.b64decode(data["_signature"])
+    received_signature = data["_signature"]
+    try:
+        received_signature_bytes = base64.b64decode(received_signature)
+    except Exception:
+        return False
 
-        verification_data = data.copy()
-        verification_data.pop("_signature", None)
+    verification_data = data.copy()
+    verification_data.pop("_signature", None)
+    verification_data.pop("_algorithm", None)
 
-        verification_json = json.dumps(verification_data, sort_keys=True)
+    verification_bytes = json.dumps(verification_data, sort_keys=True).encode("utf-8")
 
-        expected_signature = hmac.new(
-            SECRET_KEY,
-            verification_json.encode("utf-8"),
-            getattr(hashlib, ALGORITHM),
-        ).digest()
+    expected_signature = hmac.new(
+        get_secret_key(),
+        verification_bytes,
+        getattr(hashlib, ALGORITHM),
+    ).digest()
 
-        if not hmac.compare_digest(received_signature, expected_signature):
-            return False
-        return True
+    return hmac.compare_digest(received_signature_bytes, expected_signature)
