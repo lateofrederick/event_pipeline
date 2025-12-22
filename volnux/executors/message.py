@@ -4,7 +4,7 @@ import zlib
 
 from pydantic_mini import Attrib, BaseModel, MiniAnnotated
 
-from nexus.exceptions import RemoteExecutionError
+from volnux.exceptions import RemoteExecutionError
 
 from .checksum import generate_signature, verify_data
 
@@ -24,32 +24,47 @@ class TaskMessage(BaseModel):
     args: MiniAnnotated[
         typing.Dict[str, typing.Any], Attrib(validators=[ensure_json_serializable])
     ]
+    correlation_id: typing.Optional[str] = None
 
     def serialize(self) -> bytes:
-        return self.serialize_object(self)
+        return serialize_object(self)
 
-    @staticmethod
-    def serialize_object(obj) -> bytes:
-        obj_dict = obj.dump(_format="dict")
 
-        signature, algorithm = generate_signature(obj)
-        obj_dict["_signature"] = signature
-        obj_dict["_algorithm"] = algorithm
+def serialize_object(obj) -> bytes:
+    obj_dict = obj.dump(_format="dict")
 
-        data = json.dumps(obj_dict, sort_keys=True)
-        return data.encode("utf-8")
+    signature, algorithm = generate_signature(obj_dict)
+    obj_dict["_signature"] = signature
+    obj_dict["_algorithm"] = algorithm
 
-    @staticmethod
-    def deserialize(data: str) -> typing.Tuple[typing.Any, bool]:
-        decompressed_data = zlib.decompress(data)
-        decompressed_data = json.loads(decompressed_data)
+    data = json.dumps(obj_dict, sort_keys=True).encode("utf-8")
+    return zlib.compress(data)
 
-        if not verify_data(decompressed_data):
-            raise RemoteExecutionError("INVALID_CHECKSUM")
 
-        # remove signature and algorithm
-        decompressed_data.pop("_signature", None)
-        decompressed_data.pop("_algorithm", None)
-        decompressed_data = TaskMessage(**decompressed_data)
+def serialize_dict(data: typing.Dict[str, typing.Any]) -> bytes:
+    """Serialize a dictionary with HMAC signature."""
+    working_data = data.copy()
+    signature, algorithm = generate_signature(working_data)
+    working_data["_signature"] = signature
+    working_data["_algorithm"] = algorithm
 
-        return decompressed_data, isinstance(decompressed_data, TaskMessage)
+    data = json.dumps(working_data, sort_keys=True).encode("utf-8")
+    return zlib.compress(data)
+
+
+def deserialize_message(data: bytes) -> typing.Tuple[typing.Any, bool]:
+    decompressed_data = zlib.decompress(data)
+    decompressed_data = json.loads(decompressed_data)
+
+    if not verify_data(decompressed_data):
+        raise RemoteExecutionError("INVALID_CHECKSUM")
+
+    # remove signature and algorithm
+    decompressed_data.pop("_signature", None)
+    decompressed_data.pop("_algorithm", None)
+
+    try:
+        task_msg = TaskMessage(**decompressed_data)
+        return task_msg, True
+    except Exception:
+        return decompressed_data, False
