@@ -16,21 +16,16 @@ class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
     def __init__(self, manager):
         self.manager = manager
 
-    def Execute(self, request, context):
-        """Execute a task and return the result."""
+    def _process_execution(self, request, context) -> typing.Dict:
+        """
+        Internal helper to process execution logic.
+        Returns the raw result dict (containing status, result, message/error).
+        """
         try:
             # Reconstruct TaskMessage from request
-            # Request has: task_id, fn, name, args, kwargs
-
-            # Deserialize args/kwargs using message.py utils
-            # The current gRPC executor serializes them individually.
-
             args_tuple, is_task = deserialize_message(request.args)
             kwargs_dict, is_task = deserialize_message(request.kwargs)
-
-            # Assuming we only use kwargs for remote execution for now.
             combined_args = kwargs_dict if kwargs_dict else {}
-
             event_name = request.name
 
             # Construct TaskMessage locally
@@ -51,48 +46,72 @@ class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
             self.manager.handle_task(task_msg, Protocol.GRPC, client_context)
 
             # Wait
-            if completion_event.wait(timeout=300): # TODO: usage configurable timeout
+            if completion_event.wait(timeout=300):
                 result_data = client_context["result_container"].get("data")
-
-                # result_data is 'status', 'result', etc.
-                is_success = result_data.get("status") == "success"
-                error_msg = result_data.get("message", "") if not is_success else ""
-
-                # Serialize the inner result content
-                inner_result = result_data.get("result")
-                if isinstance(inner_result, dict):
-                    serialized_result = serialize_dict(inner_result)
-                else:
-                    serialized_result = serialize_object(inner_result) if not isinstance(inner_result, bytes) else inner_result
-                # Note: serialize_object returns bytes (compressed+signed)
-
-                return task_pb2.TaskResponse(
-                    success=is_success,
-                    error=error_msg,
-                    result=serialized_result
-                )
+                return result_data
             else:
-                return task_pb2.TaskResponse(
-                    success=False,
-                    error="TASK_TIMEOUT",
-                    result=b""
-                )
+                return {
+                    "status": "failed",
+                    "message": "TASK_TIMEOUT",
+                    "result": None
+                }
 
         except Exception as e:
-            logger.error(
-                f"Error executing task {request.task_id}: {str(e)}",
-                exc_info=e,
-            )
-            # Serialize generic error
-            # We can't really serialize exception easily unless pickling, but serialize_object does json dump.
-            # Convert to string.
-            serialized_error = serialize_dict({"error": str(e)})
-            return task_pb2.TaskResponse(
-                success=False, error=str(e), result=serialized_error
-            )
+            logger.error(f"Error executing task {request.task_id}: {str(e)}", exc_info=e)
+            return {
+                "status": "error",
+                "message": str(e),
+                "result": None
+            }
+
+    def Execute(self, request, context):
+        """Execute a task and return the result via TaskResponse (Unary)"""
+        result_data = self._process_execution(request, context)
+
+        is_success = result_data.get("status") == "success"
+        error_msg = result_data.get("message", "") if not is_success else ""
+
+        # Serialize result
+        inner_result = result_data.get("result")
+        if isinstance(inner_result, dict):
+            serialized_result = serialize_dict(inner_result)
+        else:
+            serialized_result = serialize_object(inner_result) if not isinstance(inner_result, bytes) else (inner_result or b"")
+
+        return task_pb2.TaskResponse(
+            success=is_success,
+            error=error_msg,
+            result=serialized_result
+        )
 
     def ExecuteStream(self, request, context):
-        context.abort(grpc.StatusCode.UNIMPLEMENTED, "ExecuteStream not yet refactored")
+        """Execute a task and yield result via TaskStatus (Streaming)"""
+        result_data = self._process_execution(request, context)
+
+        status_str = result_data.get("status")
+        msg = result_data.get("message", "")
+
+        # Map string status to Enum
+        if status_str == "success":
+            status_enum = task_pb2.TaskStatus.COMPLETED
+        elif status_str == "error" or status_str == "failed":
+            status_enum = task_pb2.TaskStatus.FAILED
+        else:
+            status_enum = task_pb2.TaskStatus.PENDING # Should not happen after wait
+
+        # Serialize result
+        inner_result = result_data.get("result")
+        if isinstance(inner_result, dict):
+            serialized_result = serialize_dict(inner_result)
+        else:
+            serialized_result = serialize_object(inner_result) if not isinstance(inner_result, bytes) else (inner_result or b"")
+
+        # Yield final status
+        yield task_pb2.TaskStatus(
+            status=status_enum,
+            result=serialized_result,
+            message=msg
+        )
 
 
 class GRPCManager(BaseManager):
@@ -137,10 +156,14 @@ class GRPCManager(BaseManager):
         result_container = client_context.get("result_container")
 
         if result_container is not None:
+            # result_data contains: status, result, completed_at, etc.
             result_container["data"] = result_data
 
         if completion_event:
             completion_event.set()
+
+    def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+        pass # Not used in GRPCManager
 
     def start(self, *args, **kwargs) -> None:
         """Start the gRPC server"""
