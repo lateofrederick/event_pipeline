@@ -1,3 +1,4 @@
+import uuid
 import logging
 import typing
 import grpc
@@ -116,9 +117,10 @@ class GRPCExecutor(Executor):
             serialized_args = serialize_dict({"_args": args})
             serialized_kwargs = serialize_dict(kwargs)
 
+
             # Create request
             request = task_pb2.TaskRequest(
-                task_id=str(id(future)),
+                task_id=str(uuid.uuid4()),
                 fn=b"",
                 name=get_event_name(fn),
                 args=serialized_args,
