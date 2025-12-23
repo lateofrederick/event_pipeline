@@ -58,7 +58,7 @@ class DynamicProcessPoolExecutor:
         with the updated worker count.
         """
         with self._executor_lock:
-            # 1. Shutdown old executor gracefully
+            # Shutdown old executor gracefully
             if self.executor:
                 logger.info(
                     f"PBE scaling: Shutting down old pool (workers={self.current_worker_count})."
@@ -67,7 +67,7 @@ class DynamicProcessPoolExecutor:
                 # The old PBE processes will terminate after their current tasks finish.
                 self.executor.shutdown(wait=False)
 
-                # 2. Update worker count
+                # Update worker count
             self.current_worker_count = new_worker_count
 
             try:
@@ -75,7 +75,7 @@ class DynamicProcessPoolExecutor:
             except RuntimeError:
                 pass  # Already set
 
-            # 3. Create new executor
+            # Create new executor
             logger.info(f"PBE scaling: Starting new pool (workers={new_worker_count}).")
             self.executor = ProcessPoolExecutor(max_workers=new_worker_count)
 
