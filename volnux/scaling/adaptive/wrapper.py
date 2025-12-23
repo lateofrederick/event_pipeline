@@ -155,7 +155,7 @@ class DynamicProcessPoolExecutor:
     def wait_for_completion(self, timeout: Optional[float] = None):
         """Wait for all submitted tasks to complete"""
 
-        # 1. Wait for internal queue to empty (i.e., all tasks submitted to PBE)
+        # Wait for internal queue to empty (i.e., all tasks submitted to PBE)
         logger.info("Waiting for internal task queue to empty...")
         start_time = time.time()
         while not self._pending_tasks.empty():
@@ -163,7 +163,7 @@ class DynamicProcessPoolExecutor:
                 raise TimeoutError("Timeout waiting for internal queue to drain.")
             time.sleep(0.5)
 
-        # 2. Wait for all real futures to complete
+        # Wait for all real futures to complete
         logger.info(
             "Internal queue drained. Waiting for all running tasks to complete..."
         )
