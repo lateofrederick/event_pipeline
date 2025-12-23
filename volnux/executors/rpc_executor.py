@@ -2,10 +2,12 @@ import sys
 import logging
 import typing
 import xmlrpc.client
+import uuid
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from threading import Lock
 from volnux.utils import create_client_ssl_context
-from volnux.executors.message import TaskMessage
+from volnux.executors.message import TaskMessage, deserialize_message
+
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +92,14 @@ class XMLRPCExecutor(Executor):
     ) -> None:
         """Submit a task to the remote server"""
         try:
+            combined_args = kwargs.copy()
+            if args:
+                combined_args["__args"] = args # Pass positional args under special key if needed
+
             task_message = TaskMessage(
-                task_id=str(id(future)),
-                fn=fn,
-                args=args,
-                kwargs=kwargs,
-                encrypted=self._use_encryption,
+                correlation_id=str(uuid.uuid4()),
+                event=get_event_name(fn),
+                args=combined_args
             )
 
             # Make RPC call
@@ -104,7 +108,7 @@ class XMLRPCExecutor(Executor):
                     get_event_name(fn), task_message.serialize()
                 )
 
-                result, _ = TaskMessage.deserialize(response)
+                result, _ = deserialize_message(response.data if hasattr(response, 'data') else response)
 
                 # Handle error result
                 if isinstance(result, Exception):
