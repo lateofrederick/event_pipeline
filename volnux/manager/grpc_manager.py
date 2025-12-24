@@ -1,11 +1,13 @@
 import logging
 import typing
+import asyncio
 import grpc
-import threading
 from concurrent import futures
 from .base import BaseManager, Protocol
 from volnux.protos import task_pb2, task_pb2_grpc
 from volnux.executors.message import TaskMessage, deserialize_message, serialize_dict, serialize_object
+from volnux.utils import create_error_response
+from volnux.constants import ErrorCodes
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +18,9 @@ class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
     def __init__(self, manager):
         self.manager = manager
 
-    def _process_execution(self, request, context) -> typing.Dict:
+    async def _process_execution(self, request, context) -> typing.Dict:
         """
-        Internal helper to process execution logic.
+        Internal helper to process execution logic (Async).
         Returns the raw result dict (containing status, result, message/error).
         """
         try:
@@ -35,8 +37,8 @@ class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
                 correlation_id=request.task_id if request.task_id else None
             )
 
-            # Setup sync
-            completion_event = threading.Event()
+            # Setup async sync
+            completion_event = asyncio.Event()
             client_context = {
                 "event": completion_event,
                 "result_container": {}
@@ -46,27 +48,28 @@ class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
             self.manager.handle_task(task_msg, Protocol.GRPC, client_context)
 
             # Wait
-            if completion_event.wait(timeout=300):
+            try:
+                await asyncio.wait_for(completion_event.wait(), timeout=300)
                 result_data = client_context["result_container"].get("data")
                 return result_data
-            else:
-                return {
-                    "status": "failed",
-                    "message": "TASK_TIMEOUT",
-                    "result": None
-                }
+            except asyncio.TimeoutError:
+                return create_error_response(
+                    code=ErrorCodes.TASK_TIMEOUT,
+                    message="Task execution timed out",
+                    correlation_id=request.task_id
+                )
 
         except Exception as e:
             logger.error(f"Error executing task {request.task_id}: {str(e)}", exc_info=e)
-            return {
-                "status": "error",
-                "message": str(e),
-                "result": None
-            }
+            return create_error_response(
+                code=ErrorCodes.INTERNAL_ERROR,
+                message=str(e),
+                correlation_id=request.task_id
+            )
 
-    def Execute(self, request, context):
+    async def Execute(self, request, context):
         """Execute a task and return the result via TaskResponse (Unary)"""
-        result_data = self._process_execution(request, context)
+        result_data = await self._process_execution(request, context)
 
         is_success = result_data.get("status") == "success"
         error_msg = result_data.get("message", "") if not is_success else ""
@@ -84,9 +87,9 @@ class TaskExecutorServicer(task_pb2_grpc.TaskExecutorServicer):
             result=serialized_result
         )
 
-    def ExecuteStream(self, request, context):
+    async def ExecuteStream(self, request, context):
         """Execute a task and yield result via TaskStatus (Streaming)"""
-        result_data = self._process_execution(request, context)
+        result_data = await self._process_execution(request, context)
 
         status_str = result_data.get("status")
         msg = result_data.get("message", "")
@@ -143,7 +146,7 @@ class GRPCManager(BaseManager):
     def _route_tcp_response(self, task_info: typing.Dict, result_data: typing.Dict):
         pass
 
-    def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+    async def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
         """
         Route response back to the gRPC handler waiting on event.
         """
@@ -165,18 +168,15 @@ class GRPCManager(BaseManager):
     def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
         pass # Not used in GRPCManager
 
-    def start(self, *args, **kwargs) -> None:
-        """Start the gRPC server"""
-        # Start BaseManager components
-        super().start()
-
+    async def _start_grpc_server(self):
+        """Start the Async gRPC Server"""
         try:
-            # Create server
-            self._server = grpc.server(
+             # Create server
+            self._server = grpc.aio.server(
                 futures.ThreadPoolExecutor(max_workers=self._max_workers)
             )
 
-            # Add servicer with connection to self
+            # Add servicer
             task_pb2_grpc.add_TaskExecutorServicer_to_server(
                 TaskExecutorServicer(self), self._server
             )
@@ -184,9 +184,7 @@ class GRPCManager(BaseManager):
             # Configure encryption if enabled
             if self._use_encryption:
                 if not (self._server_cert_path and self._server_key_path):
-                    raise ValueError(
-                        "Server certificate and key required for encryption"
-                    )
+                    raise ValueError("Server certificate and key required for encryption")
 
                 with open(self._server_key_path, "rb") as f:
                     private_key = f.read()
@@ -196,9 +194,7 @@ class GRPCManager(BaseManager):
                 root_certificates = None
                 if self._require_client_cert:
                     if not self._client_ca_path:
-                        raise ValueError(
-                            "Client CA required when client cert is required"
-                        )
+                        raise ValueError("Client CA required when client cert is required")
                     with open(self._client_ca_path, "rb") as f:
                         root_certificates = f.read()
 
@@ -214,18 +210,29 @@ class GRPCManager(BaseManager):
                 port = self._server.add_insecure_port(f"{self._host}:{self._port}")
 
             # Start server
-            self._server.start()
-            logger.info(f"gRPC server listening on {self._host}:{port}")
+            await self._server.start()
+            logger.info(f"Async gRPC server listening on {self._host}:{port}")
 
-            self._server.wait_for_termination()
+            await self._server.wait_for_termination()
 
+        except asyncio.CancelledError:
+             # Graceful stop on cancel
+             if self._server:
+                 await self._server.stop(grace=5)
         except Exception as e:
             logger.error(f"Error starting gRPC server: {e}")
-            raise
+
+    def _get_extra_async_tasks(self) -> typing.List[asyncio.Task]:
+        """Start the gRPC server as an extra task"""
+        return [asyncio.create_task(self._start_grpc_server())]
+
+    def start(self, *args, **kwargs) -> None:
+        """Start the gRPC server"""
+        # Start BaseManager components (which starts thread loop -> starts extra tasks)
+        super().start()
 
     def shutdown(self) -> None:
         """Shutdown the gRPC server"""
         super().shutdown()
-        if self._server:
-            self._server.stop(grace=5)  # 5 seconds grace period
-            self._server = None
+        # No-op here if async loop handles it, or clean up if manual start
+        self._server = None
