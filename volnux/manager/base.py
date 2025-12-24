@@ -8,6 +8,12 @@ import typing
 import uuid
 import queue
 import threading
+import queue
+import threading
+import json
+import time
+import asyncio
+from volnux.concurrency.async_utils import to_thread
 from abc import ABC, abstractmethod
 try:
     from enum import StrEnum
@@ -29,6 +35,8 @@ from volnux.exceptions import RemoteExecutionError
 from volnux.manager.registry import ClientTaskRegistry
 from volnux.base import get_event_registry
 from volnux.manager.result_store import get_result_store
+from volnux.utils import create_error_response
+from volnux.constants import ErrorCodes
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +81,7 @@ def execute_task_wrapper(event_instance: EventBase, correlation_id: str) -> typi
     """
     Top-level wrapper for executing tasks in a subprocess.
     """
+    # TODO: Sandbox execution in Kubernetes, with predefined events from github.
     try:
         event_result = event_instance()
 
@@ -84,14 +93,11 @@ def execute_task_wrapper(event_instance: EventBase, correlation_id: str) -> typi
         }
     except Exception as e:
         logger.error(f"Execution failed for task {correlation_id}: {e}")
-        return {
-            "status": "error",
-            "result": str(e),
-            "message": str(e),
-            "code": "EXECUTION_FAILED",
-            "correlation_id": correlation_id,
-            "completed_at": str(datetime.datetime.now())
-        }
+        return create_error_response(
+            code=ErrorCodes.PROCESSING_ERROR,
+            message=str(e),
+            correlation_id=correlation_id
+        )
 
 
 class BaseManager(ABC):
@@ -113,17 +119,17 @@ class BaseManager(ABC):
         self._cleanup_thread = None
 
     @abstractmethod
-    def _route_tcp_response(self, task_info: typing.Dict, result_data: typing.Dict):
+    async def _route_tcp_response(self, task_info: typing.Dict, result_data: typing.Dict):
         """Route response via TCP"""
         pass
 
     @abstractmethod
-    def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+    async def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
         """Route response via gRPC"""
         pass
 
     @abstractmethod
-    def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
+    async def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
         """Route response via XML-RPC"""
         pass
 
@@ -135,29 +141,56 @@ class BaseManager(ABC):
 
     def start(self, *args, **kwargs):
         """Start the task manager services"""
-        self._router_thread = threading.Thread(target=self._response_router_loop, daemon=True)
-        self._router_thread.start()
+        self._manager_loop_thread = threading.Thread(target=self._run_async_loop, daemon=True)
+        self._manager_loop_thread.start()
 
-        self._submission_thread = threading.Thread(target=self._task_submission_loop, daemon=True)
-        self._submission_thread.start()
+        logger.info("BaseManager started: Async Event Loop running.")
 
-        self._cleanup_thread = threading.Thread(target=self._registry_cleanup_loop, daemon=True)
-        self._cleanup_thread.start()
+    def _run_async_loop(self):
+        """Entry point for the manager's async loop"""
+        asyncio.run(self._main_async_loop())
 
-        logger.info("BaseManager started: Response router, Submission loop, and Cleanup loop running.")
+    async def _main_async_loop(self):
+        """Main async orchestrator"""
+        # Create tasks
+        submission_task = asyncio.create_task(self._task_submission_loop_async())
+        router_task = asyncio.create_task(self._response_router_loop_async())
+        cleanup_task = asyncio.create_task(self._registry_cleanup_loop_async())
+
+        # Allow subclasses to register their own tasks (e.g. servers)
+        extra_tasks = self._get_extra_async_tasks()
+        active_tasks = [submission_task, router_task, cleanup_task] + extra_tasks
+
+        # Wait until shutdown
+        while not self._shutdown_event.is_set():
+            await asyncio.sleep(0.5)
+
+        # Cancel tasks
+        for t in active_tasks:
+            t.cancel()
+
+        try:
+             await asyncio.gather(*active_tasks, return_exceptions=True)
+        except Exception:
+             pass
+
+    def _get_extra_async_tasks(self) -> typing.List[asyncio.Task]:
+        """Hook for subclasses to add async tasks to the main loop"""
+        return []
 
     def shutdown(self):
         """Shutdown the task manager server"""
         logger.info("Shutting down BaseManager...")
         self._shutdown_event.set()
+
+        # Wait for async loop to finish first (cancelling its tasks)
+        if hasattr(self, '_manager_loop_thread'):
+            self._manager_loop_thread.join(timeout=5)
+
+        # Then shutdown executor
         if self.executor:
             self.executor.shutdown(wait=True)
-        if self._router_thread:
-            self._router_thread.join(timeout=5)
-        if self._submission_thread:
-            self._submission_thread.join(timeout=5)
-        if self._cleanup_thread:
-            self._cleanup_thread.join(timeout=5)
+
         logger.info("BaseManager shutdown complete.")
 
     def handle_task(self, task_message: TaskMessage, protocol: str, client_context: typing.Any = None):
@@ -205,6 +238,9 @@ class BaseManager(ABC):
             "correlation_id": correlation_id,
             "status": "pending",
             "created_at": str(datetime.datetime.now()),
+            "start_time": time.perf_counter(),
+            "client_id": task_message.args.get("client_id", "unknown"),
+            "event_name": task_message.event,
             "protocol": protocol,
             "client_context": client_context
         }
@@ -226,24 +262,32 @@ class BaseManager(ABC):
         except Exception as e:
             raise RemoteExecutionError(f"QUEUE_ERROR: {e}")
 
-    def _task_submission_loop(self):
+    async def _task_submission_loop_async(self):
         """
-        Polls task_queue and submits tasks to the executor.
+        Polls task_queue and submits tasks to the executor (Async).
         """
         while not self._shutdown_event.is_set():
             try:
-                task_node = self.task_queue.get(timeout=1.0)
+                def get_item():
+                    return self.task_queue.get(timeout=0.5)
+
+                try:
+                    task_node = await to_thread(get_item)
+                except queue.Empty:
+                    continue
 
                 # Execute
+                # executor.submit is non-blocking (returns future immediately)
                 future = self.executor.submit(execute_task_wrapper, task_node.event, str(task_node.correlation_id))
                 future.add_done_callback(self._on_task_complete)
 
                 self.task_queue.task_done()
                 logger.debug(f"Task submitted to executor: {task_node.correlation_id}")
-            except queue.Empty:
-                continue
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error(f"Error in task submission loop: {e}")
+                await asyncio.sleep(1) # Backoff
 
     def _on_task_complete(self, future):
         try:
@@ -252,23 +296,33 @@ class BaseManager(ABC):
         except Exception as e:
             logger.error(f"Task future failed: {e}")
 
-    def _response_router_loop(self):
+    async def _response_router_loop_async(self):
         """
-        Polls response_queue and routes results to clients.
+        Polls response_queue and routes results to clients (Async).
         """
         while not self._shutdown_event.is_set():
             try:
-                result = self.response_queue.get(timeout=1.0)
-                self._route_response(result)
+                def get_result():
+                    return self.response_queue.get(timeout=0.5)
+
+                try:
+                    result = await to_thread(get_result)
+                except queue.Empty:
+                    continue
+
+                # Now processing async routing directly in the loop
+                await self._route_response(result)
+
                 self.response_queue.task_done()
-            except queue.Empty:
-                continue
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error(f"Error in response router: {e}")
+                await asyncio.sleep(1)
 
-    def _registry_cleanup_loop(self):
+    async def _registry_cleanup_loop_async(self):
         """
-        Periodically cleans up expired tasks from the registry.
+        Periodically cleans up expired tasks from the registry (Async).
         """
         registry = get_client_task_registry()
         cleanup_interval = 60  # Run every minute
@@ -276,14 +330,22 @@ class BaseManager(ABC):
 
         while not self._shutdown_event.is_set():
             try:
-                if self._shutdown_event.wait(timeout=cleanup_interval):
-                    break
+                # Use asyncio sleep instead of Event.wait
+                try:
+                    await asyncio.wait_for(to_thread(self._shutdown_event.wait, timeout=0.1), timeout=cleanup_interval)
+                    if self._shutdown_event.is_set():
+                        break
+                except asyncio.TimeoutError:
+                    pass
 
-                registry.cleanup_expired(ttl_seconds=ttl)
+                await to_thread(registry.cleanup_expired, ttl_seconds=ttl)
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error(f"Error in registry cleanup loop: {e}")
+                await asyncio.sleep(5)
 
-    def _route_response(self, result_data: typing.Dict[str, typing.Any]):
+    async def _route_response(self, result_data: typing.Dict[str, typing.Any]):
         correlation_id = result_data.get("correlation_id")
         if not correlation_id:
             logger.error("Result missing correlation_id")
@@ -297,15 +359,34 @@ class BaseManager(ABC):
             get_result_store().store(correlation_id, result_data)
             return
 
+        try:
+            start_time = task_info.get("start_time")
+            duration_ms = (time.perf_counter() - start_time) * 1000 if start_time else 0
+
+            log_payload = {
+                "level": "info",
+                "event": "task_completed",
+                "task_id": str(correlation_id),
+                "correlation_id": str(correlation_id),
+                "event_name": task_info.get("event_name"),
+                "duration_ms": round(duration_ms, 2),
+                "status": result_data.get("status"),
+                "protocol": task_info.get("protocol"),
+                "client_id": task_info.get("client_id")
+            }
+            logger.info(json.dumps(log_payload))
+        except Exception as e:
+            logger.warning(f"Failed to log structured event: {e}")
+
         protocol = task_info.get("protocol")
 
         try:
             if protocol == Protocol.TCP:
-                self._route_tcp_response(task_info, result_data)
+                await self._route_tcp_response(task_info, result_data)
             elif protocol == Protocol.GRPC:
-                self._route_grpc_response(task_info, result_data)
+                await self._route_grpc_response(task_info, result_data)
             elif protocol == Protocol.XRPC:
-                self._route_xrpc_response(task_info, result_data)
+                await self._route_xrpc_response(task_info, result_data)
             else:
                 logger.warning(f"Unknown protocol {protocol} for task {correlation_id}")
         except Exception as e:
