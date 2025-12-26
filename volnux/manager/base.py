@@ -55,7 +55,6 @@ def get_client_task_registry():
 
 class Protocol(StrEnum):
     GRPC = "grpc"
-    XRPC = "xrpc"
     TCP = "tcp"
 
 
@@ -126,11 +125,6 @@ class BaseManager(ABC):
     @abstractmethod
     async def _route_grpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
         """Route response via gRPC"""
-        pass
-
-    @abstractmethod
-    async def _route_xrpc_response(self, task_info: typing.Dict, result_data: typing.Dict):
-        """Route response via XML-RPC"""
         pass
 
     def __repr__(self):
@@ -385,8 +379,6 @@ class BaseManager(ABC):
                 await self._route_tcp_response(task_info, result_data)
             elif protocol == Protocol.GRPC:
                 await self._route_grpc_response(task_info, result_data)
-            elif protocol == Protocol.XRPC:
-                await self._route_xrpc_response(task_info, result_data)
             else:
                 logger.warning(f"Unknown protocol {protocol} for task {correlation_id}")
         except Exception as e:
