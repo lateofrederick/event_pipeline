@@ -149,15 +149,12 @@ class PipelineConfigurationError(PipelineError):
     """Exception raised for configuration errors."""
 
 
-<<<<<<< HEAD:volnux/exceptions.py
 class ExecutorNotFound(IndexError):
     """Exception raised when an executor does not exist."""
 
 
 class PointyNotExecutable(Exception):
     """Exception raised when a pointy script is not executable."""
-=======
 class RemoteExecutionError(Exception):
     pass
 
->>>>>>> 6c57de7 (define new exceptions):nexus/exceptions.py
