@@ -3,7 +3,7 @@ from pathlib import Path
 
 PROJECT_ROOT_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "j43fheiue3xvheilmew-xmwy34mcuea"
+SECRET_KEY = "your-secret-key"
 
 ALLOWED_EVENTS = ["DataProcessEvent"]
 
