@@ -7,9 +7,15 @@ from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from volnux.protos import task_pb2, task_pb2_grpc
 from volnux.executors.message import deserialize_message, serialize_dict
 
-from .rpc_executor import get_event_name
+from volnux.executors.message import deserialize_message, serialize_dict
 
 logger = logging.getLogger(__name__)
+
+def get_event_name(fn):
+    """Get the name of the function/event"""
+    if hasattr(fn, "__name__"):
+        return fn.__name__
+    return str(fn)
 
 
 class StreamingFuture(Future):
