@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from volnux.concurrency.async_utils import to_thread
 
 from .base import BaseManager, Protocol
-from nexus.conf import ConfigLoader
-from nexus.utils import (
+from volnux.conf import ConfigLoader
+from volnux.utils import (
     send_data_over_socket,
     receive_data_from_socket,
     create_server_ssl_context,
