@@ -23,7 +23,9 @@ def get_secret_key() -> bytes:
 
 
 class BaseRemoteExecutor(Executor):
-    def _generate_hmac(self, data: typing.Dict[str, typing.Any]) -> typing.Tuple[str, str]:
+    def _generate_hmac(
+        self, data: typing.Dict[str, typing.Any]
+    ) -> typing.Tuple[str, str]:
         """Generate a signature for the payload."""
         data_bytes = json.dumps(data, sort_keys=True).encode("utf-8")
 
@@ -59,6 +61,6 @@ class BaseRemoteExecutor(Executor):
         return str(uuid.uuid4())
 
     def submit(
-            self, fn: typing.Callable, /, *args, **kwargs
+        self, fn: typing.Callable, /, *args, **kwargs
     ) -> concurrent.futures.Future:
         pass

@@ -16,7 +16,7 @@ class TestBaseRemoteExecutor(unittest.TestCase):
     def setUp(self):
         self.executor = BaseRemoteExecutor()
 
-        patcher = patch('volnux.executors.base_remote_executor.CONF')
+        patcher = patch("volnux.executors.base_remote_executor.CONF")
         self.mock_conf = patcher.start()
         self.mock_conf.SECRET_KEY = "test_secret_key"
         self.addCleanup(patcher.stop)
@@ -61,10 +61,7 @@ class TestBaseRemoteExecutor(unittest.TestCase):
         """Test payload construction with special characters"""
         mock_message = MagicMock()
         # Including special characters and unicode
-        mock_message.dump.return_value = {
-            "task_id": "spec!@#$",
-            "data": "test_data_😊"
-        }
+        mock_message.dump.return_value = {"task_id": "spec!@#$", "data": "test_data_😊"}
 
         payload = self.executor.construct_payload(mock_message)
 
