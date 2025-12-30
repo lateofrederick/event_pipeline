@@ -1,14 +1,17 @@
-import base64
 import concurrent
-import hashlib
-import hmac
-import json
+import time
 import typing
 import uuid
 from concurrent.futures import Executor
 
 from volnux.conf import ConfigLoader
-from volnux.executors.message import TaskMessage
+from volnux.types import (
+    QueryEventPayload,
+    QueryEventResponse,
+    TaskExecutionErrorResponse,
+    TaskExecutionSuccessResponse,
+    Payload,
+)
 
 CONF = ConfigLoader.get_lazily_loaded_config()
 ALGORITHM = "sha256"
@@ -23,44 +26,58 @@ def get_secret_key() -> bytes:
 
 
 class BaseRemoteExecutor(Executor):
-    def _generate_hmac(
-        self, data: typing.Dict[str, typing.Any]
-    ) -> typing.Tuple[str, str]:
-        """Generate a signature for the payload."""
-        data_bytes = json.dumps(data, sort_keys=True).encode("utf-8")
-
-        signature = hmac.new(
-            get_secret_key(), data_bytes, getattr(hashlib, ALGORITHM)
-        ).digest()
-
-        return base64.b64encode(signature).decode("utf-8"), ALGORITHM
-
-    def construct_payload(self, data: TaskMessage) -> typing.Dict[str, typing.Any]:
+    def construct_payload(
+        self, event_name: str, args: typing.Dict[str, typing.Any]
+    ) -> Payload:
         """Construct the payload to send to the remote manager."""
-        dict_data = data.dump(_format="dict")
+        from volnux.utils import generate_hmac
 
-        if not self._is_payload_serializable(dict_data):
-            raise ValueError("Payload is not serializable")
+        dict_data = {
+            "type": "submission_event",
+            "event_name": event_name,
+            "args": args,
+            "correlation_id": str(uuid.uuid4()),
+            "timeout": CONF.REMOTE_EVENT_TIMEOUT or None,
+            "timestamp": time.time(),
+            "client_id": self._get_client_id(),
+        }
 
-        signature, algorithm = self._generate_hmac(dict_data)
-        dict_data["_signature"] = signature
-        dict_data["_algorithm"] = algorithm
+        hmac, _ = generate_hmac(dict_data, get_secret_key())
+        dict_data["hmac"] = hmac
 
-        return dict_data
+        return Payload(**dict_data)
 
-    def _is_payload_serializable(self, payload: typing.Dict[str, typing.Any]) -> bool:
-        """Check if the payload can be serialized."""
-        try:
-            json.dumps(payload)
-        except (TypeError, OverflowError) as e:
-            return False
-        return True
+    def _get_client_id(self) -> str:
+        """Get the client ID for the newly constructed payload."""
+        import socket
 
-    def generate_correlation_id(self) -> str:
-        """Generate a unique correlation ID."""
-        return str(uuid.uuid4())
+        return socket.gethostname()
+
+    def query_event_exists(self, data: QueryEventPayload) -> QueryEventResponse:
+        """Query the remote manager for the existence of an event."""
+        raise NotImplementedError
+
+    def parse_task_execution_response(
+        self,
+        response: typing.Union[
+            TaskExecutionSuccessResponse, TaskExecutionErrorResponse
+        ],
+    ):
+        """Parse the response from the remote manager."""
+        from volnux.exceptions import RemoteExecutionError
+        from volnux.utils import verify_hmac
+
+        if isinstance(response, TaskExecutionErrorResponse):
+            raise RemoteExecutionError(f"{response.code}: {response.message}")
+
+        # Verify HMAC
+        response_data = response.dump(_format="dict")
+        if not verify_hmac(response_data, get_secret_key()):
+            raise RemoteExecutionError("INVALID_HMAC")
+
+        return response.result
 
     def submit(
         self, fn: typing.Callable, /, *args, **kwargs
     ) -> concurrent.futures.Future:
-        pass
+        raise NotImplementedError
