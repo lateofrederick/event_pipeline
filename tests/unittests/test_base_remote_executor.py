@@ -1,13 +1,10 @@
-import unittest
 import sys
-import json
-import base64
-import hmac
-import hashlib
+import unittest
 from unittest.mock import MagicMock, patch
 from volnux.executors.base_remote_executor import BaseRemoteExecutor
 
 
+# Mocking volnux.parser.options to avoid ImportError/TypeError in environment
 mock_options = MagicMock()
 sys.modules["volnux.parser.options"] = mock_options
 
@@ -15,81 +12,137 @@ sys.modules["volnux.parser.options"] = mock_options
 class TestBaseRemoteExecutor(unittest.TestCase):
     def setUp(self):
         self.executor = BaseRemoteExecutor()
-
+        # Mocking configuration
         patcher = patch("volnux.executors.base_remote_executor.CONF")
         self.mock_conf = patcher.start()
         self.mock_conf.SECRET_KEY = "test_secret_key"
+        self.mock_conf.REMOTE_EVENT_TIMEOUT = 30
         self.addCleanup(patcher.stop)
 
     def test_get_secret_key(self):
         """Test retrieving secret key from configuration"""
         from volnux.executors.base_remote_executor import get_secret_key
 
+        # Test string key
         self.mock_conf.SECRET_KEY = "string_key"
         self.assertEqual(get_secret_key(), b"string_key")
 
+        # Test bytes key
         self.mock_conf.SECRET_KEY = b"bytes_key"
         self.assertEqual(get_secret_key(), b"bytes_key")
 
-    def test_generate_hmac(self):
-        """Test HMAC generation"""
-        data = {"test": "data"}
-        signature, algorithm = self.executor._generate_hmac(data)
+    @patch("volnux.utils.generate_hmac")
+    @patch("socket.gethostname")
+    def test_construct_payload(self, mock_hostname, mock_generate_hmac):
+        """Test payload construction with new signature and return type"""
+        mock_hostname.return_value = "test_host"
+        mock_generate_hmac.return_value = ("test_hmac", "sha256")
 
-        expected_bytes = json.dumps(data, sort_keys=True).encode("utf-8")
-        expected_signature = hmac.new(
-            b"test_secret_key", expected_bytes, hashlib.sha256
-        ).digest()
-        expected_b64 = base64.b64encode(expected_signature).decode("utf-8")
+        event_name = "test_event"
+        args = {"arg1": 1, "arg2": "value"}
 
-        self.assertEqual(signature, expected_b64)
-        self.assertEqual(algorithm, "sha256")
+        # construct_payload now returns a Payload object
+        payload = self.executor.construct_payload(event_name, args)
 
-    def test_construct_payload(self):
-        """Test payload construction and HMAC generation"""
-        mock_message = MagicMock()
-        mock_message.dump.return_value = {"task_id": "123", "args": [1, 2]}
+        # Verify Payload object structure/attributes
+        self.assertEqual(payload.event_name, event_name)
+        self.assertEqual(payload.args, args)
+        self.assertEqual(payload.client_id, "test_host")
+        self.assertEqual(payload.hmac, "test_hmac")
+        self.assertEqual(payload.timeout, 30)
 
-        payload = self.executor.construct_payload(mock_message)
+        # Verify generate_hmac call
+        mock_generate_hmac.assert_called_once()
+        call_args, _ = mock_generate_hmac.call_args
+        data_arg = call_args[0]
+        secret_key_arg = call_args[1]
 
-        self.assertIn("_signature", payload)
-        self.assertIn("_algorithm", payload)
-        self.assertEqual(payload["task_id"], "123")
-        self.assertEqual(payload["_algorithm"], "sha256")
+        self.assertEqual(data_arg["event_name"], event_name)
+        self.assertEqual(data_arg["args"], args)
+        self.assertEqual(data_arg["type"], "submission_event")
+        self.assertEqual(secret_key_arg, b"test_secret_key")
 
-    def test_construct_payload_special_characters(self):
-        """Test payload construction with special characters"""
-        mock_message = MagicMock()
-        # Including special characters and unicode
-        mock_message.dump.return_value = {"task_id": "spec!@#$", "data": "test_data_😊"}
+    @patch("volnux.utils.generate_hmac")
+    @patch("socket.gethostname")
+    def test_construct_payload_edge_cases(self, mock_hostname, mock_generate_hmac):
+        """Test payload construction with edge cases like empty args or special chars"""
+        mock_hostname.return_value = "test_host"
+        mock_generate_hmac.return_value = ("test_hmac", "sha256")
 
-        payload = self.executor.construct_payload(mock_message)
+        # Special characters
+        event_name = "special!@#"
+        args = {"key": "val &*("}
 
-        self.assertIn("_signature", payload)
-        self.assertEqual(payload["data"], "test_data_😊")
+        payload = self.executor.construct_payload(event_name, args)
+        self.assertEqual(payload.event_name, event_name)
+        self.assertEqual(payload.args, args)
 
-        # Verify signature is generated for this specific payload
-        # Note: we need to remove signature/algo fields to verify against _generate_hmac logic locally if we wanted strict verification,
-        # but _generate_hmac is tested separately. Here we ensure it doesn't crash and returns valid structure.
-        self.assertTrue(len(payload["_signature"]) > 0)
+        # Empty args
+        payload_empty = self.executor.construct_payload("empty_event", {})
+        self.assertEqual(payload_empty.args, {})
 
-    def test_construct_payload_empty_args(self):
-        """Test payload construction with empty args"""
-        mock_message = MagicMock()
-        mock_message.dump.return_value = {}
+    @patch("volnux.utils.verify_hmac")
+    def test_parse_response_success(self, mock_verify_hmac):
+        """Test successful response parsing"""
+        from volnux.types import TaskExecutionSuccessResponse
 
-        payload = self.executor.construct_payload(mock_message)
+        mock_verify_hmac.return_value = True
 
-        self.assertIn("_signature", payload)
-        self.assertIn("_algorithm", payload)
+        response = TaskExecutionSuccessResponse(
+            correlation_id="123",
+            result={"output": "success"},
+            completed_at=1234567890.0,
+            hmac="valid_hmac",
+        )
 
-    def test_construct_payload_unserializable(self):
-        """Test payload construction with unserializable data"""
-        mock_message = MagicMock()
-        # Sets are not JSON serializable by default
-        mock_message.dump.return_value = {"invalid": {1, 2, 3}}
+        result = self.executor.parse_task_execution_response(response)
 
-        with self.assertRaises(ValueError) as context:
-            self.executor.construct_payload(mock_message)
+        self.assertEqual(result, {"output": "success"})
+        mock_verify_hmac.assert_called_once()
 
-        self.assertEqual(str(context.exception), "Payload is not serializable")
+    @patch("volnux.utils.verify_hmac")
+    def test_parse_response_invalid_hmac(self, mock_verify_hmac):
+        """Test parsing response with invalid HMAC"""
+        from volnux.types import TaskExecutionSuccessResponse
+        from volnux.exceptions import RemoteExecutionError
+
+        mock_verify_hmac.return_value = False
+
+        response = TaskExecutionSuccessResponse(
+            correlation_id="123",
+            result={"output": "success"},
+            completed_at=1234567890.0,
+            hmac="invalid_hmac",
+        )
+
+        with self.assertRaises(RemoteExecutionError) as cm:
+            self.executor.parse_task_execution_response(response)
+
+        self.assertEqual(str(cm.exception), "INVALID_HMAC")
+
+    def test_parse_response_error(self):
+        """Test parsing error response"""
+        from volnux.types import TaskExecutionErrorResponse
+        from volnux.exceptions import RemoteExecutionError
+
+        response = TaskExecutionErrorResponse(
+            correlation_id="123",
+            message="Something went wrong",
+            code="ERROR_CODE",
+            timestamp=1234567890.0,
+        )
+
+        with self.assertRaises(RemoteExecutionError) as cm:
+            self.executor.parse_task_execution_response(response)
+
+        self.assertIn("ERROR_CODE: Something went wrong", str(cm.exception))
+
+    def test_submit_not_implemented(self):
+        """Test that submit raises NotImplementedError"""
+        with self.assertRaises(NotImplementedError):
+            self.executor.submit(lambda: None)
+
+    def test_query_event_exists_not_implemented(self):
+        """Test that query_event_exists raises NotImplementedError"""
+        with self.assertRaises(NotImplementedError):
+            self.executor.query_event_exists(MagicMock())
