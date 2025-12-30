@@ -62,3 +62,5 @@ LOGGING_CONFIG = {
         },
     },
 }
+
+REMOTE_EVENT_TIMEOUT = None
