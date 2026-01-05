@@ -4,11 +4,6 @@ from unittest.mock import MagicMock, patch
 from volnux.executors.base_remote_executor import BaseRemoteExecutor
 
 
-# Mocking volnux.parser.options to avoid ImportError/TypeError in environment
-mock_options = MagicMock()
-sys.modules["volnux.parser.options"] = mock_options
-
-
 class TestBaseRemoteExecutor(unittest.TestCase):
     def setUp(self):
         self.executor = BaseRemoteExecutor()
