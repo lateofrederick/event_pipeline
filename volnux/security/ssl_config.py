@@ -49,8 +49,7 @@ class SSLConfig:
     Configuration for SSL/TLS connections.
 
     This dataclass encapsulates all SSL/TLS settings needed for secure
-    communication. It supports loading from environment variables and
-    provides sensible defaults for most settings.
+    communication. It supports loading from environment variables.
     """
     cert_path: typing.Optional[str] = None
     key_path: typing.Optional[str] = None
@@ -157,12 +156,12 @@ class SSLConfig:
         Returns:
             SSLConfig: Configuration loaded from environment variables
         """
-        pinned_certs_str = os.environ.get(ENV_SSL_PINNED_CERTIFICATES, "")
+        pinned_certs_str = os.environ.get("ENV_SSL_PINNED_CERTIFICATES", "")
         pinned_certs = [
             fp.strip() for fp in pinned_certs_str.split(",") if fp.strip()
         ]
 
-        warning_days_str = os.environ.get(ENV_SSL_EXPIRATION_WARNING_DAYS)
+        warning_days_str = os.environ.get("ENV_SSL_EXPIRATION_WARNING_DAYS")
         warning_days = 30
         if warning_days_str:
             try:
@@ -174,29 +173,29 @@ class SSLConfig:
                 )
 
         return cls(
-            cert_path=os.environ.get(ENV_SSL_CERT_PATH),
-            key_path=os.environ.get(ENV_SSL_KEY_PATH),
-            key_password=os.environ.get(ENV_SSL_KEY_PASSWORD),
-            ca_cert_path=os.environ.get(ENV_SSL_CA_CERT_PATH),
+            cert_path=os.environ.get("ENV_SSL_CERT_PATH"),
+            key_path=os.environ.get("ENV_SSL_KEY_PATH"),
+            key_password=os.environ.get("ENV_SSL_KEY_PASSWORD"),
+            ca_cert_path=os.environ.get("ENV_SSL_CA_CERT_PATH"),
             min_tls_version=_parse_tls_version(
-                os.environ.get(ENV_SSL_MIN_TLS_VERSION), ssl.TLSVersion.TLSv1_2
+                os.environ.get("ENV_SSL_MIN_TLS_VERSION"), ssl.TLSVersion.TLSv1_2
             ),
             max_tls_version=_parse_tls_version(
-                os.environ.get(ENV_SSL_MAX_TLS_VERSION), ssl.TLSVersion.TLSv1_3
+                os.environ.get("ENV_SSL_MAX_TLS_VERSION"), ssl.TLSVersion.TLSv1_3
             ),
             verify_hostname=_parse_bool(
-                os.environ.get(ENV_SSL_VERIFY_HOSTNAME), default=True
+                os.environ.get("ENV_SSL_VERIFY_HOSTNAME"), default=True
             ),
             verify_certificates=_parse_bool(
-                os.environ.get(ENV_SSL_VERIFY_CERTIFICATES), default=True
+                os.environ.get("ENV_SSL_VERIFY_CERTIFICATES"), default=True
             ),
             allow_self_signed=_parse_bool(
-                os.environ.get(ENV_SSL_ALLOW_SELF_SIGNED), default=False
+                os.environ.get("ENV_SSL_ALLOW_SELF_SIGNED"), default=False
             ),
             require_client_cert=_parse_bool(
-                os.environ.get(ENV_SSL_REQUIRE_CLIENT_CERT), default=False
+                os.environ.get("ENV_SSL_REQUIRE_CLIENT_CERT"), default=False
             ),
-            cipher_suites=os.environ.get(ENV_SSL_CIPHER_SUITES),
+            cipher_suites=os.environ.get("ENV_SSL_CIPHER_SUITES"),
             pinned_certificates=pinned_certs,
             expiration_warning_days=warning_days,
         )
@@ -206,14 +205,8 @@ class SSLConfig:
         """
         Create a development-friendly (but INSECURE) configuration.
 
-        This configuration disables certificate verification and allows
-        self-signed certificates. It should NEVER be used in production.
-
         Returns:
             SSLConfig: Insecure configuration for development
-
-        Warning:
-            This configuration issues security warnings when created.
         """
         logger.warning(
             "Creating INSECURE development SSL configuration. "
@@ -232,8 +225,6 @@ class SSLConfig:
     def from_dict(cls, config_dict: typing.Dict[str, typing.Any]) -> "SSLConfig":
         """
         Create an SSLConfig from a dictionary.
-
-        This is useful for loading configuration from a settings file.
 
         Args:
             config_dict: Dictionary with SSL configuration
