@@ -6,16 +6,10 @@ import os
 import socket
 import ssl
 import typing
+import grpc
 from contextlib import contextmanager
 from datetime import datetime, timezone
-
-try:
-    import grpc
-
-    GRPC_AVAILABLE = True
-except ImportError:
-    GRPC_AVAILABLE = False
-    grpc = None
+from ssl import SSLContext
 
 from volnux.exceptions import (
     CertificateExpiredError,
@@ -38,20 +32,11 @@ class SecureSocketManager:
     with proper certificate validation, hostname verification, and error handling.
     """
 
-    # Default secure cipher suites - excludes weak ciphers
+    # Default secure cipher suites
+    # Picked from https://developers.cloudflare.com/ssl/edge-certificates/additional-options/cipher-suites/recommendations/
     DEFAULT_CIPHERS = (
-        "ECDHE+AESGCM:"
-        "ECDHE+CHACHA20:"
-        "DHE+AESGCM:"
-        "DHE+CHACHA20:"
-        "!aNULL:"
-        "!MD5:"
-        "!DSS:"
-        "!RC4:"
-        "!3DES:"
-        "!DES:"
-        "!EXPORT:"
-        "!eNULL"
+        "DHE-RSA-AES256-GCM-SHA384:"
+        "AECDHE-ECDSA-AES256-SHA"
     )
 
     def __init__(self, config: SSLConfig) -> None:
@@ -60,9 +45,6 @@ class SecureSocketManager:
 
         Args:
             config: SSL configuration settings
-
-        Raises:
-            SSLConfigurationError: If the configuration is invalid
         """
         self._config = config
         self._validate_config()
@@ -77,9 +59,6 @@ class SecureSocketManager:
 
         Returns:
             ssl.SSLContext: Configured SSL context for client use
-
-        Raises:
-            SSLConfigurationError: If certificate files cannot be loaded
         """
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         self._configure_tls_versions(context)
@@ -95,9 +74,6 @@ class SecureSocketManager:
 
         Returns:
             ssl.SSLContext: Configured SSL context for server use
-
-        Raises:
-            SSLConfigurationError: If required certificate files are missing
         """
         if not self._config.has_client_cert:
             raise SSLConfigurationError(
@@ -129,13 +105,6 @@ class SecureSocketManager:
 
         Returns:
             ssl.SSLSocket: Wrapped socket with SSL/TLS
-
-        Raises:
-            HostnameVerificationError: If hostname does not match certificate
-            CertificateVerificationError: If certificate verification fails
-            CertificatePinningError: If certificate pinning validation fails
-            HandshakeError: If SSL/TLS handshake fails
-            SSLConfigurationError: For other SSL-related errors
         """
         context = self.create_client_context()
 
@@ -186,13 +155,6 @@ class SecureSocketManager:
 
         Returns:
             ssl.SSLSocket: Wrapped socket with SSL/TLS
-
-        Raises:
-            SSLConfigurationError: If server certificate is not configured
-            HandshakeError: If SSL/TLS handshake fails
-            CertificateVerificationError: If client certificate verification fails
-            SSLSecurityError: For other SSL-related errors
-
         """
         context = self.create_server_context()
 
@@ -225,18 +187,8 @@ class SecureSocketManager:
         Create gRPC client SSL credentials.
 
         Returns:
-            grpc.ChannelCredentials: Credentials for secure gRPC channel
-
-        Raises:
-            ImportError: If grpc module is not available
-            SSLConfigurationError: If certificate files cannot be loaded
+            grpc.ChannelCredentials: Credentials for a secure gRPC channel
         """
-        if not GRPC_AVAILABLE:
-            raise ImportError(
-                "grpc module is required for gRPC credentials. "
-                "Install with: pip install grpcio"
-            )
-
         # Load CA certificate
         root_certificates = None
         if self._config.ca_cert_path:
@@ -261,17 +213,7 @@ class SecureSocketManager:
 
         Returns:
             grpc.ServerCredentials: Credentials for secure gRPC server
-
-        Raises:
-            ImportError: If grpc module is not available
-            SSLConfigurationError: If server certificate is not configured
         """
-        if not GRPC_AVAILABLE:
-            raise ImportError(
-                "grpc module is required for gRPC credentials. "
-                "Install with: pip install grpcio"
-            )
-
         if not self._config.has_client_cert:
             raise SSLConfigurationError(
                 "Server certificate and key are required for gRPC server credentials"
@@ -301,15 +243,6 @@ class SecureSocketManager:
 
         Args:
             server_hostname: Optional hostname for error context
-
-        Yields:
-            None
-
-        Raises:
-            HostnameVerificationError: If hostname verification fails
-            CertificateVerificationError: If certificate verification fails
-            HandshakeError: If SSL/TLS handshake fails
-            SSLSecurityError: For other SSL-related errors
         """
         try:
             yield
@@ -363,59 +296,15 @@ class SecureSocketManager:
                 f"Connection error during SSL/TLS handshake: {e}"
             ) from e
 
-    def get_certificate_info(
-        self, ssl_socket: ssl.SSLSocket
-    ) -> typing.Dict[str, typing.Any]:
-        """
-        Get information about the peer's certificate.
-
-        Args:
-            ssl_socket: Connected SSL socket
-
-        Returns:
-            Dictionary
-        """
-        cert = ssl_socket.getpeercert()
-        if not cert:
-            return {}
-
-        # Parse dates
-        not_before = cert.get("notBefore")
-        not_after = cert.get("notAfter")
-
-        days_until_expiry = None
-        if not_after:
-            try:
-                expiry_date = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
-                expiry_date = expiry_date.replace(tzinfo=timezone.utc)
-                now = datetime.now(timezone.utc)
-                days_until_expiry = (expiry_date - now).days
-            except ValueError:
-                pass
-
-        return {
-            "subject": dict(x[0] for x in cert.get("subject", [])),
-            "issuer": dict(x[0] for x in cert.get("issuer", [])),
-            "version": cert.get("version"),
-            "serial_number": cert.get("serialNumber"),
-            "not_before": not_before,
-            "not_after": not_after,
-            "days_until_expiry": days_until_expiry,
-            "subject_alt_names": cert.get("subjectAltName", []),
-        }
-
     def _validate_config(self) -> None:
         """
         Validate the SSL configuration and check for file existence.
-
-        Raises:
-            SSLConfigurationError: If configuration is invalid
         """
-        # Check certificate file exists
+        # Check a certificate file exists
         if self._config.cert_path:
             self._check_file_exists(self._config.cert_path, "certificate")
 
-        # Check key file exists
+        # Check a key file exists
         if self._config.key_path:
             self._check_file_exists(self._config.key_path, "private key")
 
@@ -451,7 +340,6 @@ class SecureSocketManager:
     def _configure_ciphers(self, context: ssl.SSLContext) -> None:
         """Configure secure cipher suites."""
         cipher_string = self._config.cipher_suites or self.DEFAULT_CIPHERS
-
         try:
             context.set_ciphers(cipher_string)
             logger.debug(f"Configured cipher suites: {cipher_string[:50]}...")
@@ -483,7 +371,6 @@ class SecureSocketManager:
                 except ssl.SSLError as e:
                     logger.warning(f"Failed to load default CA certificates: {e}")
         else:
-            # IMPORTANT: check_hostname must be set to False BEFORE verify_mode is set to CERT_NONE
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             logger.warning("Certificate verification is DISABLED - connection is insecure")
@@ -515,39 +402,28 @@ class SecureSocketManager:
         if not self._config.has_client_cert:
             return
 
+        self._load_certificate(context)
+
+    def _load_certificate(self, context: SSLContext):
         try:
             context.load_cert_chain(
                 certfile=self._config.cert_path,
                 keyfile=self._config.key_path,
                 password=self._config.key_password,
             )
-            logger.debug(f"Loaded client certificate from {self._config.cert_path}")
+            logger.debug(f"Loaded certificate from {self._config.cert_path}")
         except ssl.SSLError as e:
             if "password" in str(e).lower() or "decrypt" in str(e).lower():
                 raise SSLConfigurationError(
                     f"Failed to decrypt private key at {self._config.key_path}. Check key_password."
                 ) from e
             raise SSLConfigurationError(
-                f"Failed to load client certificate/key from {self._config.cert_path}: {e}"
+                f"Failed to load certificate/key from {self._config.cert_path}: {e}"
             ) from e
 
     def _load_server_certificates(self, context: ssl.SSLContext) -> None:
         """Load server certificate and private key."""
-        try:
-            context.load_cert_chain(
-                certfile=self._config.cert_path,
-                keyfile=self._config.key_path,
-                password=self._config.key_password,
-            )
-            logger.debug(f"Loaded server certificate from {self._config.cert_path}")
-        except ssl.SSLError as e:
-            if "password" in str(e).lower() or "decrypt" in str(e).lower():
-                raise SSLConfigurationError(
-                    f"Failed to decrypt private key at {self._config.key_path}. Check key_password."
-                ) from e
-            raise SSLConfigurationError(
-                f"Failed to load server certificate/key from {self._config.cert_path}: {e}"
-            ) from e
+        self._load_certificate(context)
 
     def _check_certificate_expiration(self, cert_path: str) -> None:
         """
@@ -555,19 +431,11 @@ class SecureSocketManager:
 
         Args:
             cert_path: Path to the certificate file
-
-        Raises:
-            CertificateExpiredError: If certificate is expired (when verification enabled)
         """
         try:
             # Use ssl module to parse certificate
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_cert_chain(cert_path, keyfile=self._config.key_path)
-
-            # Get certificate info (this is a basic check; full parsing would need cryptography lib)
-            # For now, we'll log a message about the check
-            logger.debug(f"Certificate loaded from {cert_path} for expiration check")
-
         except ssl.SSLError as e:
             logger.warning(f"Could not check certificate expiration: {e}")
 
@@ -577,9 +445,6 @@ class SecureSocketManager:
 
         Args:
             ssl_socket: Connected SSL socket
-
-        Raises:
-            CertificatePinningError: If certificate doesn't match any pinned fingerprint
         """
         if not self._config.pinned_certificates:
             return
@@ -617,9 +482,6 @@ class SecureSocketManager:
 
         Returns:
             File contents as bytes
-
-        Raises:
-            SSLConfigurationError: If file cannot be read
         """
         try:
             with open(path, "rb") as f:
