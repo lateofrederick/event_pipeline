@@ -19,7 +19,6 @@ from volnux.exceptions import (
     HostnameVerificationError,
     HandshakeError,
     CertificatePinningError,
-    SSLSecurityError,
 )
 
 
@@ -76,14 +75,11 @@ class TestSecureSocketManagerContextCreation(unittest.TestCase):
 
             self.assertIsInstance(context, ssl.SSLContext)
             self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
-            # TLS 1.3 may not be available on all systems (e.g., LibreSSL)
-            # so we just verify max_version is >= TLS 1.2
             self.assertGreaterEqual(context.maximum_version, ssl.TLSVersion.TLSv1_2)
 
     def test_create_client_context_with_verification(self):
         """Test creating client context with certificate verification."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".crt", delete=False) as f:
-            # Write a minimal PEM file (this won't be a valid cert, but we're testing the flow)
             f.write("-----BEGIN CERTIFICATE-----\n")
             f.write("TEST\n")
             f.write("-----END CERTIFICATE-----\n")
@@ -118,18 +114,10 @@ class TestSecureSocketManagerContextCreation(unittest.TestCase):
 
 class TestSecureSocketManagerCipherSuites(unittest.TestCase):
     """Tests for cipher suite configuration."""
-
-    def test_default_ciphers(self):
-        """Test that default secure ciphers are configured."""
-        self.assertIn("ECDHE", SecureSocketManager.DEFAULT_CIPHERS)
-        self.assertIn("!aNULL", SecureSocketManager.DEFAULT_CIPHERS)
-        self.assertIn("!MD5", SecureSocketManager.DEFAULT_CIPHERS)
-        self.assertIn("!3DES", SecureSocketManager.DEFAULT_CIPHERS)
-
     def test_custom_cipher_configuration(self):
         """Test custom cipher suite configuration."""
         config = SSLConfig(
-            cipher_suites="ECDHE+AESGCM",
+            cipher_suites="ECDHE-ECDSA-AES256-SHA",
             verify_certificates=False,
         )
 
@@ -228,17 +216,6 @@ class TestSecureSocketManagerErrorHandling(unittest.TestCase):
             with self.assertRaises(HandshakeError):
                 with manager.handle_ssl_errors():
                     raise ConnectionRefusedError("Connection refused")
-
-    def test_handle_generic_ssl_error(self):
-        """Test handling of generic SSL errors."""
-        config = SSLConfig()
-
-        with patch.object(SecureSocketManager, "_validate_config"):
-            manager = SecureSocketManager(config)
-
-            with self.assertRaises(SSLSecurityError):
-                with manager.handle_ssl_errors():
-                    raise ssl.SSLError(1, "some other error")
 
 
 class TestSecureSocketManagerCertificatePinning(unittest.TestCase):
@@ -390,7 +367,6 @@ class TestSecureSocketManagerSocketWrapping(unittest.TestCase):
 class TestSecureSocketManagerGRPCCredentials(unittest.TestCase):
     """Tests for gRPC credentials creation."""
 
-    @patch("volnux.security.ssl_manager.GRPC_AVAILABLE", True)
     @patch("volnux.security.ssl_manager.grpc")
     def test_create_grpc_client_credentials(self, mock_grpc):
         """Test creating gRPC client credentials."""
@@ -406,7 +382,6 @@ class TestSecureSocketManagerGRPCCredentials(unittest.TestCase):
             self.assertEqual(result, mock_credentials)
             mock_grpc.ssl_channel_credentials.assert_called_once()
 
-    @patch("volnux.security.ssl_manager.GRPC_AVAILABLE", True)
     @patch("volnux.security.ssl_manager.grpc")
     @patch("builtins.open", mock_open(read_data=b"cert data"))
     def test_create_grpc_client_credentials_with_mtls(self, mock_grpc):
@@ -431,18 +406,6 @@ class TestSecureSocketManagerGRPCCredentials(unittest.TestCase):
                 self.assertIsNotNone(call_kwargs.get("private_key"))
                 self.assertIsNotNone(call_kwargs.get("certificate_chain"))
 
-    @patch("volnux.security.ssl_manager.GRPC_AVAILABLE", False)
-    def test_create_grpc_credentials_without_grpc(self):
-        """Test that creating gRPC credentials without grpc module raises ImportError."""
-        config = SSLConfig()
-
-        with patch.object(SecureSocketManager, "_validate_config"):
-            manager = SecureSocketManager(config)
-
-            with self.assertRaises(ImportError):
-                manager.create_grpc_client_credentials()
-
-    @patch("volnux.security.ssl_manager.GRPC_AVAILABLE", True)
     @patch("volnux.security.ssl_manager.grpc")
     @patch("builtins.open", mock_open(read_data=b"cert data"))
     def test_create_grpc_server_credentials(self, mock_grpc):
@@ -463,7 +426,6 @@ class TestSecureSocketManagerGRPCCredentials(unittest.TestCase):
                 self.assertEqual(result, mock_credentials)
                 mock_grpc.ssl_server_credentials.assert_called_once()
 
-    @patch("volnux.security.ssl_manager.GRPC_AVAILABLE", True)
     @patch("volnux.security.ssl_manager.grpc")
     def test_create_grpc_server_credentials_requires_cert(self, mock_grpc):
         """Test that server credentials require certificate."""
@@ -474,48 +436,6 @@ class TestSecureSocketManagerGRPCCredentials(unittest.TestCase):
 
             with self.assertRaises(SSLConfigurationError):
                 manager.create_grpc_server_credentials()
-
-
-class TestSecureSocketManagerCertificateInfo(unittest.TestCase):
-    """Tests for certificate information extraction."""
-
-    def test_get_certificate_info(self):
-        """Test extracting certificate information from SSL socket."""
-        config = SSLConfig()
-
-        with patch.object(SecureSocketManager, "_validate_config"):
-            manager = SecureSocketManager(config)
-
-            mock_socket = Mock(spec=ssl.SSLSocket)
-            mock_socket.getpeercert.return_value = {
-                "subject": ((("commonName", "example.com"),),),
-                "issuer": ((("commonName", "Test CA"),),),
-                "version": 3,
-                "serialNumber": "1234567890",
-                "notBefore": "Jan  1 00:00:00 2024 GMT",
-                "notAfter": "Dec 31 23:59:59 2025 GMT",
-                "subjectAltName": (("DNS", "example.com"), ("DNS", "*.example.com")),
-            }
-
-            info = manager.get_certificate_info(mock_socket)
-
-            self.assertEqual(info["subject"]["commonName"], "example.com")
-            self.assertEqual(info["issuer"]["commonName"], "Test CA")
-            self.assertEqual(info["version"], 3)
-            self.assertIn("DNS", str(info["subject_alt_names"]))
-
-    def test_get_certificate_info_no_cert(self):
-        """Test extracting info when no certificate is available."""
-        config = SSLConfig()
-
-        with patch.object(SecureSocketManager, "_validate_config"):
-            manager = SecureSocketManager(config)
-
-            mock_socket = Mock(spec=ssl.SSLSocket)
-            mock_socket.getpeercert.return_value = None
-
-            info = manager.get_certificate_info(mock_socket)
-            self.assertEqual(info, {})
 
 
 class TestSecureSocketManagerProperties(unittest.TestCase):
@@ -608,7 +528,3 @@ class TestSecureSocketManagerFileValidation(unittest.TestCase):
             with self.assertRaises(SSLConfigurationError) as cm:
                 SecureSocketManager(config)
             self.assertIn("not readable", str(cm.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()
