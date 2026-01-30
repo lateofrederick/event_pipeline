@@ -3,33 +3,31 @@
 import grpc
 import warnings
 
-from . import task_pb2 as task__pb2
+from volnux.protos import task_pb2 as volnux_dot_protos_dot_task__pb2
 
-GRPC_GENERATED_VERSION = "1.70.0"
+GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
 try:
     from grpc._utilities import first_version_is_lower
-
-    _version_not_supported = first_version_is_lower(
-        GRPC_VERSION, GRPC_GENERATED_VERSION
-    )
+    _version_not_supported = first_version_is_lower(GRPC_VERSION, GRPC_GENERATED_VERSION)
 except ImportError:
     _version_not_supported = True
 
 if _version_not_supported:
     raise RuntimeError(
-        f"The grpc package installed is at version {GRPC_VERSION},"
-        + f" but the generated code in task_pb2_grpc.py depends on"
-        + f" grpcio>={GRPC_GENERATED_VERSION}."
-        + f" Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}"
-        + f" or downgrade your generated code using grpcio-tools<={GRPC_VERSION}."
+        f'The grpc package installed is at version {GRPC_VERSION},'
+        + f' but the generated code in volnux/protos/task_pb2_grpc.py depends on'
+        + f' grpcio>={GRPC_GENERATED_VERSION}.'
+        + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
+        + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
 class TaskExecutorStub(object):
-    """The task execution service definition"""
+    """The task execution service definition
+    """
 
     def __init__(self, channel):
         """Constructor.
@@ -37,81 +35,95 @@ class TaskExecutorStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.Execute = channel.unary_unary(
-            "/event_pipeline.TaskExecutor/Execute",
-            request_serializer=task__pb2.TaskRequest.SerializeToString,
-            response_deserializer=task__pb2.TaskResponse.FromString,
-            _registered_method=True,
-        )
-        self.ExecuteStream = channel.unary_stream(
-            "/event_pipeline.TaskExecutor/ExecuteStream",
-            request_serializer=task__pb2.TaskRequest.SerializeToString,
-            response_deserializer=task__pb2.TaskStatus.FromString,
-            _registered_method=True,
-        )
+        self.SubmitTask = channel.unary_unary(
+                '/event_pipeline.TaskExecutor/SubmitTask',
+                request_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
+                response_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
+                _registered_method=True)
+        self.QueryEvent = channel.unary_unary(
+                '/event_pipeline.TaskExecutor/QueryEvent',
+                request_serializer=volnux_dot_protos_dot_task__pb2.QueryEventRequest.SerializeToString,
+                response_deserializer=volnux_dot_protos_dot_task__pb2.QueryEventResponse.FromString,
+                _registered_method=True)
+        self.SubmitTaskStream = channel.unary_stream(
+                '/event_pipeline.TaskExecutor/SubmitTaskStream',
+                request_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
+                response_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
+                _registered_method=True)
 
 
 class TaskExecutorServicer(object):
-    """The task execution service definition"""
+    """The task execution service definition
+    """
 
-    def Execute(self, request, context):
-        """Execute a task remotely"""
+    def SubmitTask(self, request, context):
+        """Execute a task remotely
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details("Method not implemented!")
-        raise NotImplementedError("Method not implemented!")
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
-    def ExecuteStream(self, request, context):
-        """Stream task results (for long running tasks)"""
+    def QueryEvent(self, request, context):
+        """Query if an event exists
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details("Method not implemented!")
-        raise NotImplementedError("Method not implemented!")
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubmitTaskStream(self, request, context):
+        """Stream task results (for long running tasks)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
 
 def add_TaskExecutorServicer_to_server(servicer, server):
     rpc_method_handlers = {
-        "Execute": grpc.unary_unary_rpc_method_handler(
-            servicer.Execute,
-            request_deserializer=task__pb2.TaskRequest.FromString,
-            response_serializer=task__pb2.TaskResponse.SerializeToString,
-        ),
-        "ExecuteStream": grpc.unary_stream_rpc_method_handler(
-            servicer.ExecuteStream,
-            request_deserializer=task__pb2.TaskRequest.FromString,
-            response_serializer=task__pb2.TaskStatus.SerializeToString,
-        ),
+            'SubmitTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitTask,
+                    request_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.FromString,
+                    response_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.SerializeToString,
+            ),
+            'QueryEvent': grpc.unary_unary_rpc_method_handler(
+                    servicer.QueryEvent,
+                    request_deserializer=volnux_dot_protos_dot_task__pb2.QueryEventRequest.FromString,
+                    response_serializer=volnux_dot_protos_dot_task__pb2.QueryEventResponse.SerializeToString,
+            ),
+            'SubmitTaskStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubmitTaskStream,
+                    request_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.FromString,
+                    response_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-        "event_pipeline.TaskExecutor", rpc_method_handlers
-    )
+            'event_pipeline.TaskExecutor', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers(
-        "event_pipeline.TaskExecutor", rpc_method_handlers
-    )
+    server.add_registered_method_handlers('event_pipeline.TaskExecutor', rpc_method_handlers)
 
 
-# This class is part of an EXPERIMENTAL API.
+ # This class is part of an EXPERIMENTAL API.
 class TaskExecutor(object):
-    """The task execution service definition"""
+    """The task execution service definition
+    """
 
     @staticmethod
-    def Execute(
-        request,
-        target,
-        options=(),
-        channel_credentials=None,
-        call_credentials=None,
-        insecure=False,
-        compression=None,
-        wait_for_ready=None,
-        timeout=None,
-        metadata=None,
-    ):
+    def SubmitTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
         return grpc.experimental.unary_unary(
             request,
             target,
-            "/event_pipeline.TaskExecutor/Execute",
-            task__pb2.TaskRequest.SerializeToString,
-            task__pb2.TaskResponse.FromString,
+            '/event_pipeline.TaskExecutor/SubmitTask',
+            volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
+            volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -120,28 +132,52 @@ class TaskExecutor(object):
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True,
-        )
+            _registered_method=True)
 
     @staticmethod
-    def ExecuteStream(
-        request,
-        target,
-        options=(),
-        channel_credentials=None,
-        call_credentials=None,
-        insecure=False,
-        compression=None,
-        wait_for_ready=None,
-        timeout=None,
-        metadata=None,
-    ):
+    def QueryEvent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/event_pipeline.TaskExecutor/QueryEvent',
+            volnux_dot_protos_dot_task__pb2.QueryEventRequest.SerializeToString,
+            volnux_dot_protos_dot_task__pb2.QueryEventResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitTaskStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
         return grpc.experimental.unary_stream(
             request,
             target,
-            "/event_pipeline.TaskExecutor/ExecuteStream",
-            task__pb2.TaskRequest.SerializeToString,
-            task__pb2.TaskStatus.FromString,
+            '/event_pipeline.TaskExecutor/SubmitTaskStream',
+            volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
+            volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -150,5 +186,4 @@ class TaskExecutor(object):
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True,
-        )
+            _registered_method=True)
