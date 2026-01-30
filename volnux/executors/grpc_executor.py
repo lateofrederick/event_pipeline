@@ -1,190 +1,260 @@
-import uuid
+from __future__ import annotations
+
+import json
 import logging
 import typing
 import grpc
-from threading import Lock
-from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from concurrent import futures
+
+from volnux.conf import ConfigLoader
+from volnux.executors.base_remote_executor import BaseRemoteExecutor
 from volnux.protos import task_pb2, task_pb2_grpc
-from volnux.executors.message import deserialize_message, serialize_dict
+from volnux.security.ssl_manager import SecureSocketManager
+from volnux.types import (
+    QueryEventPayload,
+    QueryEventResponse,
+    TaskExecutionErrorResponse,
+    TaskExecutionSuccessResponse,
+)
 
-from volnux.executors.message import deserialize_message, serialize_dict
+if typing.TYPE_CHECKING:
+    from volnux.security.ssl_config import SSLConfig
 
+CONF = ConfigLoader.get_lazily_loaded_config()
 logger = logging.getLogger(__name__)
 
-def get_event_name(fn):
-    """Get the name of the function/event"""
-    if hasattr(fn, "__name__"):
-        return fn.__name__
-    return str(fn)
 
-
-class StreamingFuture(Future):
-    """Future that supports status updates via callbacks"""
-
-    def __init__(self):
-        super().__init__()
-        self._status_callbacks = []
-
-    def add_status_callback(self, fn):
-        """Add a callback to be called on status updates"""
-        self._status_callbacks.append(fn)
-
-    def status_update(self, status, message):
-        """Called when a status update is received"""
-        for callback in self._status_callbacks:
-            try:
-                callback(status, message)
-            except Exception as e:
-                logger.error(f"Error in status callback: {e}")
-
-
-class GRPCExecutor(Executor):
+class GRPCExecutor(BaseRemoteExecutor):
     """
-    gRPC-based executor that submits tasks to remote servers.
+    gRPC-based remote task executor.
     """
 
     def __init__(
         self,
-        host: str,
-        port: int,
-        max_workers: int = 4,
-        use_encryption: bool = False,
-        client_cert_path: typing.Optional[str] = None,
-        client_key_path: typing.Optional[str] = None,
-        ca_cert_path: typing.Optional[str] = None,
+        security_manager: typing.Optional[SecureSocketManager] = None,
+        host: typing.Optional[str] = None,
+        port: typing.Optional[int] = None,
+        max_message_length: int = 4 * 1024 * 1024,  # 4MB default
     ):
-        """Initialize the gRPC executor with configuration"""
-        self._host = host
-        self._port = port
-        self._max_workers = max_workers
-        self._use_encryption = use_encryption
-        self._client_cert_path = client_cert_path
-        self._client_key_path = client_key_path
-        self._ca_cert_path = ca_cert_path
+        """
+        Initialize the GrpcExecutor.
 
-        self._shutdown = False
-        self._lock = Lock()
-        self._thread_pool = ThreadPoolExecutor(max_workers=max_workers)
-        self._futures = set()
+        Args:
+            security_manager: Manager for SSL/TLS credentials
+            host: Remote manager host
+            port: Remote manager port
+            max_message_length: Maximum gRPC message length in bytes
+        """
+        super().__init__()
+        self._host = host or CONF.REMOTE_MANAGER_HOST or "localhost"
+        self._port = port or CONF.REMOTE_MANAGER_GRPC_PORT
+        self._max_message_length = max_message_length
 
-        # Setup gRPC channel
-        self._channel = grpc.insecure_channel(f"{self._host}:{self._port}")
-        if self._use_encryption:
-            if not (self._client_cert_path and self._client_key_path):
-                raise ValueError("Client certificate and key required for encryption")
+        if security_manager:
+            self._security_manager = security_manager
+        else:
+            self._security_manager = None
+            # Initialize with default config if not provided AND SSL is enabled
+            if getattr(CONF, "USE_SSL", False):
+                from volnux.security.ssl_config import SSLConfig
 
-            # Load credentials
-            with open(self._client_key_path, "rb") as f:
-                private_key = f.read()
-            with open(self._client_cert_path, "rb") as f:
-                certificate_chain = f.read()
+                try:
+                    ssl_config = SSLConfig(
+                        cert_path=getattr(CONF, "SSL_CERT_PATH", None),
+                        key_path=getattr(CONF, "SSL_KEY_PATH", None),
+                        ca_cert_path=getattr(CONF, "SSL_CA_CERT_PATH", None),
+                        verify_certificates=getattr(CONF, "SSL_VERIFY_CERTIFICATES", True),
+                    )
+                    self._security_manager = SecureSocketManager(ssl_config)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize default SSL manager: {e}")
 
-            # Create credentials
-            credentials = grpc.ssl_channel_credentials(
-                root_certificates=None,  # Server verification disabled
-                private_key=private_key,
-                certificate_chain=certificate_chain,
-            )
-            self._channel = grpc.secure_channel(
-                f"{self._host}:{self._port}", credentials
-            )
 
-        # Create stub
+        self._channel = self._create_channel()
         self._stub = task_pb2_grpc.TaskExecutorStub(self._channel)
 
-    def submit(self, fn: typing.Callable, /, *args, **kwargs) -> Future:
-        """Submit a task for execution on the remote server"""
-        if self._shutdown:
-            raise RuntimeError("Executor has been shutdown")
+    def _create_channel(self) -> grpc.Channel:
+        """Create a secure or insecure gRPC channel."""
+        target = f"{self._host}:{self._port}"
+        options = [
+            ("grpc.max_send_message_length", self._max_message_length),
+            ("grpc.max_receive_message_length", self._max_message_length),
+            ("grpc.keepalive_time_ms", 30000),
+            ("grpc.keepalive_timeout_ms", 10000),
+            ("grpc.keepalive_permit_without_calls", True),
+        ]
 
-        # Use StreamingFuture if long_running flag is set
-        future = StreamingFuture() if kwargs.pop("long_running", False) else Future()
-
-        # Submit task to thread pool
-        submission_future = self._thread_pool.submit(
-            self._submit_task, future, fn, args, kwargs
-        )
-        self._futures.add(submission_future)
-        submission_future.add_done_callback(
-            lambda f: f.result() if not f.cancelled() else None
-        )
-
-        return future
-
-    def _submit_task(
-        self, future: Future, fn: typing.Callable, args: tuple, kwargs: dict
-    ) -> None:
-        """Submit a task to the remote server"""
-        try:
-            # Serialize arguments
-            # We wrap args in a dict because serialization requires dicts for signing
-            # We ignore fn serialization as we rely on name
-
-            serialized_args = serialize_dict({"_args": args})
-            serialized_kwargs = serialize_dict(kwargs)
-
-
-            # Create request
-            request = task_pb2.TaskRequest(
-                task_id=str(uuid.uuid4()),
-                fn=b"",
-                name=get_event_name(fn),
-                args=serialized_args,
-                kwargs=serialized_kwargs,
+        if getattr(CONF, "USE_SSL", False):
+            credentials = self._security_manager.create_grpc_client_credentials()
+            logger.debug(f"Creating secure gRPC channel to {target}")
+            return grpc.secure_channel(target, credentials, options=options)
+        else:
+            logger.warning(
+                f"Creating INSECURE gRPC channel to {target}. "
+                "This should not be used in production."
             )
+            return grpc.insecure_channel(target, options=options)
 
-            # Use streaming for StreamingFuture
-            if isinstance(future, StreamingFuture):
-                try:
-                    for response in self._stub.ExecuteStream(request):
-                        if response.status == task_pb2.TaskStatus.COMPLETED:
-                            result, _ = deserialize_message(response.result)
-                            future.set_result(result)
-                            break
-                        elif response.status == task_pb2.TaskStatus.FAILED:
-                            future.set_exception(Exception(response.message))
-                            break
-                        else:
-                            future.status_update(response.status, response.message)
+    def submit(
+        self, fn: typing.Callable, /, *args, **kwargs
+    ) -> futures.Future:
+        """
+        Submit a task to the remote manager via gRPC.
 
-                except (grpc.RpcError, Exception) as e:
-                    future.set_exception(e)
-            else:
-                # Use regular unary call
-                try:
-                    response = self._stub.Execute(request)
-                    if response.success:
-                        result, _ = deserialize_message(response.result)
-                        future.set_result(result)
-                    else:
-                        future.set_exception(Exception(response.error))
+        Returns:
+            A Future object representing the execution of the task.
+        """
+        # Resolve event name from function or use name if string
+        event_name = getattr(fn, "__name__", str(fn))
 
-                except (grpc.RpcError, Exception) as e:
-                    future.set_exception(e)
+        # Prepare arguments
+        data = {}
+        if args:
+            data["args"] = args
+        if kwargs:
+            data["kwargs"] = kwargs
 
-        except Exception as e:
-            logger.error(f"Error submitting task: {e}", exc_info=True)
-            future.set_exception(e)
+        # Construct payload
+        payload = self.construct_payload(event_name, data)
 
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
-        """Clean shutdown of the executor"""
-        with self._lock:
-            if self._shutdown:
-                return
-            self._shutdown = True
+        # Create gRPC request
+        # Note: We serialize args mainly because the payload structure uses dict/json
+        # but the proto defined args as bytes to handle arbitrary json structures safely.
+        request = task_pb2.SubmitTaskRequest(
+            type=payload.type,
+            event_name=payload.event_name,
+            args=json.dumps(payload.args).encode("utf-8"),
+            correlation_id=payload.correlation_id,
+            timeout=int(payload.timeout) if payload.timeout else 0,
+            timestamp=payload.timestamp,
+            client_id=payload.client_id,
+            hmac=payload.hmac,
+        )
 
-            if cancel_futures:
-                for future in self._futures:
-                    future.cancel()
+        # Use the future API of the stub
+        grpc_future = self._stub.SubmitTask.future(request)
 
-            if wait:
-                for future in list(self._futures):
+        # We return a concurrent.futures.Future wrapper
+        encoded_future = futures.Future()
+
+        def callback(f):
+            try:
+                # Catch any grpc specific errors
+                response = f.result()
+
+                # Map proto response to internal response types
+                if response.status == "success":
+                    success_response = TaskExecutionSuccessResponse(
+                        correlation_id=response.correlation_id,
+                        result=json.loads(response.result),
+                        completed_at=response.completed_at,
+                        hmac=response.hmac
+                    )
+                    # Verify and return result
                     try:
-                        future.result()
-                    except Exception:
-                        logger.error(
-                            "<============= error waiting for future ==============>"
-                        )
+                        result = self.parse_task_execution_response(success_response)
+                        encoded_future.set_result(result)
+                    except Exception as e:
+                        encoded_future.set_exception(e)
+                else:
+                    error_response = TaskExecutionErrorResponse(
+                        correlation_id=response.correlation_id,
+                        status="error",
+                        message=response.message,
+                        code=response.code,
+                        timestamp=response.timestamp
+                    )
+                    # This will raise the exception via parse_task_execution_response
+                    try:
+                        self.parse_task_execution_response(error_response)
+                    except Exception as e:
+                         encoded_future.set_exception(e)
+            except grpc.RpcError as e:
+                # Handle gRPC transport errors
+                encoded_future.set_exception(e)
+            except Exception as e:
+                encoded_future.set_exception(e)
 
+        grpc_future.add_done_callback(callback)
+        return encoded_future
+
+    def submit_stream(
+        self, fn: typing.Callable, /, *args, **kwargs
+    ) -> typing.Iterator[TaskExecutionSuccessResponse]:
+        """
+        Submit a task and get a stream of responses.
+
+        Returns:
+            An iterator of TaskExecutionSuccessResponse objects.
+        """
+        # Resolve event name
+        event_name = getattr(fn, "__name__", str(fn))
+
+        # Prepare arguments
+        data = {}
+        if args:
+            data["args"] = args
+        if kwargs:
+            data["kwargs"] = kwargs
+
+        # Construct payload
+        payload = self.construct_payload(event_name, data)
+
+        # Create gRPC request
+        request = task_pb2.SubmitTaskRequest(
+            type=payload.type,
+            event_name=payload.event_name,
+            args=json.dumps(payload.args).encode("utf-8"),
+            correlation_id=payload.correlation_id,
+            timeout=int(payload.timeout) if payload.timeout else 0,
+            timestamp=payload.timestamp,
+            client_id=payload.client_id,
+            hmac=payload.hmac,
+        )
+
+        # Call streaming RPC
+        try:
+            response_iterator = self._stub.SubmitTaskStream(request)
+            for response in response_iterator:
+                if response.status == "success" or response.status == "partial": # Assuming partial for stream
+                     yield TaskExecutionSuccessResponse(
+                        correlation_id=response.correlation_id,
+                        result=json.loads(response.result) if response.result else {},
+                        completed_at=response.completed_at,
+                        hmac=response.hmac
+                    )
+                elif response.status == "error":
+                     # For stream, we might yield an error or raise it.
+                     # Raising it stops the stream.
+                     raise Exception(f"Task failed: {response.message} ({response.code})")
+        except grpc.RpcError as e:
+            logger.error(f"Streaming RPC failed: {e}")
+            raise
+
+    def query_event_exists(self, data: QueryEventPayload) -> QueryEventResponse:
+        """Query if an event exists on the remote manager."""
+        request = task_pb2.QueryEventRequest(
+            type=data.type,
+            event_name=data.event_name,
+            client_id=data.client_id
+        )
+
+        try:
+            response = self._stub.QueryEvent(request)
+            return QueryEventResponse(
+                event_name=response.event_name,
+                available=response.available,
+                message=response.message,
+                metadata=json.loads(response.metadata) if response.metadata else {}
+            )
+        except grpc.RpcError as e:
+            logger.error(f"Failed to query event: {e}")
+            raise
+
+    def close(self):
+        """Close the gRPC channel."""
+        if hasattr(self, "_channel") and self._channel:
             self._channel.close()
-            self._thread_pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def __del__(self):
+        self.close()
