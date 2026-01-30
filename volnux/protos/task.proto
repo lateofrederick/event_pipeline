@@ -5,37 +5,50 @@ package event_pipeline;
 // The task execution service definition
 service TaskExecutor {
   // Execute a task remotely
-  rpc Execute (TaskRequest) returns (TaskResponse) {}
-  
+  rpc SubmitTask (SubmitTaskRequest) returns (SubmitTaskResponse) {}
+
+  // Query if an event exists
+  rpc QueryEvent (QueryEventRequest) returns (QueryEventResponse) {}
+
   // Stream task results (for long running tasks)
-  rpc ExecuteStream (TaskRequest) returns (stream TaskStatus) {}
+  rpc SubmitTaskStream (SubmitTaskRequest) returns (stream SubmitTaskResponse) {}
 }
 
-// Task execution request
-message TaskRequest {
-  string task_id = 1;
-  bytes fn = 2;
-  string name = 3;
-  bytes args = 4;     // Serialized arguments
-  bytes kwargs = 5;   // Serialized keyword arguments
+// Request and Response definitions matching volnux.types.Payload structures
+
+message SubmitTaskRequest {
+  string type = 1;
+  string event_name = 2;
+  bytes args = 3;           // serialized json args
+  string correlation_id = 4;
+  int64 timeout = 5;        // optional timeout (0 if none)
+  double timestamp = 6;
+  string client_id = 7;
+  string hmac = 8;
 }
 
-// Task execution response
-message TaskResponse {
-  bool success = 1;
-  bytes result = 2;   // Serialized result
-  string error = 3;   // Error message if any
+message SubmitTaskResponse {
+  string type = 1;
+  string correlation_id = 2;
+  string status = 3;
+  bytes result = 4;        // serialized json result
+  string message = 5;      // Error message if any
+  string code = 6;         // Error code if any
+  double completed_at = 7; // For success
+  double timestamp = 8;    // For error
+  string hmac = 9;
 }
 
-// Task execution status for streaming
-message TaskStatus {
-  enum Status {
-    PENDING = 0;
-    RUNNING = 1;
-    COMPLETED = 2;
-    FAILED = 3;
-  }
-  Status status = 1;
-  bytes result = 2;   // Serialized result if completed
-  string message = 3; // Status message or error
+message QueryEventRequest {
+  string type = 1;
+  string event_name = 2;
+  string client_id = 3;
+}
+
+message QueryEventResponse {
+  string type = 1;
+  string event_name = 2;
+  bool available = 3;
+  string message = 4;
+  string metadata = 5; // serialized json metadata
 }
