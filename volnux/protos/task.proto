@@ -12,6 +12,9 @@ service TaskExecutor {
 
   // Stream task results (for long running tasks)
   rpc SubmitTaskStream (SubmitTaskRequest) returns (stream SubmitTaskResponse) {}
+
+  // Bidirectional streaming for batch operations
+  rpc SubmitBatchTasks (stream SubmitTaskRequest) returns (stream SubmitTaskResponse) {}
 }
 
 // Request and Response definitions matching volnux.types.Payload structures
