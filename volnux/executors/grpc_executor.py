@@ -231,6 +231,61 @@ class GRPCExecutor(BaseRemoteExecutor):
             logger.error(f"Streaming RPC failed: {e}")
             raise
 
+    def submit_batch(
+        self,
+        tasks: typing.Iterable[typing.Tuple[typing.Callable, typing.Tuple, typing.Dict]],
+    ) -> typing.Iterator[TaskExecutionSuccessResponse]:
+        """
+        Submit a batch of tasks using bidirectional streaming.
+
+        Args:
+            tasks: An iterable of (fn, args, kwargs) tuples.
+
+        Returns:
+            An iterator of TaskExecutionSuccessResponse objects.
+        """
+        def request_generator():
+            for fn, task_args, task_kwargs in tasks:
+                event_name = getattr(fn, "__name__", str(fn))
+
+                data = {}
+                if task_args:
+                    data["args"] = task_args
+                if task_kwargs:
+                    data["kwargs"] = task_kwargs
+
+                payload = self.construct_payload(event_name, data)
+
+                yield task_pb2.SubmitTaskRequest(
+                    type=payload.type,
+                    event_name=payload.event_name,
+                    args=json.dumps(payload.args).encode("utf-8"),
+                    correlation_id=payload.correlation_id,
+                    timeout=int(payload.timeout) if payload.timeout else 0,
+                    timestamp=payload.timestamp,
+                    client_id=payload.client_id,
+                    hmac=payload.hmac,
+                )
+
+        try:
+            # Bidirectional streaming call
+            response_iterator = self._stub.SubmitBatchTasks(request_generator())
+
+            for response in response_iterator:
+                if response.status == "success":
+                    yield TaskExecutionSuccessResponse(
+                        correlation_id=response.correlation_id,
+                        result=json.loads(response.result) if response.result else {},
+                        completed_at=response.completed_at,
+                        hmac=response.hmac
+                    )
+                elif response.status == "error":
+                     # todo - keep track of failed tasks
+                     logger.error(f"Batch task failed: {response.message} ({response.code})")
+        except grpc.RpcError as e:
+            logger.error(f"Batch RPC failed: {e}")
+            raise
+
     def query_event_exists(self, data: QueryEventPayload) -> QueryEventResponse:
         """Query if an event exists on the remote manager."""
         request = task_pb2.QueryEventRequest(

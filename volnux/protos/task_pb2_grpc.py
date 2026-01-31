@@ -50,6 +50,11 @@ class TaskExecutorStub(object):
                 request_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
                 response_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
                 _registered_method=True)
+        self.SubmitBatchTasks = channel.stream_stream(
+                '/event_pipeline.TaskExecutor/SubmitBatchTasks',
+                request_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
+                response_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
+                _registered_method=True)
 
 
 class TaskExecutorServicer(object):
@@ -77,6 +82,13 @@ class TaskExecutorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SubmitBatchTasks(self, request_iterator, context):
+        """Bidirectional streaming for batch operations
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_TaskExecutorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -92,6 +104,11 @@ def add_TaskExecutorServicer_to_server(servicer, server):
             ),
             'SubmitTaskStream': grpc.unary_stream_rpc_method_handler(
                     servicer.SubmitTaskStream,
+                    request_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.FromString,
+                    response_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.SerializeToString,
+            ),
+            'SubmitBatchTasks': grpc.stream_stream_rpc_method_handler(
+                    servicer.SubmitBatchTasks,
                     request_deserializer=volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.FromString,
                     response_serializer=volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.SerializeToString,
             ),
@@ -176,6 +193,33 @@ class TaskExecutor(object):
             request,
             target,
             '/event_pipeline.TaskExecutor/SubmitTaskStream',
+            volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
+            volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitBatchTasks(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/event_pipeline.TaskExecutor/SubmitBatchTasks',
             volnux_dot_protos_dot_task__pb2.SubmitTaskRequest.SerializeToString,
             volnux_dot_protos_dot_task__pb2.SubmitTaskResponse.FromString,
             options,
