@@ -234,7 +234,7 @@ class GRPCExecutor(BaseRemoteExecutor):
     def submit_batch(
         self,
         tasks: typing.Iterable[typing.Tuple[typing.Callable, typing.Tuple, typing.Dict]],
-    ) -> typing.Iterator[TaskExecutionSuccessResponse]:
+    ) -> typing.Iterator[typing.Union[TaskExecutionSuccessResponse, TaskExecutionErrorResponse]]:
         """
         Submit a batch of tasks using bidirectional streaming.
 
@@ -242,7 +242,7 @@ class GRPCExecutor(BaseRemoteExecutor):
             tasks: An iterable of (fn, args, kwargs) tuples.
 
         Returns:
-            An iterator of TaskExecutionSuccessResponse objects.
+            An iterator of TaskExecutionSuccessResponse or TaskExecutionErrorResponse objects.
         """
         def request_generator():
             for fn, task_args, task_kwargs in tasks:
@@ -280,8 +280,14 @@ class GRPCExecutor(BaseRemoteExecutor):
                         hmac=response.hmac
                     )
                 elif response.status == "error":
-                     # todo - keep track of failed tasks
                      logger.error(f"Batch task failed: {response.message} ({response.code})")
+                     yield TaskExecutionErrorResponse(
+                        correlation_id=response.correlation_id,
+                        status="error",
+                        message=response.message,
+                        code=response.code,
+                        timestamp=response.timestamp
+                     )
         except grpc.RpcError as e:
             logger.error(f"Batch RPC failed: {e}")
             raise
