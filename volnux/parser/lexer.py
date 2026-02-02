@@ -89,7 +89,6 @@ class PointyLexer(object):
             "QUESTION",  # ?
             "PLUS",
             "MINUS",
-            "MULT",
             "DIV",
             "MOD",
             "LOGICAL_NOT",

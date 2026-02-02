@@ -24,12 +24,6 @@ from .ast import (
     ListNode,
     MapNode,
     UnaryOpNode,
-    ExpressionNode,
-    TernaryExprNode,
-    ComparisonExprNode,
-    NullCoalesceExprNode,
-    UnaryOpNode,
-    ExpressionNode,
     TernaryExprNode,
     ComparisonExprNode,
     NullCoalesceExprNode,
@@ -49,18 +43,6 @@ precedence = (
 
     ("right", "TERNARY"),
     ("left", "NULLCOALESCE"),  # ??
-    ('left', 'LOGICAL_AND'),
-    ('left', 'BITWISE_OR'),
-    ('left', 'BITWISE_XOR'),
-    ('left', 'BITWISE_AND'),
-    ("nonassoc", "EQ", "NE"),  # == !=
-    ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),              # relational operators
-    ('nonassoc', 'LANGLE', 'LE', 'RANGLE', 'GE'),                  # relational operators
-    ('left', 'LSHL', 'LSHR', 'ASHR'),                              # shift operators
-    ('left', 'PLUS', 'MINUS'),                                     # additive operators
-    ('left', 'MULT', 'DIV', 'MOD'),                                # multiplicative operators
-    ('right', 'UMINUS', 'UPLUS', 'LOGICAL_NOT', 'BITWISE_NOT'),    # Unary operators
-    ('left', 'LPAREN'),
 )
 
 
@@ -134,12 +116,8 @@ def p_expression(p):
                 | task RETRY factor
                 | expression_groupings RETRY factor
                 | factor RETRY expression_groupings
-                | variable_declaration
     """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
+    p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
 def p_expression_ternary(p):
@@ -249,11 +227,9 @@ def p_variable_declaration(p):
 
 def p_value(p):
     """
-    value : scalar_value
-            | variable_reference
-            | list
+    value :  list
             | map
-            | arithmetic_expression
+            | arithmetic_expr
             | null_value
             | comparison_expression
             | ternary_expression
@@ -479,47 +455,139 @@ def p_expression_groupings(p):
     else:
         p[0] = ExpressionGroupingNode([p[2]], options=p[5])
 
-def p_arithmetic_expression(p):
+def p_arithmetic_expr(p):
     """
-    arithmetic_expression : arithmetic_expression PARALLEL arithmetic_expression
-                     | arithmetic_expression LOGICAL_AND arithmetic_expression
-                     | arithmetic_expression BITWISE_OR arithmetic_expression
-                     | arithmetic_expression BITWISE_XOR arithmetic_expression
-                     | arithmetic_expression BITWISE_AND arithmetic_expression
-                     | arithmetic_expression EQ arithmetic_expression
-                     | arithmetic_expression NE arithmetic_expression
-                     | arithmetic_expression LANGLE arithmetic_expression
-                     | arithmetic_expression LE arithmetic_expression
-                     | arithmetic_expression RANGLE arithmetic_expression
-                     | arithmetic_expression GE arithmetic_expression
-                     | arithmetic_expression LSHL arithmetic_expression
-                     | arithmetic_expression LSHR arithmetic_expression
-                     | arithmetic_expression ASHR arithmetic_expression
-                     | arithmetic_expression PLUS arithmetic_expression
-                     | arithmetic_expression MINUS arithmetic_expression
-                     | arithmetic_expression RETRY arithmetic_expression %prec MULT
-                     | arithmetic_expression DIV arithmetic_expression
-                     | arithmetic_expression MOD arithmetic_expression
-                     | LOGICAL_NOT arithmetic_expression
-                     | BITWISE_NOT arithmetic_expression
-                     | PLUS arithmetic_expression %prec UPLUS
-                     | MINUS arithmetic_expression %prec UMINUS
-                     | LPAREN arithmetic_expression RPAREN
-                     | arithmetic_factor
+    arithmetic_expr : logical_or_expression
     """
-    if len(p) == 4 and isinstance(p[1], ExpressionNode):
+    p[0] = p[1]
+
+def p_logical_or_expression(p):
+    """
+    logical_or_expression : logical_or_expression PARALLEL logical_and_expression
+                          | logical_and_expression
+    """
+    if len(p) == 4:
         p[0] = BinOpNode(p[1], p[2], p[3])
-    elif len(p) == 3:
-        p[0] = UnaryOpNode(p[1], p[2])
-    elif len(p) == 2:
-        p[0] = p[1]
     else:
+        p[0] = p[1]
+
+def p_logical_and_expression(p):
+    """
+    logical_and_expression : logical_and_expression LOGICAL_AND bitwise_or_expression
+                           | bitwise_or_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_bitwise_or_expression(p):
+    """
+    bitwise_or_expression : bitwise_or_expression BITWISE_OR bitwise_xor_expression
+                          | bitwise_xor_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_bitwise_xor_expression(p):
+    """
+    bitwise_xor_expression : bitwise_xor_expression BITWISE_XOR bitwise_and_expression
+                           | bitwise_and_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_bitwise_and_expression(p):
+    """
+    bitwise_and_expression : bitwise_and_expression BITWISE_AND arith_comparison_expression
+                           | arith_comparison_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_arith_comparison_expression(p):
+    """
+    arith_comparison_expression : arith_comparison_expression EQ shift_expression
+                          | arith_comparison_expression NE shift_expression
+                          | arith_comparison_expression LANGLE shift_expression
+                          | arith_comparison_expression RANGLE shift_expression
+                          | arith_comparison_expression LE shift_expression
+                          | arith_comparison_expression GE shift_expression
+                          | shift_expression
+    """
+    if len(p) == 4:
+        p[0] = ComparisonExprNode(p[2], p[1], p[3])
+    else:
+        p[0] = p[1]
+
+def p_shift_expression(p):
+    """
+    shift_expression : shift_expression LSHL additive_expression
+                     | shift_expression LSHR additive_expression
+                     | shift_expression ASHR additive_expression
+                     | additive_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_additive_expression(p):
+    """
+    additive_expression : additive_expression PLUS multiplicative_expression
+                        | additive_expression MINUS multiplicative_expression
+                        | multiplicative_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_multiplicative_expression(p):
+    """
+    multiplicative_expression : multiplicative_expression DIV unary_expression
+                              | multiplicative_expression MOD unary_expression
+                              | multiplicative_expression RETRY unary_expression
+                              | unary_expression
+    """
+    if len(p) == 4:
+        p[0] = BinOpNode(p[1], p[2], p[3])
+    else:
+        p[0] = p[1]
+
+def p_unary_expression(p):
+    """
+    unary_expression : LOGICAL_NOT unary_expression
+                     | BITWISE_NOT unary_expression
+                     | MINUS unary_expression
+                     | primary_expression
+    """
+    if len(p) == 3:
+        p[0] = UnaryOpNode(p[1], p[2])
+    else:
+        p[0] = p[1]
+
+def p_primary_expression(p):
+    """
+    primary_expression : LPAREN arithmetic_expr RPAREN
+                       | arithmetic_factor
+    """
+    if len(p) == 4:
         p[0] = p[2]
+    else:
+        p[0] = p[1]
 
 def p_arithmetic_factor(p):
     """
     arithmetic_factor : INT
                       | FLOAT
+                      | STRING_LITERAL
                       | variable_reference
     """
     factor = p[1]
