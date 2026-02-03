@@ -1,0 +1,6 @@
+sentence-transformers
+volnux
+pypdf
+chromadb
+langchain-text-splitters
+numpy
