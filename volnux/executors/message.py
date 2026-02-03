@@ -22,7 +22,7 @@ class TaskMessage(BaseModel):
 
     event: str
     args: MiniAnnotated[
-        typing.Dict[str, typing.Any], Attrib(validators=[ensure_json_serializable])
+        dict, Attrib(validators=[ensure_json_serializable])
     ]
     correlation_id: typing.Optional[str] = None
 
