@@ -143,6 +143,27 @@ class RagPipeline(Pipeline):
         pointy = "DocReceived |-> (TextExtracted & MetadataExtracted) |-> TextChunked |-> EmbeddingsGenerated |-> Indexed"
 ```
 
+### Running the Pipeline
+
+Volnux pipelines are plain Python objects. You just instantiate and start them.
+
+```python
+# blog/rag_pipeline/main.py
+from .pipeline import RagPipeline
+
+if __name__ == "__main__":
+    print("Starting RAG Ingestion...")
+
+    # Initialize pipeline
+    # (default config looks for 'sample_document.pdf')
+    pipeline = RagPipeline()
+
+    # Execute!
+    pipeline.start()
+```
+
+When you run this, you'll see the logs showing `TextExtracted` and `MetadataExtracted` running simultaneously, followed by the heavy `TextChunked` job, and finally the batch `EmbeddingsGenerated`.
+
 ### Why This Matters
 
 1.  **Extreme Performance**: By batching the embedding generation (the most expensive step), we get massive speedups compared to looping. Volnux natively supports passing these variable-sized batches between steps.
