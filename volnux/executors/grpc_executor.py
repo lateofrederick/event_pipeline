@@ -245,6 +245,9 @@ class GRPCExecutor(BaseRemoteExecutor):
             An iterator of TaskExecutionSuccessResponse or TaskExecutionErrorResponse objects.
         """
         def request_generator():
+            """
+            Generator that yields SubmitTaskRequest objects for each task in the batch.
+            """
             for fn, task_args, task_kwargs in tasks:
                 event_name = getattr(fn, "__name__", str(fn))
 
