@@ -118,7 +118,7 @@ class AssignmentNode(ASTNode):
 @dataclass
 class BlockNode(ASTNode):
     __slots__ = ("statements", "type")
-    statements: typing.List[ASTNode]
+    statements: typing.List[BranchNode]
     type: BlockType
 
     def accept(self, visitor: "ASTVisitor"):
@@ -174,7 +174,7 @@ class VariableAccessNode(ExpressionNode):
 
 
 @dataclass
-class EnvironmentVariableAccessNode(ASTNode):
+class EnvironmentVariableAccessNode(ExpressionNode):
     __slots__ = ("name",)
     name: str
 
@@ -214,7 +214,8 @@ class ConditionalNode(ASTNode):
 class TaskNode(ASTNode):
     # __slots__ = ("task", "options")
     task: str
-    options: typing.Optional[BlockNode] = None
+    # Parser produces a plain list of AttributeNode for options; reflect that in typing
+    options: typing.Optional[typing.List["AttributeNode"]] = None
     namespace: str = field(default="local")
 
     def __post_init__(self):
@@ -287,7 +288,8 @@ class ExpressionGroupingNode(ASTNode):
 
     expressions: typing.List[ASTNode]
     grouping_strategy: "GroupingStrategy" = None
-    options: typing.Optional[BlockNode] = None
+    # Options attached to a grouped expression are attribute lists (list[AttributeNode])
+    options: typing.Optional[typing.List["AttributeNode"]] = None
 
     def __post_init__(self):
         if self.grouping_strategy is None:
@@ -311,7 +313,8 @@ class MetaEventNode(ASTNode):
     mode: typing.Literal["MAP", "FILTER", "REDUCE", "FOREACH", "FLATMAP", "FANOUT"]
     template_event: str  # Name of the Template Event (identifier)
     template_event_namespace: str = "local"
-    options: typing.Optional[BlockNode] = None
+    # Parser passes attribute_list as a list; reflect that in typing
+    options: typing.Optional[typing.List["AttributeNode"]] = None
 
     def accept(self, visitor):
         """Visitor pattern support"""
@@ -351,6 +354,48 @@ class TernaryExprNode(ASTNode):
 
     def __repr__(self):
         return f"Ternary({self.condition} ? {self.true_expr} : {self.false_expr})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass
+
+@dataclass
+class AttributeNode(ASTNode):
+    value: ExpressionNode
+    attr: str
+
+    def __repr__(self):
+        return f"Attribute({self.value}.{self.attr})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass
+
+@dataclass
+class RetryNode(ASTNode):
+    job: ASTNode
+    attempts: LiteralNode
+
+    def __repr__(self):
+        return f"Retry(job={self.job}, attempts={self.attempts})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass
+
+@dataclass
+class BranchNode(ASTNode):
+    condition: DescriptorNode
+    operator: str
+    task: ASTNode
+
+    def __repr__(self):
+        return f"Branch(condition={self.condition}, task={self.task})"
+
+    def accept(self, visitor: "ASTVisitor"):
+        pass
+
+@dataclass
+class IndexExprNode(ExpressionNode):
+    collection: ASTNode
+    index: LiteralNode
 
     def accept(self, visitor: "ASTVisitor"):
         pass
