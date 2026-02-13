@@ -5,7 +5,7 @@ from volnux.parser.ast import (
     TaskNode,
     BinOpNode,
     RetryNode,
-    ExpressionGroupingNode,
+    PipelineGroupingNode,
     MetaEventNode,
     AttributeNode,
     LiteralNode,
@@ -74,7 +74,7 @@ class TestGrammarSequential(unittest.TestCase):
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
         self.assertEqual(node.op, "->")
-        self.assertIsInstance(node.left, ExpressionGroupingNode)
+        self.assertIsInstance(node.left, PipelineGroupingNode)
         self.assertIsInstance(node.right, TaskNode)
         self.assertEqual(node.right.task, "Worker")
 
@@ -206,7 +206,7 @@ class TestGrammarSequential(unittest.TestCase):
         program = pointy_parser('{Run}[opt = 1] -> Worker')
         node = program.chain
         left = node.left
-        self.assertIsInstance(left, ExpressionGroupingNode)
+        self.assertIsInstance(left, PipelineGroupingNode)
         names = {a.attr: a for a in left.options}
         self.assertEqual(names['opt'].value.value, 1)
 
@@ -258,7 +258,7 @@ class TestGrammarSequential(unittest.TestCase):
         self.assertIsInstance(node, BinOpNode)
         self.assertIsInstance(node.left, BinOpNode)
         self.assertIsInstance(node.left.left, MetaEventNode)
-        self.assertIsInstance(node.left.right, ExpressionGroupingNode)
+        self.assertIsInstance(node.left.right, PipelineGroupingNode)
         self.assertIsInstance(node.right, TaskNode)
         self.assertEqual(node.right.namespace, 'pypi')
 
@@ -266,7 +266,7 @@ class TestGrammarSequential(unittest.TestCase):
         # variable declared before usage
         program = pointy_parser('@v = 10 Worker[params = [1, 2], config = {"a": 1}, port = 8000 + 80, use = $v] -> DoIt')
         node = program.chain
-        
+
         # self.assertIsInstance(node, BinOpNode)
         left = node.left
         self.assertIsInstance(left, TaskNode)

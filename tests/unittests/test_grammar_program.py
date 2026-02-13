@@ -1,9 +1,19 @@
 import unittest
 
-from volnux.parser import TernaryExprNode, IndexExprNode, VariableAccessNode
-from volnux.parser.ast import BinOpNode, ConditionalNode, TaskNode, MetaEventNode, MapNode
+from volnux.parser import LiteralNode
 from volnux.parser.grammar_v2 import pointy_parser
-
+from volnux.parser.ast import (
+    BinOpNode,
+    ConditionalNode,
+    TaskNode,
+    MetaEventNode,
+    MapNode,
+    TernaryExprNode,
+    IndexExprNode,
+    VariableAccessNode,
+    ListNode,
+    BlockNode,
+)
 
 
 class TestProgram(unittest.TestCase):
@@ -232,32 +242,32 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(program.directives["recursive_depth"].value, 1500)
 
         self.assertIsNotNone(program.chain)
-        self.assertEqual(program.chain.op, '|->')
-        self.assertIsInstance(program.chain.right, TaskNode)
-        self.assertEqual(program.chain.right.namespace, "pypi")
-        self.assertEqual(program.chain.right.task, 'GenerateInvoice')
+        self.assertEqual(program.chain.op, '||')
+        right = program.chain.right
+        self.assertIsInstance(right, BinOpNode)
+        self.assertEqual(right.op, '|->')
+        self.assertIsInstance(right.left, TaskNode)
+        self.assertEqual(right.left.namespace, "local")
+        self.assertEqual(right.left.task, 'CalculateTotals')
 
-        self.assertIsInstance(program.chain.left, BinOpNode)
-        self.assertEqual(program.chain.left.op, '||')
-        self.assertIsInstance(program.chain.left.right, TaskNode)
-        self.assertEqual(program.chain.left.right.namespace, "local")
-        self.assertEqual(program.chain.left.right.task, 'CalculateTotals')
+        self.assertIsInstance(right.right, TaskNode)
+        self.assertEqual(right.right.namespace, "pypi")
+        self.assertEqual(right.right.task, 'GenerateInvoice')
 
-        self.assertIsInstance(program.chain.left.left, BinOpNode)
-        self.assertEqual(program.chain.left.left.op, '->')
-        self.assertIsInstance(program.chain.left.left.right, TaskNode)
-        self.assertEqual(program.chain.left.left.right.namespace, "github")
-        self.assertEqual(program.chain.left.left.right.task, 'EnrichWithCustomerData')
-
-        self.assertIsInstance(program.chain.left.left.left, BinOpNode)
-        self.assertEqual(program.chain.left.left.left.op, '->')
-        self.assertIsInstance(program.chain.left.left.left.left, TaskNode)
-        self.assertEqual(program.chain.left.left.left.left.namespace, "local")
-        self.assertEqual(program.chain.left.left.left.left.task, 'FetchOrders')
-
-        self.assertIsInstance(program.chain.left.left.left.right, TaskNode)
-        self.assertEqual(program.chain.left.left.left.right.namespace, "pypi")
-        self.assertEqual(program.chain.left.left.left.right.task, 'ValidateOrders')
+        left = program.chain.left
+        self.assertIsInstance(left, BinOpNode)
+        self.assertEqual(left.op, '->')
+        self.assertIsInstance(left.left, BinOpNode)
+        self.assertEqual(left.left.op, '->')
+        self.assertIsInstance(left.left.left, TaskNode)
+        self.assertEqual(left.left.left.namespace, "local")
+        self.assertEqual(left.left.left.task, 'FetchOrders')
+        self.assertIsInstance(left.left.right, TaskNode)
+        self.assertEqual(left.left.right.namespace, "pypi")
+        self.assertEqual(left.left.right.task, 'ValidateOrders')
+        self.assertIsInstance(left.right, TaskNode)
+        self.assertEqual(left.right.namespace, "github")
+        self.assertEqual(left.right.task, 'EnrichWithCustomerData')
 
     def test_variables_with_meta_events(self):
         program = pointy_parser(
@@ -323,9 +333,524 @@ class TestProgram(unittest.TestCase):
         self.assertIsInstance(left_chain.left.right, TaskNode)
         self.assertEqual(left_chain.left.right.task, 'FetchWorkQueue')
 
+    def test_for_each_for_side_effects(self):
+        program = pointy_parser(
+            """
+            @notification_list = [
+                {"user": "alice", "message": "..."},
+                {"user": "bob", "message": "..."}
+            ]
+            
+            PrepareNotifications |->
+            FOREACH<SendEmail>[concurrent=true, continue_on_error=true] |->
+            LogCompletionStatus  # Original notification_list is passed through
+            """
+        )
 
+        self.assertIn("notification_list", program.global_variables)
+        self.assertIsInstance(program.global_variables["notification_list"], ListNode)
+        self.assertEqual(len(program.global_variables["notification_list"]), 2)
+        self.assertIsInstance(program.global_variables["notification_list"][0], MapNode)
+        self.assertEqual(program.global_variables["notification_list"][0].value["user"].value, "alice")
+        self.assertEqual(program.global_variables["notification_list"][0].value["message"].value, "...")
+        self.assertIsInstance(program.global_variables["notification_list"][1], MapNode)
+        self.assertEqual(program.global_variables["notification_list"][1].value["user"].value, "bob")
+        self.assertEqual(program.global_variables["notification_list"][1].value["message"].value, "...")
 
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'LogCompletionStatus')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertEqual(left_chain.right.mode, 'FOREACH')
+        self.assertEqual(left_chain.right.template_event, 'SendEmail')
+        self.assertIsInstance(left_chain.right.options, list)
+        options = {opt.attr: opt.value for opt in left_chain.right.options}
+        self.assertIn('concurrent', options)
+        self.assertIn('continue_on_error', options)
+        self.assertEqual(options['concurrent'].value, True)
+        self.assertEqual(options['continue_on_error'].value, True)
+        self.assertIsInstance(left_chain.left, TaskNode)
+        self.assertEqual(left_chain.left.task, 'PrepareNotifications')
 
+    def test_error_handling_with_meta_events(self):
+        program = pointy_parser(
+            """
+                @critical_operations = [1, 2, 3]
+                
+                LoadOperations |->
+                MAP<ExecuteCriticalOperation>[retries=5, concurrent=false] (
+                    0 |-> FOREACH<LogFailure>[continue_on_error=true] |->
+                          NotifyOnCallEngineer |->
+                          InitiateRollback,
+                    1 -> ValidateAllSuccess -> UpdateStatus
+                )
+            """
+        )
+
+        self.assertIn("critical_operations", program.global_variables)
+        self.assertIsInstance(program.global_variables["critical_operations"], ListNode)
+        self.assertEqual(len(program.global_variables["critical_operations"]), 3)
+        self.assertEqual(program.global_variables["critical_operations"][0].value, 1)
+        self.assertEqual(program.global_variables["critical_operations"][1].value, 2)
+        self.assertEqual(program.global_variables["critical_operations"][2].value, 3)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, ConditionalNode)
+        conditional = program.chain.right
+        self.assertIsInstance(conditional.task, MetaEventNode)
+        self.assertEqual(conditional.task.mode, 'MAP')
+        self.assertEqual(conditional.task.template_event, 'ExecuteCriticalOperation')
+        options = {opt.attr: opt.value for opt in conditional.task.options}
+        self.assertIn('retries', options)
+        self.assertIn('concurrent', options)
+        self.assertEqual(options['retries'].value, 5)
+        self.assertEqual(options['concurrent'].value, False)
+        self.assertIsInstance(conditional.branches, BlockNode)
+        branches = {a.condition.value: a for a in conditional.branches.statements}
+        self.assertIn(0, branches)
+        self.assertIn(1, branches)
+        # Branch 0
+        self.assertEqual(branches[0].operator, '|->')
+        self.assertIsInstance(branches[0].task, BinOpNode)
+        self.assertEqual(branches[0].task.op, '|->')
+        self.assertIsInstance(branches[0].task.right, TaskNode)
+        self.assertEqual(branches[0].task.right.task, 'InitiateRollback')
+        self.assertIsInstance(branches[0].task.left, BinOpNode)
+        self.assertEqual(branches[0].task.left.op, '|->')
+        self.assertIsInstance(branches[0].task.left.left, MetaEventNode)
+        self.assertEqual(branches[0].task.left.left.mode, 'FOREACH')
+        self.assertEqual(branches[0].task.left.left.template_event, 'LogFailure')
+        options = {opt.attr: opt.value for opt in branches[0].task.left.left.options}
+        self.assertIn('continue_on_error', options)
+        self.assertEqual(options['continue_on_error'].value, True)
+        self.assertIsInstance(branches[0].task.left.right, TaskNode)
+        self.assertEqual(branches[0].task.left.right.task, 'NotifyOnCallEngineer')
+
+        # Branch 1
+        self.assertEqual(branches[1].operator, '->')
+        self.assertIsInstance(branches[1].task, BinOpNode)
+        self.assertEqual(branches[1].task.op, '->')
+        self.assertIsInstance(branches[1].task.left, TaskNode)
+        self.assertEqual(branches[1].task.left.task, 'ValidateAllSuccess')
+        self.assertIsInstance(branches[1].task.right, TaskNode)
+        self.assertEqual(branches[1].task.right.task, 'UpdateStatus')
+
+    def test_explicit_composition(self):
+        program = pointy_parser(
+            """
+                # Process groups of items using flattened composition
+                @grouped_data = [
+                    {"group": "A", "items": [1, 2, 3]},
+                    {"group": "B", "items": [4, 5, 6]}
+                ]
+                
+                LoadGroupedData |->
+                FLATMAP<ExtractItems>[concurrent=true] |->  # Flatten all groups to items
+                MAP<ProcessItem>[concurrent=true] |->        # Process all items
+                REDUCE<AggregateByGroup> |->                 # Re-group results
+                GenerateReport
+            """
+        )
+
+        self.assertIn("grouped_data", program.global_variables)
+        self.assertIsInstance(program.global_variables["grouped_data"], ListNode)
+        self.assertEqual(len(program.global_variables["grouped_data"]), 2)
+        self.assertIsInstance(program.global_variables["grouped_data"][0], MapNode)
+        self.assertEqual(program.global_variables["grouped_data"][0].value["group"].value, "A")
+        self.assertIsInstance(program.global_variables["grouped_data"][0].value["items"], ListNode)
+        self.assertEqual(program.global_variables["grouped_data"][0].value["items"][0].value, 1)
+        self.assertEqual(program.global_variables["grouped_data"][0].value["items"][1].value, 2)
+        self.assertEqual(program.global_variables["grouped_data"][0].value["items"][2].value, 3)
+        self.assertIsInstance(program.global_variables["grouped_data"][1], MapNode)
+        self.assertEqual(program.global_variables["grouped_data"][1].value["group"].value, "B")
+        self.assertIsInstance(program.global_variables["grouped_data"][1].value["items"], ListNode)
+        self.assertEqual(program.global_variables["grouped_data"][1].value["items"][0].value, 4)
+        self.assertEqual(program.global_variables["grouped_data"][1].value["items"][1].value, 5)
+        self.assertEqual(program.global_variables["grouped_data"][1].value["items"][2].value, 6)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'GenerateReport')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertEqual(left_chain.right.mode, 'REDUCE')
+        self.assertEqual(left_chain.right.template_event, 'AggregateByGroup')
+        self.assertIsInstance(left_chain.left, BinOpNode)
+        self.assertEqual(left_chain.left.op, '|->')
+        self.assertIsInstance(left_chain.left.right, MetaEventNode)
+        self.assertEqual(left_chain.left.right.mode, 'MAP')
+        self.assertEqual(left_chain.left.right.template_event, 'ProcessItem')
+        self.assertIsInstance(left_chain.left.left, BinOpNode)
+        self.assertEqual(left_chain.left.left.op, '|->')
+        self.assertIsInstance(left_chain.left.left.right, MetaEventNode)
+        self.assertEqual(left_chain.left.left.right.mode, 'FLATMAP')
+        self.assertEqual(left_chain.left.left.right.template_event, 'ExtractItems')
+        self.assertIsInstance(left_chain.left.left.left, TaskNode)
+        self.assertEqual(left_chain.left.left.left.task, 'LoadGroupedData')
+
+    def test_parallel_processing_with_different_meta_event(self):
+        program = pointy_parser(
+        """
+        # Process different data types in parallel
+        @data_batch = {"type_a": [], "type_b": [], "type_c": []}
+        
+        SplitDataByType -> (
+            ExtractTypeA |-> MAP<ProcessTypeA>[concurrent=true] ||
+            ExtractTypeB |-> MAP<ProcessTypeB>[concurrent=true] ||
+            ExtractTypeC |-> FLATMAP<ProcessTypeC>[concurrent=true]
+        ) |-> MergeResults |-> FinalValidation
+        """
+        )
+
+        self.assertIn("data_batch", program.global_variables)
+        self.assertIsInstance(program.global_variables["data_batch"], MapNode)
+        self.assertIn("type_a", program.global_variables["data_batch"].value)
+        self.assertIn("type_b", program.global_variables["data_batch"].value)
+        self.assertIn("type_c", program.global_variables["data_batch"].value)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'FinalValidation')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, TaskNode)
+        self.assertEqual(left_chain.right.task, 'MergeResults')
+        self.assertIsInstance(left_chain.left, BinOpNode)
+        self.assertEqual(left_chain.left.op, '->')
+        block = left_chain.left.right
+        self.assertIsInstance(block, BinOpNode)
+        self.assertEqual(block.op, '||')
+        # ExtractTypeA branch
+        self.assertIsInstance(block.right, BinOpNode)
+        self.assertEqual(block.right.op, '|->')
+        self.assertIsInstance(block.right.left, TaskNode)
+        self.assertEqual(block.right.left.task, 'ExtractTypeC')
+        self.assertIsInstance(block.right.right, MetaEventNode)
+        self.assertEqual(block.right.right.mode, 'FLATMAP')
+        self.assertEqual(block.right.right.template_event, 'ProcessTypeC')
+        # ExtractTypeB branch
+        self.assertIsInstance(block.left, BinOpNode)
+        self.assertEqual(block.left.op, '||')
+        self.assertIsInstance(block.left.right, BinOpNode)
+        self.assertEqual(block.left.right.op, '|->')
+        self.assertIsInstance(block.left.right.left, TaskNode)
+        self.assertEqual(block.left.right.left.task, 'ExtractTypeB')
+        self.assertIsInstance(block.left.right.right, MetaEventNode)
+        self.assertEqual(block.left.right.right.mode, 'MAP')
+        self.assertEqual(block.left.right.right.template_event, 'ProcessTypeB')
+        # ExtractTypeA branch
+        self.assertIsInstance(block.left.left, BinOpNode)
+        self.assertEqual(block.left.left.op, '|->')
+        self.assertIsInstance(block.left.left.left, TaskNode)
+        self.assertEqual(block.left.left.left.task, 'ExtractTypeA')
+        self.assertIsInstance(block.left.left.right, MetaEventNode)
+        self.assertEqual(block.left.left.right.mode, 'MAP')
+        self.assertEqual(block.left.left.right.template_event, 'ProcessTypeA')
+
+    def test_fan_out_to_multiple_services(self):
+        program = pointy_parser(
+            """
+            # Broadcast request to multiple replicas for redundancy
+            @request_payload = {"query": "search term", "filters": {"date_range": "last_30_days", "category": "books"}}
+            
+            PrepareRequest |->
+            FANOUT<SendToSearchReplica>[count=3, concurrent=true] |->
+            SelectFastestResponse |->
+            FormatResults |->
+            CacheAndReturn
+            """
+        )
+
+        self.assertIn("request_payload", program.global_variables)
+        self.assertIsInstance(program.global_variables["request_payload"], MapNode)
+        self.assertIn("query", program.global_variables["request_payload"].value)
+        self.assertIn("filters", program.global_variables["request_payload"].value)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'CacheAndReturn')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, TaskNode)
+        self.assertEqual(left_chain.right.task, 'FormatResults')
+        self.assertIsInstance(left_chain.left, BinOpNode)
+        self.assertEqual(left_chain.left.op, '|->')
+        self.assertIsInstance(left_chain.left.right, TaskNode)
+        self.assertEqual(left_chain.left.right.task, 'SelectFastestResponse')
+        self.assertIsInstance(left_chain.left.left, BinOpNode)
+        self.assertEqual(left_chain.left.left.op, '|->')
+        self.assertIsInstance(left_chain.left.left.right, MetaEventNode)
+        self.assertEqual(left_chain.left.left.right.mode, 'FANOUT')
+        self.assertEqual(left_chain.left.left.right.template_event, 'SendToSearchReplica')
+        options = {opt.attr: opt.value for opt in left_chain.left.left.right.options}
+        self.assertIn('count', options)
+        self.assertIn('concurrent', options)
+        self.assertEqual(options['count'].value, 3)
+        self.assertEqual(options['concurrent'].value, True)
+        self.assertIsInstance(left_chain.left.left.left, TaskNode)
+        self.assertEqual(left_chain.left.left.left.task, 'PrepareRequest')
+
+    def test_example_complex_multi_stage_pipeline(self):
+        program = pointy_parser(
+            """
+            @batch_size = 50
+            @retry_count = 3
+            
+            # Extract, transform, load pipeline
+            FetchRawData |->
+            MAP<ParseRecord>[batch_size=$batch_size, concurrent=true, retries=$retry_count] (
+                0 -> LogParseErrors -> NotifyDataTeam,
+                1 -> FILTER<ValidateSchema>[concurrent=true] |->
+                     MAP<TransformToTargetFormat>[concurrent=true] |->
+                     REDUCE<BatchInsert>[batch_size=100] (
+                         0 -> RollbackChanges -> AlertAdmin,
+                         1 -> CommitTransaction -> SendSuccessNotification
+                     )
+            )
+            """
+        )
+
+        self.assertIn("batch_size", program.global_variables)
+        self.assertIn("retry_count", program.global_variables)
+        self.assertEqual(program.global_variables["batch_size"].value, 50)
+        self.assertEqual(program.global_variables["retry_count"].value, 3)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.left, TaskNode)
+        self.assertEqual(program.chain.left.task, 'FetchRawData')
+        self.assertIsInstance(program.chain.right, ConditionalNode)
+        conditional = program.chain.right
+        self.assertIsInstance(conditional.task, MetaEventNode)
+        self.assertEqual(conditional.task.mode, 'MAP')
+        self.assertEqual(conditional.task.template_event, 'ParseRecord')
+        options = {opt.attr: opt.value for opt in conditional.task.options}
+        self.assertIn('batch_size', options)
+        self.assertIn('concurrent', options)
+        self.assertIn('retries', options)
+        self.assertIsInstance(options['batch_size'], VariableAccessNode)
+        self.assertEqual(options['batch_size'].value.value, 50)
+        self.assertEqual(options['concurrent'].value, True)
+        self.assertIsInstance(options['retries'], VariableAccessNode)
+        self.assertEqual(options['retries'].name, 'retry_count')
+        self.assertIsInstance(conditional.branches, BlockNode)
+        branches = {a.condition.value: a for a in conditional.branches.statements}
+        self.assertIn(0, branches)
+        self.assertIn(1, branches)
+        # Branch 0
+        self.assertEqual(branches[0].operator, '->')
+        self.assertIsInstance(branches[0].task, BinOpNode)
+        self.assertEqual(branches[0].task.op, '->')
+        self.assertIsInstance(branches[0].task.left, TaskNode)
+        self.assertEqual(branches[0].task.left.task, 'LogParseErrors')
+        self.assertIsInstance(branches[0].task.right, TaskNode)
+        self.assertEqual(branches[0].task.right.task, 'NotifyDataTeam')
+        # Branch 1
+        self.assertEqual(branches[1].operator, '->')
+        self.assertIsInstance(branches[1].task, BinOpNode)
+        self.assertEqual(branches[1].task.op, '|->')
+        self.assertIsInstance(branches[1].task.left, BinOpNode)
+        self.assertEqual(branches[1].task.left.op, '|->')
+        self.assertIsInstance(branches[1].task.left.left, MetaEventNode)
+        self.assertEqual(branches[1].task.left.left.mode, 'FILTER')
+        self.assertEqual(branches[1].task.left.left.template_event, 'ValidateSchema')
+        options = {opt.attr: opt.value for opt in branches[1].task.left.left.options}
+        self.assertIn('concurrent', options)
+        self.assertEqual(options['concurrent'].value, True)
+        self.assertIsInstance(branches[1].task.left.right, MetaEventNode)
+        self.assertEqual(branches[1].task.left.right.mode, 'MAP')
+        self.assertEqual(branches[1].task.left.right.template_event, 'TransformToTargetFormat')
+        options = {opt.attr: opt.value for opt in branches[1].task.left.right.options}
+        self.assertIn('concurrent', options)
+        self.assertEqual(options['concurrent'].value, True)
+
+        self.assertIsInstance(branches[1].task.right, ConditionalNode)
+        self.assertIsInstance(branches[1].task.right.task, MetaEventNode)
+        self.assertEqual(branches[1].task.right.task.mode, 'REDUCE')
+        self.assertEqual(branches[1].task.right.task.template_event, 'BatchInsert')
+        options = {opt.attr: opt.value for opt in branches[1].task.right.task.options}
+        self.assertIn('batch_size', options)
+        self.assertEqual(options['batch_size'].value, 100)
+        self.assertIsInstance(branches[1].task.right.branches, BlockNode)
+        reduce_branches = {a.condition.value: a for a in branches[1].task.right.branches.statements}
+        self.assertIn(0, reduce_branches)
+        self.assertIn(1, reduce_branches)
+        # Reduce Branch 0
+        self.assertEqual(reduce_branches[0].operator, '->')
+        self.assertIsInstance(reduce_branches[0].task, BinOpNode)
+        self.assertEqual(reduce_branches[0].task.op, '->')
+        self.assertIsInstance(reduce_branches[0].task.left, TaskNode)
+        self.assertEqual(reduce_branches[0].task.left.task, 'RollbackChanges')
+        self.assertIsInstance(reduce_branches[0].task.right, TaskNode)
+        self.assertEqual(reduce_branches[0].task.right.task, 'AlertAdmin')
+        # Reduce Branch 1
+        self.assertEqual(reduce_branches[1].operator, '->')
+        self.assertIsInstance(reduce_branches[1].task, BinOpNode)
+        self.assertEqual(reduce_branches[1].task.op, '->')
+        self.assertIsInstance(reduce_branches[1].task.left, TaskNode)
+        self.assertEqual(reduce_branches[1].task.left.task, 'CommitTransaction')
+        self.assertIsInstance(reduce_branches[1].task.right, TaskNode)
+        self.assertEqual(reduce_branches[1].task.right.task, 'SendSuccessNotification')
+
+    def test_example_data_aggregation_pipeline(self):
+        program = pointy_parser(
+            """
+            # Aggregate sales data
+            @sales_records = [
+                {"amount": 100, "region": "North"},
+                {"amount": 200, "region": "South"},
+                {"amount": 150, "region": "North"}
+            ]
+            
+            LoadSalesData |->
+            MAP<ValidateRecord>[concurrent=true] |->
+            FILTER<IsValidSale> |->
+            REDUCE<SumAmounts>[initial_value=0] |->
+            PublishTotalSales
+            """
+        )
+
+        self.assertIn("sales_records", program.global_variables)
+        self.assertIsInstance(program.global_variables["sales_records"], ListNode)
+        self.assertEqual(len(program.global_variables["sales_records"]), 3)
+        self.assertIsInstance(program.global_variables["sales_records"][0], MapNode)
+        self.assertEqual(program.global_variables["sales_records"][0].value["amount"].value, 100)
+        self.assertEqual(program.global_variables["sales_records"][0].value["region"].value, "North")
+        self.assertIsInstance(program.global_variables["sales_records"][1], MapNode)
+        self.assertEqual(program.global_variables["sales_records"][1].value["amount"].value, 200)
+        self.assertEqual(program.global_variables["sales_records"][1].value["region"].value, "South")
+        self.assertIsInstance(program.global_variables["sales_records"][2], MapNode)
+        self.assertEqual(program.global_variables["sales_records"][2].value["amount"].value, 150)
+        self.assertEqual(program.global_variables["sales_records"][2].value["region"].value, "North")
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'PublishTotalSales')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertEqual(left_chain.right.mode, 'REDUCE')
+        self.assertEqual(left_chain.right.template_event, 'SumAmounts')
+        options = {opt.attr: opt.value for opt in left_chain.right.options}
+        self.assertIn('initial_value', options)
+        self.assertEqual(options['initial_value'].value, 0)
+        self.assertIsInstance(left_chain.left, BinOpNode)
+        self.assertEqual(left_chain.left.op, '|->')
+        self.assertIsInstance(left_chain.left.right, MetaEventNode)
+        self.assertEqual(left_chain.left.right.mode, 'FILTER')
+        self.assertEqual(left_chain.left.right.template_event, 'IsValidSale')
+        self.assertIsInstance(left_chain.left.left, BinOpNode)
+        self.assertEqual(left_chain.left.left.op, '|->')
+        self.assertIsInstance(left_chain.left.left.right, MetaEventNode)
+        self.assertEqual(left_chain.left.left.right.mode, 'MAP')
+        self.assertEqual(left_chain.left.left.right.template_event, 'ValidateRecord')
+        self.assertIsInstance(left_chain.left.left.left, TaskNode)
+        self.assertEqual(left_chain.left.left.left.task, 'LoadSalesData')
+
+    def test_example_filter_and_process(self):
+        program = pointy_parser(
+            """
+            # Filter adult users and process
+            @users = [
+                {"name": "Alice", "age": 25},
+                {"name": "Bob", "age": 17},
+                {"name": "Charlie", "age": 30}
+            ]
+            
+            LoadUsers |-> 
+            FILTER<IsAdult>[concurrent=true] |-> 
+            MAP<SendMarketingEmail>[batch_size=10] |->
+            LogResults
+            """
+        )
+
+        self.assertIn("users", program.global_variables)
+        self.assertIsInstance(program.global_variables["users"], ListNode)
+        self.assertEqual(len(program.global_variables["users"]), 3)
+        self.assertIsInstance(program.global_variables["users"][0], MapNode)
+        self.assertEqual(program.global_variables["users"][0].value["name"].value, "Alice")
+        self.assertEqual(program.global_variables["users"][0].value["age"].value, 25)
+        self.assertIsInstance(program.global_variables["users"][1], MapNode)
+        self.assertEqual(program.global_variables["users"][1].value["name"].value, "Bob")
+        self.assertEqual(program.global_variables["users"][1].value["age"].value, 17)
+        self.assertIsInstance(program.global_variables["users"][2], MapNode)
+        self.assertEqual(program.global_variables["users"][2].value["name"].value, "Charlie")
+        self.assertEqual(program.global_variables["users"][2].value["age"].value, 30)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'LogResults')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertEqual(left_chain.right.mode, 'MAP')
+        self.assertEqual(left_chain.right.template_event, 'SendMarketingEmail')
+        options = {opt.attr: opt.value for opt in left_chain.right.options}
+        self.assertIn('batch_size', options)
+        self.assertEqual(options['batch_size'].value, 10)
+        self.assertIsInstance(left_chain.left, BinOpNode)
+        self.assertEqual(left_chain.left.op, '|->')
+        self.assertIsInstance(left_chain.left.right, MetaEventNode)
+        self.assertEqual(left_chain.left.right.mode, 'FILTER')
+        self.assertEqual(left_chain.left.right.template_event, 'IsAdult')
+        options = {opt.attr: opt.value for opt in left_chain.left.right.options}
+        self.assertIn('concurrent', options)
+        self.assertEqual(options['concurrent'].value, True)
+        self.assertIsInstance(left_chain.left.left, TaskNode)
+        self.assertEqual(left_chain.left.left.task, 'LoadUsers')
+
+    def test_example_simple_map_operation(self):
+        program = pointy_parser(
+            """
+            # Process a list of user IDs
+            @user_ids = [101, 102, 103, 104, 105]
+            
+            FetchUserIds |-> MAP<EnrichUserData>[concurrent=true, retries=2] |-> SaveToCache
+            """
+        )
+
+        self.assertIn("user_ids", program.global_variables)
+        self.assertIsInstance(program.global_variables["user_ids"], ListNode)
+        self.assertEqual(len(program.global_variables["user_ids"]), 5)
+        self.assertEqual(program.global_variables["user_ids"][0].value, 101)
+        self.assertEqual(program.global_variables["user_ids"][1].value, 102)
+        self.assertEqual(program.global_variables["user_ids"][2].value, 103)
+        self.assertEqual(program.global_variables["user_ids"][3].value, 104)
+        self.assertEqual(program.global_variables["user_ids"][4].value, 105)
+
+        self.assertIsNotNone(program.chain)
+        self.assertEqual(program.chain.op, '|->')
+        self.assertIsInstance(program.chain.right, TaskNode)
+        self.assertEqual(program.chain.right.task, 'SaveToCache')
+        left_chain = program.chain.left
+        self.assertIsInstance(left_chain, BinOpNode)
+        self.assertEqual(left_chain.op, '|->')
+        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertEqual(left_chain.right.mode, 'MAP')
+        self.assertEqual(left_chain.right.template_event, 'EnrichUserData')
+        options = {opt.attr: opt.value for opt in left_chain.right.options}
+        self.assertIn('concurrent', options)
+        self.assertIn('retries', options)
+        self.assertEqual(options['concurrent'].value, True)
+        self.assertEqual(options['retries'].value, 2)
+        self.assertIsInstance(left_chain.left, TaskNode)
+        self.assertEqual(left_chain.left.task, 'FetchUserIds')
 
 
 if __name__ == '__main__':

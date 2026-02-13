@@ -5,7 +5,7 @@ from volnux.parser.ast import (
     TaskNode,
     BinOpNode,
     RetryNode,
-    ExpressionGroupingNode,
+    PipelineGroupingNode,
     MetaEventNode,
     AttributeNode,
 )
@@ -51,17 +51,22 @@ class TestGrammarPiped(unittest.TestCase):
         program = pointy_parser("TaskA -> TaskB |-> TaskC -> TaskD")
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, "|->")
+        self.assertEqual(node.op, "->")
+        self.assertIsInstance(node.right, TaskNode)
+        self.assertEqual(node.right.task, "TaskD")
         # left should be a sequential BinOp
         self.assertIsInstance(node.left, BinOpNode)
-        self.assertEqual(node.left.op, "->")
-        # right should be a sequential BinOp
-        self.assertIsInstance(node.right, BinOpNode)
-        self.assertEqual(node.right.op, "->")
-        self.assertEqual(node.left.left.task, "TaskA")
-        self.assertEqual(node.left.right.task, "TaskB")
-        self.assertEqual(node.right.left.task, "TaskC")
-        self.assertEqual(node.right.right.task, "TaskD")
+        self.assertEqual(node.left.op, "|->")
+        self.assertIsInstance(node.left.right, TaskNode)
+        self.assertEqual(node.left.right.task, "TaskC")
+        self.assertIsInstance(node.left.left, BinOpNode)
+        self.assertEqual(node.left.left.op, "->")
+        self.assertIsInstance(node.left.left.left, TaskNode)
+        self.assertEqual(node.left.left.left.task, "TaskA")
+        self.assertIsInstance(node.left.left.right, TaskNode)
+        self.assertEqual(node.left.left.right.task, "TaskB")
+
+
 
     def test_piped_task_with_attributes(self):
         program = pointy_parser('Worker[retries = 3] |-> DoIt')
@@ -91,8 +96,8 @@ class TestGrammarPiped(unittest.TestCase):
         program = pointy_parser('{DoIt}[opt = 1] |-> {Run}[opt = 2]')
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
-        self.assertIsInstance(node.left, ExpressionGroupingNode)
-        self.assertIsInstance(node.right, ExpressionGroupingNode)
+        self.assertIsInstance(node.left, PipelineGroupingNode)
+        self.assertIsInstance(node.right, PipelineGroupingNode)
         left_names = {a.attr: a for a in node.left.options}
         right_names = {a.attr: a for a in node.right.options}
         self.assertEqual(left_names['opt'].value.value, 1)
@@ -111,28 +116,32 @@ class TestGrammarPiped(unittest.TestCase):
         self.assertIsInstance(names_r['port'].value, BinOpNode)
 
     def test_piped_sequential_complex_mix(self):
-        # Left is a sequential chain that includes a task with attributes and retry; right is a piped chain ending in a meta-event
+        # Left-to-right associativity with equal precedence for '->' and '|->'
         program = pointy_parser('TaskA * 2 -> Worker[retries = 3, timeout = 30] |-> pypi::Run[version = "1.2.3"] -> MAP<FetchUserData>')
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, '|->')
-        # left side should be a sequential chain
+        # final operator should be the right-most '->' due to left-associativity
+        self.assertEqual(node.op, '->')
+        # left side should be a BinOp representing the prefix ((TaskA * 2 -> Worker) |-> pypi::Run)
         self.assertIsInstance(node.left, BinOpNode)
-        self.assertEqual(node.left.op, '->')
-        # left.left should be a RetryNode
-        self.assertIsInstance(node.left.left, RetryNode)
-        self.assertEqual(node.left.left.attempts.value, 2)
-        # left.right should be a TaskNode with attributes
-        left_right = node.left.right
+        self.assertEqual(node.left.op, '|->')
+        # left.left should be the sequential BinOp (TaskA * 2 -> Worker)
+        self.assertIsInstance(node.left.left, BinOpNode)
+        self.assertEqual(node.left.left.op, '->')
+        # left.left.left should be a RetryNode
+        self.assertIsInstance(node.left.left.left, RetryNode)
+        self.assertEqual(node.left.left.left.attempts.value, 2)
+        # left.left.right should be a TaskNode with attributes
+        left_right = node.left.left.right
         self.assertIsInstance(left_right, TaskNode)
         names = {a.attr: a for a in left_right.options}
         self.assertEqual(names['retries'].value.value, 3)
         self.assertEqual(names['timeout'].value.value, 30)
-        # right side should be sequential: namespaced Run -> MAP
-        self.assertIsInstance(node.right, BinOpNode)
-        self.assertIsInstance(node.right.left, TaskNode)
-        self.assertEqual(node.right.left.namespace, 'pypi')
-        self.assertIsInstance(node.right.right, MetaEventNode)
+        # right side should be a MetaEventNode
+        self.assertIsInstance(node.right, MetaEventNode)
+        self.assertEqual(node.right.mode, 'MAP')
+        self.assertEqual(node.right.template_event, 'FetchUserData')
+
 
     # Negative tests for piped grammar
     def test_piped_leading_operator_raises(self):

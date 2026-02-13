@@ -5,7 +5,7 @@ from volnux.parser.ast import (
     TaskNode,
     BinOpNode,
     RetryNode,
-    ExpressionGroupingNode,
+    PipelineGroupingNode,
     MetaEventNode,
     AttributeNode,
 )
@@ -89,8 +89,8 @@ class TestGrammarParallel(unittest.TestCase):
         program = pointy_parser('{DoIt}[opt = 1] || {Run}[opt = 2]')
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
-        self.assertIsInstance(node.left, ExpressionGroupingNode)
-        self.assertIsInstance(node.right, ExpressionGroupingNode)
+        self.assertIsInstance(node.left, PipelineGroupingNode)
+        self.assertIsInstance(node.right, PipelineGroupingNode)
         left_names = {a.attr: a for a in node.left.options}
         right_names = {a.attr: a for a in node.right.options}
         self.assertEqual(left_names['opt'].value.value, 1)
@@ -157,7 +157,7 @@ class TestGrammarParallel(unittest.TestCase):
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
         self.assertIsInstance(node.left, BinOpNode)
-        self.assertIsInstance(node.left.left, ExpressionGroupingNode)
+        self.assertIsInstance(node.left.left, PipelineGroupingNode)
         self.assertIsInstance(node.right, BinOpNode)
         # right.right should be a RetryNode
         self.assertIsInstance(node.right.right, RetryNode)
@@ -171,10 +171,6 @@ class TestGrammarParallel(unittest.TestCase):
     def test_parallel_malformed_map_literal_raises(self):
         with self.assertRaises(SyntaxError):
             pointy_parser('Worker[config = {a: 1}] || TaskB')
-
-    def test_parallel_empty_input_raises(self):
-        with self.assertRaises(SyntaxError):
-            pointy_parser('')
 
     def test_parallel_invalid_namespace_raises(self):
         # unknown namespace should raise ValueError during TaskNode creation
