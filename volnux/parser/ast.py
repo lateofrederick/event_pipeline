@@ -271,6 +271,12 @@ class ListNode(ASTNode):
     __slots__ = ("value",)
     value: typing.List[typing.Any]
 
+    def __len__(self) -> int:
+        return len(self.value)
+
+    def __getitem__(self, index: int) -> typing.Any:
+        return self.value[index]
+
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_list(self)
 
@@ -283,7 +289,7 @@ class MapNode(ASTNode):
         return visitor.visit_map(self)
 
 @dataclass
-class ExpressionGroupingNode(ASTNode):
+class PipelineGroupingNode(ASTNode):
     """AST for expression chain. One expression chain only"""
 
     expressions: typing.List[ASTNode]

@@ -9,7 +9,7 @@ if typing.TYPE_CHECKING:
         BlockNode,
         ConditionalNode,
         DescriptorNode,
-        ExpressionGroupingNode,
+        PipelineGroupingNode,
         LiteralNode,
         ProgramNode,
         TaskNode,
@@ -167,7 +167,7 @@ class ASTVisitorInterface(ABC):
         pass
 
     @abstractmethod
-    def visit_expression_grouping(self, node: "ExpressionGroupingNode"):
+    def visit_expression_grouping(self, node: "PipelineGroupingNode"):
         pass
 
     @abstractmethod

@@ -42,7 +42,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             return self.visit_descriptor(node)
         elif isinstance(node, ast.TaskNode):
             return self.visit_task(node)
-        elif isinstance(node, ast.ExpressionGroupingNode):
+        elif isinstance(node, ast.PipelineGroupingNode):
             return self.visit_expression_grouping(node)
         elif isinstance(node, ast.ConditionalNode):
             return self.visit_conditional(node)
@@ -178,7 +178,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
         return assign
 
     def visit_expression_grouping(
-        self, node: ast.ExpressionGroupingNode
+        self, node: ast.PipelineGroupingNode
     ) -> TaskGroupingProtocol:
         expression_chain_groups = [
             self._visit_node(chain) for chain in node.expressions
