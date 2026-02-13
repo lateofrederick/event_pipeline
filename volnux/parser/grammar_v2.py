@@ -11,7 +11,7 @@ from .ast import (
     BlockType,
     ConditionalNode,
     DescriptorNode,
-    ExpressionGroupingNode,
+    PipelineGroupingNode,
     LiteralNode,
     LiteralType,
     ProgramNode,
@@ -111,7 +111,7 @@ def p_statement(p):
 
 def p_chain_declaration(p):
     """
-    chain_declaration : piped
+    chain_declaration : parallel
     """
     p[0] = p[1]
 
@@ -146,21 +146,10 @@ def p_branch_list(p):
 
 def p_branch(p):
     """
-    branch : descriptor POINTER piped
-           | descriptor PPOINTER piped
+    branch : descriptor POINTER parallel
+           | descriptor PPOINTER parallel
     """
     p[0] = BranchNode(condition=p[1], operator=p[2], task=p[3])
-
-
-def p_piped(p):
-    """
-    piped : parallel
-          | piped PPOINTER parallel
-    """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
 
 def p_parallel(p):
@@ -178,12 +167,12 @@ def p_sequential(p):
     """
     sequential : retry
                | sequential POINTER retry
+               | sequential PPOINTER retry
     """
     if len(p) == 2:
         p[0] = p[1]
     else:
         p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
-
 
 def p_retry(p):
     """
@@ -210,7 +199,7 @@ def p_primary(p):
             | meta_event
             | grouped
             | conditional
-            | LPAREN piped RPAREN
+            | LPAREN parallel RPAREN
     """
     if len(p) == 2:
         p[0] = p[1]
@@ -298,13 +287,13 @@ def p_mode(p):
 
 def p_grouped(p):
     """
-    grouped : LCURLY_BRACKET piped RCURLY_BRACKET
-            | LCURLY_BRACKET piped RCURLY_BRACKET attribute_list
+    grouped : LCURLY_BRACKET parallel RCURLY_BRACKET
+            | LCURLY_BRACKET parallel RCURLY_BRACKET attribute_list
     """
     if len(p) == 4:
-        p[0] = ExpressionGroupingNode([p[2]])
+        p[0] = PipelineGroupingNode([p[2]])
     else:
-        p[0] = ExpressionGroupingNode([p[2]], options=p[4])
+        p[0] = PipelineGroupingNode([p[2]], options=p[4])
 
 
 def p_expression_ternary(p):
