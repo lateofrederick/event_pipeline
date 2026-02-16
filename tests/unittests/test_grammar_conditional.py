@@ -1,6 +1,6 @@
 import unittest
 
-from volnux.parser.grammar_v2 import pointy_parser
+from volnux.parser.grammar import pointy_parser
 from volnux.parser.ast import (
     TaskNode,
     BinOpNode,
@@ -14,9 +14,9 @@ class TestGrammarConditional(unittest.TestCase):
 
         self.assertIsInstance(conditional, ConditionalNode)
         self.assertEqual(conditional.task.task, 'TaskA')
-        self.assertEqual(len(conditional.branches.statements), 2)
+        self.assertEqual(len(conditional.branches), 2)
 
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        branches = {a.condition.value: a for a in conditional.branches}
 
         self.assertEqual(branches[0].operator, '->')
         self.assertIsInstance(branches[0].task, TaskNode)
@@ -37,9 +37,9 @@ class TestGrammarConditional(unittest.TestCase):
         self.assertIsInstance(node.right, ConditionalNode)
         conditional = node.right
         self.assertEqual(conditional.task.task, 'TaskA')
-        self.assertEqual(len(conditional.branches.statements), 3)
+        self.assertEqual(len(conditional.branches), 3)
 
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        branches = {a.condition.value: a for a in conditional.branches}
         self.assertEqual(branches[0].operator, '->')
         self.assertIsInstance(branches[0].task, TaskNode)
         self.assertEqual(branches[0].task.task, 'TaskB')
@@ -58,9 +58,9 @@ class TestGrammarConditional(unittest.TestCase):
 
         self.assertIsInstance(conditional, ConditionalNode)
         self.assertEqual(conditional.task.task, 'TaskA')
-        self.assertEqual(len(conditional.branches.statements), 2)
+        self.assertEqual(len(conditional.branches), 2)
 
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        branches = {a.condition.value: a for a in conditional.branches}
 
         self.assertEqual(branches[0].operator, '->')
         self.assertIsInstance(branches[0].task, BinOpNode)
@@ -80,17 +80,17 @@ class TestGrammarConditional(unittest.TestCase):
 
         self.assertIsInstance(conditional, ConditionalNode)
         self.assertEqual(conditional.task.task, 'TaskA')
-        self.assertEqual(len(conditional.branches.statements), 2)
+        self.assertEqual(len(conditional.branches), 2)
 
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        branches = {a.condition.value: a for a in conditional.branches}
 
         self.assertEqual(branches[0].operator, '->')
         self.assertIsInstance(branches[0].task, ConditionalNode)
         nested_conditional = branches[0].task
         self.assertEqual(nested_conditional.task.task, 'TaskB')
-        self.assertEqual(len(nested_conditional.branches.statements), 2)
+        self.assertEqual(len(nested_conditional.branches), 2)
 
-        nested_branches = {a.condition.value: a for a in nested_conditional.branches.statements}
+        nested_branches = {a.condition.value: a for a in nested_conditional.branches}
         self.assertEqual(nested_branches[0].operator, '->')
         self.assertIsInstance(nested_branches[0].task, TaskNode)
         self.assertEqual(nested_branches[0].task.task, 'TaskC')

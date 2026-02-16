@@ -1,12 +1,12 @@
 import unittest
 
-from volnux.parser.grammar_v2 import pointy_parser
+from volnux.parser.grammar import pointy_parser
 from volnux.parser.ast import (
     TaskNode,
     BinOpNode,
     RetryNode,
     PipelineGroupingNode,
-    MetaEventNode,
+    MetaTaskNode,
     AttributeNode,
     LiteralNode,
     VariableAccessNode,
@@ -84,7 +84,7 @@ class TestGrammarSequential(unittest.TestCase):
         self.assertIsInstance(node, BinOpNode)
         self.assertEqual(node.op, "->")
         self.assertIsInstance(node.left, TaskNode)
-        self.assertIsInstance(node.right, MetaEventNode)
+        self.assertIsInstance(node.right, MetaTaskNode)
         self.assertEqual(node.left.task, "Worker")
         self.assertEqual(node.right.mode, "MAP")
 
@@ -139,7 +139,7 @@ class TestGrammarSequential(unittest.TestCase):
         program = pointy_parser('MAP<FetchUserData>[concurrency = 4] -> Worker')
         node = program.chain
         left = node.left
-        self.assertIsInstance(left, MetaEventNode)
+        self.assertIsInstance(left, MetaTaskNode)
         names = {a.attr: a for a in left.options}
         self.assertEqual(names["concurrency"].value.value, 4)
 
@@ -257,7 +257,7 @@ class TestGrammarSequential(unittest.TestCase):
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
         self.assertIsInstance(node.left, BinOpNode)
-        self.assertIsInstance(node.left.left, MetaEventNode)
+        self.assertIsInstance(node.left.left, MetaTaskNode)
         self.assertIsInstance(node.left.right, PipelineGroupingNode)
         self.assertIsInstance(node.right, TaskNode)
         self.assertEqual(node.right.namespace, 'pypi')

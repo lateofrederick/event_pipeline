@@ -1,12 +1,12 @@
 import unittest
 
-from volnux.parser.grammar_v2 import pointy_parser
+from volnux.parser.grammar import pointy_parser
 from volnux.parser.ast import (
     TaskNode,
     BinOpNode,
     RetryNode,
     PipelineGroupingNode,
-    MetaEventNode,
+    MetaTaskNode,
     AttributeNode,
 )
 
@@ -89,7 +89,7 @@ class TestGrammarPiped(unittest.TestCase):
         self.assertIsInstance(node.left, TaskNode)
         self.assertEqual(node.left.task, "Run")
         self.assertEqual(node.left.namespace, "pypi")
-        self.assertIsInstance(node.right, MetaEventNode)
+        self.assertIsInstance(node.right, MetaTaskNode)
         self.assertEqual(node.right.mode, "MAP")
 
     def test_piped_grouped_with_attributes(self):
@@ -138,9 +138,9 @@ class TestGrammarPiped(unittest.TestCase):
         self.assertEqual(names['retries'].value.value, 3)
         self.assertEqual(names['timeout'].value.value, 30)
         # right side should be a MetaEventNode
-        self.assertIsInstance(node.right, MetaEventNode)
+        self.assertIsInstance(node.right, MetaTaskNode)
         self.assertEqual(node.right.mode, 'MAP')
-        self.assertEqual(node.right.template_event, 'FetchUserData')
+        self.assertEqual(node.right.template_task, 'FetchUserData')
 
 
     # Negative tests for piped grammar

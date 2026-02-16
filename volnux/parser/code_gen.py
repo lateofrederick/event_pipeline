@@ -56,7 +56,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             return self.visit_environment_variable_access(node)
         elif isinstance(node, ast.VariableAccessNode):
             return self.visit_variable_access(node)
-        elif isinstance(node, ast.MetaEventNode):
+        elif isinstance(node, ast.MetaTaskNode):
             return self.visit_meta_event(node)
         else:
             raise PointyParseError(f"Unknown node type: {type(node)}")
@@ -148,17 +148,6 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             )
         return instance
 
-    def visit_block(self, node: ast.BlockNode):
-        if node.type == ast.BlockType.ASSIGNMENT:
-            return self.visit_assignment_block(node)
-        elif node.type == ast.BlockType.CONDITIONAL:
-            node = typing.cast(ast.ConditionalNode, typing.cast(ast.ASTNode, node))
-            return self.visit_conditional(node)
-        elif node.type == ast.BlockType.GROUP:
-            return self.visit_group_block(node)
-        else:
-            raise ValueError(f"Unknown block type: {type(node)}")
-
     def visit_group_block(self, node: ast.BlockNode):
         raise NotImplementedError("Not Supported yet")
 
@@ -248,7 +237,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_variable_access(self, node: ast.VariableAccessNode):
         return node.resolve()
 
-    def visit_meta_event(self, node: ast.MetaEventNode):
+    def visit_meta_event(self, node: ast.MetaTaskNode):
         pass
 
     def visit_unaryop(self, node: ast.UnaryOpNode):

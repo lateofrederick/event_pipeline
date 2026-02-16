@@ -1,18 +1,16 @@
 import unittest
 
-from volnux.parser import LiteralNode
-from volnux.parser.grammar_v2 import pointy_parser
+from volnux.parser.grammar import pointy_parser
 from volnux.parser.ast import (
     BinOpNode,
     ConditionalNode,
     TaskNode,
-    MetaEventNode,
+    MetaTaskNode,
     MapNode,
     TernaryExprNode,
     IndexExprNode,
     VariableAccessNode,
     ListNode,
-    BlockNode,
 )
 
 
@@ -70,8 +68,8 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(program.chain.left.task, 'StartProcess')
         conditional = program.chain.right
         self.assertEqual(conditional.task.task, 'EvaluateCondition')
-        self.assertEqual(len(conditional.branches.statements), 2)
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        self.assertEqual(len(conditional.branches), 2)
+        branches = {a.condition.value: a for a in conditional.branches}
         self.assertEqual(branches[0].operator, '->')
         self.assertEqual(branches[0].task.task, 'EndProcess')
         self.assertEqual(branches[1].operator, '->')
@@ -107,8 +105,8 @@ class TestProgram(unittest.TestCase):
         conditional = program.chain.right
         self.assertIsInstance(conditional, ConditionalNode)
         self.assertEqual(conditional.task.task, 'ProcessBatch')
-        self.assertEqual(len(conditional.branches.statements), 2)
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        self.assertEqual(len(conditional.branches), 2)
+        branches = {a.condition.value: a for a in conditional.branches}
 
         # Branch 0
         self.assertEqual(branches[0].operator, '->')
@@ -122,8 +120,8 @@ class TestProgram(unittest.TestCase):
         self.assertIsInstance(branches[1].task, ConditionalNode)
         nested_conditional = branches[1].task
         self.assertEqual(nested_conditional.task.task, 'ValidateResults')
-        self.assertEqual(len(nested_conditional.branches.statements), 2)
-        nested_branches = {a.condition.value: a for a in nested_conditional.branches.statements}
+        self.assertEqual(len(nested_conditional.branches), 2)
+        nested_branches = {a.condition.value: a for a in nested_conditional.branches}
 
         # Nested Branch 0
         self.assertEqual(nested_branches[0].operator, '->')
@@ -167,8 +165,8 @@ class TestProgram(unittest.TestCase):
         conditional = program.chain.right
         self.assertIsInstance(conditional, ConditionalNode)
         self.assertEqual(conditional.task.task, 'Level2')
-        self.assertEqual(len(conditional.branches.statements), 2)
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        self.assertEqual(len(conditional.branches), 2)
+        branches = {a.condition.value: a for a in conditional.branches}
 
         # Branch 0
         self.assertEqual(branches[0].operator, '->')
@@ -188,8 +186,8 @@ class TestProgram(unittest.TestCase):
         self.assertIsInstance(branches[1].task, ConditionalNode)
         level3_conditional = branches[1].task
         self.assertEqual(level3_conditional.task.task, 'Level3')
-        self.assertEqual(len(level3_conditional.branches.statements), 2)
-        level3_branches = {a.condition.value: a for a in level3_conditional.branches.statements}
+        self.assertEqual(len(level3_conditional.branches), 2)
+        level3_branches = {a.condition.value: a for a in level3_conditional.branches}
 
         # Level3 Branch 0
         self.assertEqual(level3_branches[0].operator, '->')
@@ -203,8 +201,8 @@ class TestProgram(unittest.TestCase):
         self.assertIsInstance(level3_branches[1].task, ConditionalNode)
         level4_conditional = level3_branches[1].task
         self.assertEqual(level4_conditional.task.task, 'Level4')
-        self.assertEqual(len(level4_conditional.branches.statements), 2)
-        level4_branches = {a.condition.value: a for a in level4_conditional.branches.statements}
+        self.assertEqual(len(level4_conditional.branches), 2)
+        level4_branches = {a.condition.value: a for a in level4_conditional.branches}
 
         # Level4 Branch 0
         self.assertEqual(level4_branches[0].operator, '->')
@@ -242,32 +240,40 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(program.directives["recursive_depth"].value, 1500)
 
         self.assertIsNotNone(program.chain)
-        self.assertEqual(program.chain.op, '||')
+        # With equal precedence all operators are left-associative, final top op becomes '|->'
+        self.assertEqual(program.chain.op, '|->')
         right = program.chain.right
-        self.assertIsInstance(right, BinOpNode)
-        self.assertEqual(right.op, '|->')
-        self.assertIsInstance(right.left, TaskNode)
-        self.assertEqual(right.left.namespace, "local")
-        self.assertEqual(right.left.task, 'CalculateTotals')
-
-        self.assertIsInstance(right.right, TaskNode)
-        self.assertEqual(right.right.namespace, "pypi")
-        self.assertEqual(right.right.task, 'GenerateInvoice')
+        self.assertIsInstance(right, TaskNode)
+        self.assertEqual(right.namespace, "pypi")
+        self.assertEqual(right.task, 'GenerateInvoice')
 
         left = program.chain.left
         self.assertIsInstance(left, BinOpNode)
-        self.assertEqual(left.op, '->')
+        self.assertEqual(left.op, '||')
+
+        # right side of the '||' should be the local::CalculateTotals task
+        self.assertIsInstance(left.right, TaskNode)
+        self.assertEqual(left.right.namespace, "local")
+        self.assertEqual(left.right.task, 'CalculateTotals')
+
+        # left side of the '||' is the chained '->' operations: ((FetchOrders -> ValidateOrders) -> EnrichWithCustomerData)
         self.assertIsInstance(left.left, BinOpNode)
         self.assertEqual(left.left.op, '->')
-        self.assertIsInstance(left.left.left, TaskNode)
-        self.assertEqual(left.left.left.namespace, "local")
-        self.assertEqual(left.left.left.task, 'FetchOrders')
+
+        # outer '->' has right = github::EnrichWithCustomerData
         self.assertIsInstance(left.left.right, TaskNode)
-        self.assertEqual(left.left.right.namespace, "pypi")
-        self.assertEqual(left.left.right.task, 'ValidateOrders')
-        self.assertIsInstance(left.right, TaskNode)
-        self.assertEqual(left.right.namespace, "github")
-        self.assertEqual(left.right.task, 'EnrichWithCustomerData')
+        self.assertEqual(left.left.right.namespace, "github")
+        self.assertEqual(left.left.right.task, 'EnrichWithCustomerData')
+
+        # outer '->' has left = inner '->' (FetchOrders -> ValidateOrders)
+        self.assertIsInstance(left.left.left, BinOpNode)
+        self.assertEqual(left.left.left.op, '->')
+        self.assertIsInstance(left.left.left.left, TaskNode)
+        self.assertEqual(left.left.left.left.namespace, "local")
+        self.assertEqual(left.left.left.left.task, 'FetchOrders')
+        self.assertIsInstance(left.left.left.right, TaskNode)
+        self.assertEqual(left.left.left.right.namespace, "pypi")
+        self.assertEqual(left.left.left.right.task, 'ValidateOrders')
 
     def test_variables_with_meta_events(self):
         program = pointy_parser(
@@ -304,9 +310,9 @@ class TestProgram(unittest.TestCase):
         left_chain = program.chain.left
         self.assertIsInstance(left_chain, BinOpNode)
         self.assertEqual(left_chain.op, '|->')
-        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertIsInstance(left_chain.right, MetaTaskNode)
         self.assertEqual(left_chain.right.mode, 'MAP')
-        self.assertEqual(left_chain.right.template_event, 'ProcessWorkItem')
+        self.assertEqual(left_chain.right.template_task, 'ProcessWorkItem')
         self.assertEqual(left_chain.right.template_event_namespace, 'local')
         self.assertIsInstance(left_chain.right.options, list)
         options = {opt.attr: opt.value for opt in left_chain.right.options}
@@ -364,9 +370,9 @@ class TestProgram(unittest.TestCase):
         left_chain = program.chain.left
         self.assertIsInstance(left_chain, BinOpNode)
         self.assertEqual(left_chain.op, '|->')
-        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertIsInstance(left_chain.right, MetaTaskNode)
         self.assertEqual(left_chain.right.mode, 'FOREACH')
-        self.assertEqual(left_chain.right.template_event, 'SendEmail')
+        self.assertEqual(left_chain.right.template_task, 'SendEmail')
         self.assertIsInstance(left_chain.right.options, list)
         options = {opt.attr: opt.value for opt in left_chain.right.options}
         self.assertIn('concurrent', options)
@@ -402,16 +408,16 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(program.chain.op, '|->')
         self.assertIsInstance(program.chain.right, ConditionalNode)
         conditional = program.chain.right
-        self.assertIsInstance(conditional.task, MetaEventNode)
+        self.assertIsInstance(conditional.task, MetaTaskNode)
         self.assertEqual(conditional.task.mode, 'MAP')
-        self.assertEqual(conditional.task.template_event, 'ExecuteCriticalOperation')
+        self.assertEqual(conditional.task.template_task, 'ExecuteCriticalOperation')
         options = {opt.attr: opt.value for opt in conditional.task.options}
         self.assertIn('retries', options)
         self.assertIn('concurrent', options)
         self.assertEqual(options['retries'].value, 5)
         self.assertEqual(options['concurrent'].value, False)
-        self.assertIsInstance(conditional.branches, BlockNode)
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        # self.assertIsInstance(conditional.branches, BlockNode)
+        branches = {a.condition.value: a for a in conditional.branches}
         self.assertIn(0, branches)
         self.assertIn(1, branches)
         # Branch 0
@@ -422,9 +428,9 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(branches[0].task.right.task, 'InitiateRollback')
         self.assertIsInstance(branches[0].task.left, BinOpNode)
         self.assertEqual(branches[0].task.left.op, '|->')
-        self.assertIsInstance(branches[0].task.left.left, MetaEventNode)
+        self.assertIsInstance(branches[0].task.left.left, MetaTaskNode)
         self.assertEqual(branches[0].task.left.left.mode, 'FOREACH')
-        self.assertEqual(branches[0].task.left.left.template_event, 'LogFailure')
+        self.assertEqual(branches[0].task.left.left.template_task, 'LogFailure')
         options = {opt.attr: opt.value for opt in branches[0].task.left.left.options}
         self.assertIn('continue_on_error', options)
         self.assertEqual(options['continue_on_error'].value, True)
@@ -480,19 +486,19 @@ class TestProgram(unittest.TestCase):
         left_chain = program.chain.left
         self.assertIsInstance(left_chain, BinOpNode)
         self.assertEqual(left_chain.op, '|->')
-        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertIsInstance(left_chain.right, MetaTaskNode)
         self.assertEqual(left_chain.right.mode, 'REDUCE')
-        self.assertEqual(left_chain.right.template_event, 'AggregateByGroup')
+        self.assertEqual(left_chain.right.template_task, 'AggregateByGroup')
         self.assertIsInstance(left_chain.left, BinOpNode)
         self.assertEqual(left_chain.left.op, '|->')
-        self.assertIsInstance(left_chain.left.right, MetaEventNode)
+        self.assertIsInstance(left_chain.left.right, MetaTaskNode)
         self.assertEqual(left_chain.left.right.mode, 'MAP')
-        self.assertEqual(left_chain.left.right.template_event, 'ProcessItem')
+        self.assertEqual(left_chain.left.right.template_task, 'ProcessItem')
         self.assertIsInstance(left_chain.left.left, BinOpNode)
         self.assertEqual(left_chain.left.left.op, '|->')
-        self.assertIsInstance(left_chain.left.left.right, MetaEventNode)
+        self.assertIsInstance(left_chain.left.left.right, MetaTaskNode)
         self.assertEqual(left_chain.left.left.right.mode, 'FLATMAP')
-        self.assertEqual(left_chain.left.left.right.template_event, 'ExtractItems')
+        self.assertEqual(left_chain.left.left.right.template_task, 'ExtractItems')
         self.assertIsInstance(left_chain.left.left.left, TaskNode)
         self.assertEqual(left_chain.left.left.left.task, 'LoadGroupedData')
 
@@ -501,7 +507,7 @@ class TestProgram(unittest.TestCase):
         """
         # Process different data types in parallel
         @data_batch = {"type_a": [], "type_b": [], "type_c": []}
-        
+    
         SplitDataByType -> (
             ExtractTypeA |-> MAP<ProcessTypeA>[concurrent=true] ||
             ExtractTypeB |-> MAP<ProcessTypeB>[concurrent=true] ||
@@ -527,35 +533,48 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(left_chain.right.task, 'MergeResults')
         self.assertIsInstance(left_chain.left, BinOpNode)
         self.assertEqual(left_chain.left.op, '->')
+
         block = left_chain.left.right
         self.assertIsInstance(block, BinOpNode)
-        self.assertEqual(block.op, '||')
-        # ExtractTypeA branch
-        self.assertIsInstance(block.right, BinOpNode)
-        self.assertEqual(block.right.op, '|->')
-        self.assertIsInstance(block.right.left, TaskNode)
-        self.assertEqual(block.right.left.task, 'ExtractTypeC')
-        self.assertIsInstance(block.right.right, MetaEventNode)
-        self.assertEqual(block.right.right.mode, 'FLATMAP')
-        self.assertEqual(block.right.right.template_event, 'ProcessTypeC')
-        # ExtractTypeB branch
+
+        # With equal precedence and left-associative parsing the parenthesized
+        # expression folds left-to-right. Final top op becomes '|->'.
+        self.assertEqual(block.op, '|->')
+
+        # Rightmost operation applies FLATMAP to the accumulated left expression
+        self.assertIsInstance(block.right, MetaTaskNode)
+        self.assertEqual(block.right.mode, 'FLATMAP')
+        self.assertEqual(block.right.template_task, 'ProcessTypeC')
+
+        # Left of the final '|->' is a '||' combining previous results with ExtractTypeC
         self.assertIsInstance(block.left, BinOpNode)
         self.assertEqual(block.left.op, '||')
-        self.assertIsInstance(block.left.right, BinOpNode)
-        self.assertEqual(block.left.right.op, '|->')
-        self.assertIsInstance(block.left.right.left, TaskNode)
-        self.assertEqual(block.left.right.left.task, 'ExtractTypeB')
-        self.assertIsInstance(block.left.right.right, MetaEventNode)
-        self.assertEqual(block.left.right.right.mode, 'MAP')
-        self.assertEqual(block.left.right.right.template_event, 'ProcessTypeB')
-        # ExtractTypeA branch
+        self.assertIsInstance(block.left.right, TaskNode)
+        self.assertEqual(block.left.right.task, 'ExtractTypeC')
+
+        # The left side of that '||' is itself a '|->' where MAP<ProcessTypeB> was applied
         self.assertIsInstance(block.left.left, BinOpNode)
         self.assertEqual(block.left.left.op, '|->')
-        self.assertIsInstance(block.left.left.left, TaskNode)
-        self.assertEqual(block.left.left.left.task, 'ExtractTypeA')
-        self.assertIsInstance(block.left.left.right, MetaEventNode)
+        self.assertIsInstance(block.left.left.right, MetaTaskNode)
         self.assertEqual(block.left.left.right.mode, 'MAP')
-        self.assertEqual(block.left.left.right.template_event, 'ProcessTypeA')
+        self.assertEqual(block.left.left.right.template_task, 'ProcessTypeB')
+
+        # That '|->' has a left child which is a '||' combining the A branch and ExtractTypeB
+        self.assertIsInstance(block.left.left.left, BinOpNode)
+        self.assertEqual(block.left.left.left.op, '||')
+
+        # Left part of that '||' is the original A branch: ExtractTypeA |-> MAP<ProcessTypeA>
+        self.assertIsInstance(block.left.left.left.left, BinOpNode)
+        self.assertEqual(block.left.left.left.left.op, '|->')
+        self.assertIsInstance(block.left.left.left.left.left, TaskNode)
+        self.assertEqual(block.left.left.left.left.left.task, 'ExtractTypeA')
+        self.assertIsInstance(block.left.left.left.left.right, MetaTaskNode)
+        self.assertEqual(block.left.left.left.left.right.mode, 'MAP')
+        self.assertEqual(block.left.left.left.left.right.template_task, 'ProcessTypeA')
+
+        # Right part of that inner '||' is ExtractTypeB
+        self.assertIsInstance(block.left.left.left.right, TaskNode)
+        self.assertEqual(block.left.left.left.right.task, 'ExtractTypeB')
 
     def test_fan_out_to_multiple_services(self):
         program = pointy_parser(
@@ -591,9 +610,9 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(left_chain.left.right.task, 'SelectFastestResponse')
         self.assertIsInstance(left_chain.left.left, BinOpNode)
         self.assertEqual(left_chain.left.left.op, '|->')
-        self.assertIsInstance(left_chain.left.left.right, MetaEventNode)
+        self.assertIsInstance(left_chain.left.left.right, MetaTaskNode)
         self.assertEqual(left_chain.left.left.right.mode, 'FANOUT')
-        self.assertEqual(left_chain.left.left.right.template_event, 'SendToSearchReplica')
+        self.assertEqual(left_chain.left.left.right.template_task, 'SendToSearchReplica')
         options = {opt.attr: opt.value for opt in left_chain.left.left.right.options}
         self.assertIn('count', options)
         self.assertIn('concurrent', options)
@@ -633,9 +652,9 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(program.chain.left.task, 'FetchRawData')
         self.assertIsInstance(program.chain.right, ConditionalNode)
         conditional = program.chain.right
-        self.assertIsInstance(conditional.task, MetaEventNode)
+        self.assertIsInstance(conditional.task, MetaTaskNode)
         self.assertEqual(conditional.task.mode, 'MAP')
-        self.assertEqual(conditional.task.template_event, 'ParseRecord')
+        self.assertEqual(conditional.task.template_task, 'ParseRecord')
         options = {opt.attr: opt.value for opt in conditional.task.options}
         self.assertIn('batch_size', options)
         self.assertIn('concurrent', options)
@@ -645,8 +664,8 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(options['concurrent'].value, True)
         self.assertIsInstance(options['retries'], VariableAccessNode)
         self.assertEqual(options['retries'].name, 'retry_count')
-        self.assertIsInstance(conditional.branches, BlockNode)
-        branches = {a.condition.value: a for a in conditional.branches.statements}
+        # self.assertIsInstance(conditional.branches, BlockNode)
+        branches = {a.condition.value: a for a in conditional.branches}
         self.assertIn(0, branches)
         self.assertIn(1, branches)
         # Branch 0
@@ -663,28 +682,28 @@ class TestProgram(unittest.TestCase):
         self.assertEqual(branches[1].task.op, '|->')
         self.assertIsInstance(branches[1].task.left, BinOpNode)
         self.assertEqual(branches[1].task.left.op, '|->')
-        self.assertIsInstance(branches[1].task.left.left, MetaEventNode)
+        self.assertIsInstance(branches[1].task.left.left, MetaTaskNode)
         self.assertEqual(branches[1].task.left.left.mode, 'FILTER')
-        self.assertEqual(branches[1].task.left.left.template_event, 'ValidateSchema')
+        self.assertEqual(branches[1].task.left.left.template_task, 'ValidateSchema')
         options = {opt.attr: opt.value for opt in branches[1].task.left.left.options}
         self.assertIn('concurrent', options)
         self.assertEqual(options['concurrent'].value, True)
-        self.assertIsInstance(branches[1].task.left.right, MetaEventNode)
+        self.assertIsInstance(branches[1].task.left.right, MetaTaskNode)
         self.assertEqual(branches[1].task.left.right.mode, 'MAP')
-        self.assertEqual(branches[1].task.left.right.template_event, 'TransformToTargetFormat')
+        self.assertEqual(branches[1].task.left.right.template_task, 'TransformToTargetFormat')
         options = {opt.attr: opt.value for opt in branches[1].task.left.right.options}
         self.assertIn('concurrent', options)
         self.assertEqual(options['concurrent'].value, True)
 
         self.assertIsInstance(branches[1].task.right, ConditionalNode)
-        self.assertIsInstance(branches[1].task.right.task, MetaEventNode)
+        self.assertIsInstance(branches[1].task.right.task, MetaTaskNode)
         self.assertEqual(branches[1].task.right.task.mode, 'REDUCE')
-        self.assertEqual(branches[1].task.right.task.template_event, 'BatchInsert')
+        self.assertEqual(branches[1].task.right.task.template_task, 'BatchInsert')
         options = {opt.attr: opt.value for opt in branches[1].task.right.task.options}
         self.assertIn('batch_size', options)
         self.assertEqual(options['batch_size'].value, 100)
-        self.assertIsInstance(branches[1].task.right.branches, BlockNode)
-        reduce_branches = {a.condition.value: a for a in branches[1].task.right.branches.statements}
+        # self.assertIsInstance(branches[1].task.right.branches, BlockNode)
+        reduce_branches = {a.condition.value: a for a in branches[1].task.right.branches}
         self.assertIn(0, reduce_branches)
         self.assertIn(1, reduce_branches)
         # Reduce Branch 0
@@ -742,22 +761,22 @@ class TestProgram(unittest.TestCase):
         left_chain = program.chain.left
         self.assertIsInstance(left_chain, BinOpNode)
         self.assertEqual(left_chain.op, '|->')
-        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertIsInstance(left_chain.right, MetaTaskNode)
         self.assertEqual(left_chain.right.mode, 'REDUCE')
-        self.assertEqual(left_chain.right.template_event, 'SumAmounts')
+        self.assertEqual(left_chain.right.template_task, 'SumAmounts')
         options = {opt.attr: opt.value for opt in left_chain.right.options}
         self.assertIn('initial_value', options)
         self.assertEqual(options['initial_value'].value, 0)
         self.assertIsInstance(left_chain.left, BinOpNode)
         self.assertEqual(left_chain.left.op, '|->')
-        self.assertIsInstance(left_chain.left.right, MetaEventNode)
+        self.assertIsInstance(left_chain.left.right, MetaTaskNode)
         self.assertEqual(left_chain.left.right.mode, 'FILTER')
-        self.assertEqual(left_chain.left.right.template_event, 'IsValidSale')
+        self.assertEqual(left_chain.left.right.template_task, 'IsValidSale')
         self.assertIsInstance(left_chain.left.left, BinOpNode)
         self.assertEqual(left_chain.left.left.op, '|->')
-        self.assertIsInstance(left_chain.left.left.right, MetaEventNode)
+        self.assertIsInstance(left_chain.left.left.right, MetaTaskNode)
         self.assertEqual(left_chain.left.left.right.mode, 'MAP')
-        self.assertEqual(left_chain.left.left.right.template_event, 'ValidateRecord')
+        self.assertEqual(left_chain.left.left.right.template_task, 'ValidateRecord')
         self.assertIsInstance(left_chain.left.left.left, TaskNode)
         self.assertEqual(left_chain.left.left.left.task, 'LoadSalesData')
 
@@ -798,17 +817,17 @@ class TestProgram(unittest.TestCase):
         left_chain = program.chain.left
         self.assertIsInstance(left_chain, BinOpNode)
         self.assertEqual(left_chain.op, '|->')
-        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertIsInstance(left_chain.right, MetaTaskNode)
         self.assertEqual(left_chain.right.mode, 'MAP')
-        self.assertEqual(left_chain.right.template_event, 'SendMarketingEmail')
+        self.assertEqual(left_chain.right.template_task, 'SendMarketingEmail')
         options = {opt.attr: opt.value for opt in left_chain.right.options}
         self.assertIn('batch_size', options)
         self.assertEqual(options['batch_size'].value, 10)
         self.assertIsInstance(left_chain.left, BinOpNode)
         self.assertEqual(left_chain.left.op, '|->')
-        self.assertIsInstance(left_chain.left.right, MetaEventNode)
+        self.assertIsInstance(left_chain.left.right, MetaTaskNode)
         self.assertEqual(left_chain.left.right.mode, 'FILTER')
-        self.assertEqual(left_chain.left.right.template_event, 'IsAdult')
+        self.assertEqual(left_chain.left.right.template_task, 'IsAdult')
         options = {opt.attr: opt.value for opt in left_chain.left.right.options}
         self.assertIn('concurrent', options)
         self.assertEqual(options['concurrent'].value, True)
@@ -841,9 +860,9 @@ class TestProgram(unittest.TestCase):
         left_chain = program.chain.left
         self.assertIsInstance(left_chain, BinOpNode)
         self.assertEqual(left_chain.op, '|->')
-        self.assertIsInstance(left_chain.right, MetaEventNode)
+        self.assertIsInstance(left_chain.right, MetaTaskNode)
         self.assertEqual(left_chain.right.mode, 'MAP')
-        self.assertEqual(left_chain.right.template_event, 'EnrichUserData')
+        self.assertEqual(left_chain.right.template_task, 'EnrichUserData')
         options = {opt.attr: opt.value for opt in left_chain.right.options}
         self.assertIn('concurrent', options)
         self.assertIn('retries', options)

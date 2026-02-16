@@ -1,10 +1,10 @@
 import unittest
 
-from volnux.parser.grammar_v2 import pointy_parser
+from volnux.parser.grammar import pointy_parser
 from volnux.parser.ast import (
     TaskNode,
     AttributeNode,
-    MetaEventNode,
+    MetaTaskNode,
     LiteralNode,
     VariableAccessNode,
     RetryNode,
@@ -47,20 +47,20 @@ class TestGrammarChainPrimary(unittest.TestCase):
     def test_meta_event_simple(self):
         program = pointy_parser("MAP<FetchUserData>")
         node = program.chain
-        self.assertIsInstance(node, MetaEventNode)
+        self.assertIsInstance(node, MetaTaskNode)
         self.assertEqual(node.mode, "MAP")
-        self.assertEqual(node.template_event, "FetchUserData")
+        self.assertEqual(node.template_task, "FetchUserData")
         # options should be present (attribute_list) but empty list by default
         self.assertTrue(node.options == [] or node.options is None)
 
     def test_meta_event_namespaced(self):
         program = pointy_parser("FILTER<ns::EnrichUserData>")
         node = program.chain
-        self.assertIsInstance(node, MetaEventNode)
+        self.assertIsInstance(node, MetaTaskNode)
         self.assertEqual(node.mode, "FILTER")
         # grammar_v2 uses IDENTIFIER DOUBLE_COLON IDENTIFIER form; namespace and template_event are set
         self.assertEqual(node.template_event_namespace, "ns")
-        self.assertEqual(node.template_event, "EnrichUserData")
+        self.assertEqual(node.template_task, "EnrichUserData")
 
     def test_task_with_multiple_attributes(self):
         program = pointy_parser('Worker[retries = 3, timeout = 30]')
@@ -78,9 +78,9 @@ class TestGrammarChainPrimary(unittest.TestCase):
     def test_meta_event_with_attributes(self):
         program = pointy_parser('MAP<FetchUserData>[concurrency = 4, timeout = 30]')
         node = program.chain
-        self.assertIsInstance(node, MetaEventNode)
+        self.assertIsInstance(node, MetaTaskNode)
         self.assertEqual(node.mode, "MAP")
-        self.assertEqual(node.template_event, "FetchUserData")
+        self.assertEqual(node.template_task, "FetchUserData")
         self.assertIsInstance(node.options, list)
         self.assertEqual(len(node.options), 2)
         names = {a.attr: a for a in node.options}
@@ -92,10 +92,10 @@ class TestGrammarChainPrimary(unittest.TestCase):
     def test_meta_event_namespaced_with_attributes(self):
         program = pointy_parser('FILTER<ns::EnrichUserData>[opt = 2, level = 5]')
         node = program.chain
-        self.assertIsInstance(node, MetaEventNode)
+        self.assertIsInstance(node, MetaTaskNode)
         self.assertEqual(node.mode, "FILTER")
         self.assertEqual(node.template_event_namespace, "ns")
-        self.assertEqual(node.template_event, "EnrichUserData")
+        self.assertEqual(node.template_task, "EnrichUserData")
         self.assertIsInstance(node.options, list)
         self.assertEqual(len(node.options), 2)
         names = {a.attr: a for a in node.options}
@@ -303,7 +303,7 @@ class TestGrammarRetry(unittest.TestCase):
         program = pointy_parser("MAP<ProcessPayment> * 2")
         node = program.chain
         self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, MetaEventNode)
+        self.assertIsInstance(node.job, MetaTaskNode)
         self.assertEqual(node.attempts.value, 2)
 
     def test_retry_on_task_with_attributes(self):
@@ -355,7 +355,7 @@ class TestGrammarRetry(unittest.TestCase):
         program = pointy_parser('MAP<FetchUserData>[concurrency = 4] * 2')
         node = program.chain
         self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, MetaEventNode)
+        self.assertIsInstance(node.job, MetaTaskNode)
         names = {a.attr: a for a in node.job.options}
         self.assertEqual(names["concurrency"].value.value, 4)
         self.assertEqual(node.attempts.value, 2)
@@ -435,9 +435,9 @@ class TestGrammarRetry(unittest.TestCase):
         program = pointy_parser('FILTER<ns::EnrichUserData> * 2')
         node = program.chain
         self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, MetaEventNode)
+        self.assertIsInstance(node.job, MetaTaskNode)
         self.assertEqual(node.job.template_event_namespace, 'ns')
-        self.assertEqual(node.job.template_event, 'EnrichUserData')
+        self.assertEqual(node.job.template_task, 'EnrichUserData')
 
     def test_retry_grouped_expression_attribute_value(self):
         program = pointy_parser('{Run}[opt = [1,2]] * 2')

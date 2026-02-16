@@ -1,7 +1,7 @@
 import unittest
 
-from volnux.parser.ast import DirectiveNode, LiteralNode
-from volnux.parser.grammar_v2 import pointy_parser
+from volnux.parser.ast import LiteralNode
+from volnux.parser.grammar import pointy_parser
 
 
 class TestDirectiveStatement(unittest.TestCase):
