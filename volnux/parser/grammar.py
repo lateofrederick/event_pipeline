@@ -2,7 +2,7 @@ __all__ = ["pointy_parser"]
 import logging
 from ply.yacc import YaccError, yacc
 
-from . import lexer, RetryNode
+from . import lexer
 from .ast import (
     BinOpNode,
     ConditionalNode,
@@ -26,6 +26,7 @@ from .ast import (
     AttributeNode,
     BranchNode,
     IndexExprNode,
+    RetryNode,
 )
 from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
