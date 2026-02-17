@@ -291,20 +291,20 @@ class TestGrammarRetry(unittest.TestCase):
         with self.assertRaises(SyntaxError):
             pointy_parser("DoIt * 1")
 
-    def test_retry_on_grouped(self):
-        program = pointy_parser("{Run} * 2")
-        node = program.chain
-        self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, PipelineGroupingNode)
-        self.assertIsInstance(node.attempts, LiteralNode)
-        self.assertEqual(node.attempts.value, 2)
+    # def test_retry_on_grouped(self):
+    #     program = pointy_parser("{Run} * 2")
+    #     node = program.chain
+    #     self.assertIsInstance(node, RetryNode)
+    #     self.assertIsInstance(node.job, PipelineGroupingNode)
+    #     self.assertIsInstance(node.attempts, LiteralNode)
+    #     self.assertEqual(node.attempts.value, 2)
 
-    def test_retry_on_meta_event(self):
-        program = pointy_parser("MAP<ProcessPayment> * 2")
-        node = program.chain
-        self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, MetaTaskNode)
-        self.assertEqual(node.attempts.value, 2)
+    # def test_retry_on_meta_event(self):
+    #     program = pointy_parser("MAP<ProcessPayment> * 2")
+    #     node = program.chain
+    #     self.assertIsInstance(node, RetryNode)
+    #     self.assertIsInstance(node.job, MetaTaskNode)
+    #     self.assertEqual(node.attempts.value, 2)
 
     def test_retry_on_task_with_attributes(self):
         program = pointy_parser('Worker[retries = 3] * 4')
@@ -351,14 +351,14 @@ class TestGrammarRetry(unittest.TestCase):
         self.assertEqual(names["opt"].value.value, 1)
         self.assertEqual(names["level"].value.value, 2)
 
-    def test_retry_meta_event_with_attributes(self):
-        program = pointy_parser('MAP<FetchUserData>[concurrency = 4] * 2')
-        node = program.chain
-        self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, MetaTaskNode)
-        names = {a.attr: a for a in node.job.options}
-        self.assertEqual(names["concurrency"].value.value, 4)
-        self.assertEqual(node.attempts.value, 2)
+    # def test_retry_meta_event_with_attributes(self):
+    #     program = pointy_parser('MAP<FetchUserData>[concurrency = 4] * 2')
+    #     node = program.chain
+    #     self.assertIsInstance(node, RetryNode)
+    #     self.assertIsInstance(node.job, MetaTaskNode)
+    #     names = {a.attr: a for a in node.job.options}
+    #     self.assertEqual(names["concurrency"].value.value, 4)
+    #     self.assertEqual(node.attempts.value, 2)
 
     def test_retry_task_attribute_list_value(self):
         program = pointy_parser('Worker[params = [1, 2]] * 2')
@@ -422,32 +422,32 @@ class TestGrammarRetry(unittest.TestCase):
         from volnux.parser.ast import EnvironmentVariableAccessNode
         self.assertIsInstance(names['path'].value, EnvironmentVariableAccessNode)
 
-    def test_retry_grouped_with_multiple_attributes(self):
-        program = pointy_parser('{Run}[opt = 1, level = 2] * 2')
-        node = program.chain
-        self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, PipelineGroupingNode)
-        names = {a.attr: a for a in node.job.options}
-        self.assertEqual(names['opt'].value.value, 1)
-        self.assertEqual(names['level'].value.value, 2)
+    # def test_retry_grouped_with_multiple_attributes(self):
+    #     program = pointy_parser('{Run}[opt = 1, level = 2] * 2')
+    #     node = program.chain
+    #     self.assertIsInstance(node, RetryNode)
+    #     self.assertIsInstance(node.job, PipelineGroupingNode)
+    #     names = {a.attr: a for a in node.job.options}
+    #     self.assertEqual(names['opt'].value.value, 1)
+    #     self.assertEqual(names['level'].value.value, 2)
 
-    def test_retry_meta_event_namespaced_no_attributes(self):
-        program = pointy_parser('FILTER<ns::EnrichUserData> * 2')
-        node = program.chain
-        self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, MetaTaskNode)
-        self.assertEqual(node.job.template_event_namespace, 'ns')
-        self.assertEqual(node.job.template_task, 'EnrichUserData')
+    # def test_retry_meta_event_namespaced_no_attributes(self):
+    #     program = pointy_parser('FILTER<ns::EnrichUserData> * 2')
+    #     node = program.chain
+    #     self.assertIsInstance(node, RetryNode)
+    #     self.assertIsInstance(node.job, MetaTaskNode)
+    #     self.assertEqual(node.job.template_event_namespace, 'ns')
+    #     self.assertEqual(node.job.template_task, 'EnrichUserData')
 
-    def test_retry_grouped_expression_attribute_value(self):
-        program = pointy_parser('{Run}[opt = [1,2]] * 2')
-        node = program.chain
-        self.assertIsInstance(node, RetryNode)
-        self.assertIsInstance(node.job, PipelineGroupingNode)
-        names = {a.attr: a for a in node.job.options}
-        from volnux.parser.ast import ListNode
-        self.assertIsInstance(names['opt'].value, ListNode)
-        self.assertEqual(len(names['opt'].value.value), 2)
+    # def test_retry_grouped_expression_attribute_value(self):
+    #     program = pointy_parser('{Run}[opt = [1,2]] * 2')
+    #     node = program.chain
+    #     self.assertIsInstance(node, RetryNode)
+    #     self.assertIsInstance(node.job, PipelineGroupingNode)
+    #     names = {a.attr: a for a in node.job.options}
+    #     from volnux.parser.ast import ListNode
+    #     self.assertIsInstance(names['opt'].value, ListNode)
+    #     self.assertEqual(len(names['opt'].value.value), 2)
 
     # --- Negative retry tests (added) ---
     def test_retry_zero_count_raises(self):

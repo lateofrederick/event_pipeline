@@ -107,14 +107,14 @@ def p_statement(p):
 
 def p_chain_declaration(p):
     """
-    chain_declaration : parallel
+    chain_declaration : chain
     """
     p[0] = p[1]
 
 
 def p_conditional(p):
     """
-    conditional : primary LPAREN branch_list RPAREN
+    conditional : meta LPAREN branch_list RPAREN
     """
     if len(p) == 2:
         p[0] = p[1]
@@ -140,28 +140,41 @@ def p_branch_list(p):
 
 def p_branch(p):
     """
-    branch : descriptor POINTER parallel
-           | descriptor PPOINTER parallel
+    branch : descriptor POINTER chain
+           | descriptor PPOINTER chain
     """
     p[0] = BranchNode(condition=p[1], operator=p[2], task=p[3])
 
 
-def p_parallel(p):
+def p_chain(p):
     """
-    parallel : retry
-             | parallel POINTER retry
-             | parallel PPOINTER retry
-             | parallel PARALLEL retry
+    chain : retry
+          | chain POINTER retry
+          | chain PPOINTER retry
+          | chain PARALLEL retry
     """
     if len(p) == 2:
         p[0] = p[1]
     else:
         p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
+def p_meta(p):
+    """
+    meta : task
+         | meta_task
+         | grouped
+         | conditional
+         | LPAREN chain RPAREN
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = p[2]
+
 def p_retry(p):
     """
-    retry : primary
-          | primary RETRY INT
+    retry : meta
+          | task RETRY INT
     """
     if len(p) == 2:
         p[0] = p[1]
@@ -175,20 +188,6 @@ def p_retry(p):
                 f"Line: {line}, Column: {column}, Offending Token: {p[3]}"
             )
         p[0] = RetryNode(job=p[1], attempts=LiteralNode(retry_count, type=LiteralType.NUMBER))
-
-
-def p_primary(p):
-    """
-    primary : task
-            | meta_event
-            | grouped
-            | conditional
-            | LPAREN parallel RPAREN
-    """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        p[0] = p[2]
 
 
 def p_task(p):
@@ -231,10 +230,10 @@ def p_attribute(p):
     p[0] = AttributeNode(attr=p[1], value=p[3])
 
 
-def p_meta_event(p):
+def p_meta_task(p):
     """
-    meta_event : mode LANGLE IDENTIFIER RANGLE attribute_list
-               | mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE attribute_list
+    meta_task : mode LANGLE IDENTIFIER RANGLE attribute_list
+              | mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE attribute_list
 
     """
     mode = p[1]
@@ -271,8 +270,8 @@ def p_mode(p):
 
 def p_grouped(p):
     """
-    grouped : LCURLY_BRACKET parallel RCURLY_BRACKET
-            | LCURLY_BRACKET parallel RCURLY_BRACKET attribute_list
+    grouped : LCURLY_BRACKET chain RCURLY_BRACKET
+            | LCURLY_BRACKET chain RCURLY_BRACKET attribute_list
     """
     if len(p) == 4:
         p[0] = PipelineGroupingNode([p[2]])
