@@ -4,3 +4,4 @@ pypdf
 chromadb
 langchain-text-splitters
 numpy
+volnux
