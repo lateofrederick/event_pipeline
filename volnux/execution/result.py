@@ -61,7 +61,11 @@ class ResultProcessor:
             if isinstance(result, Exception):
                 errors.add(result)
             elif isinstance(result, (list, tuple, ResultSet)):
-                pass
+                for item in result:
+                    if isinstance(item, Exception):
+                        errors.add(item)
+                    elif isinstance(item, EventResult):
+                        results.add(item)
             else:
                 results.add(result)
 
