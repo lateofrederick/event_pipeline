@@ -1,4 +1,3 @@
-from volnux import EventBase
 import logging
 from sentence_transformers import SentenceTransformer
 import chromadb
@@ -7,6 +6,8 @@ from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import os
 import uuid
+
+from volnux import EventBase
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -25,7 +26,11 @@ class DocReceived(EventBase):
     Event triggered when a new document is received.
     For this example, we assume the input is a file path to a PDF.
     """
-    def process(self, doc_path: str):
+    def process(self, doc_path=None, **kwargs):
+        # Volnux passes InputDataField values as a single dict positional arg
+        if isinstance(doc_path, dict):
+            doc_path = doc_path.get("doc_path", "")
+
         if not os.path.exists(doc_path):
             raise FileNotFoundError(f"Document not found: {doc_path}")
 
@@ -126,7 +131,9 @@ class Indexed(EventBase):
 
         try:
             ids = [str(uuid.uuid4()) for _ in chunks]
-            # Chroma requires a metadata dict for EACH document in the list
+            # Chroma requires a non-empty metadata dict for EACH document
+            if not metadata:
+                metadata = {"source": "unknown"}
             metadatas = [metadata for _ in chunks]
 
             collection.add(
