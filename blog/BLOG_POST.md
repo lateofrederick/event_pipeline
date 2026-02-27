@@ -55,75 +55,156 @@ We use `pypdf`, `langchain`, and `chromadb` here. Notice how **Volnux** lets us 
 
 ```python
 # blog/rag_pipeline/events.py
-from volnux import EventBase
+import logging
 from sentence_transformers import SentenceTransformer
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pypdf import PdfReader
 import chromadb
+from chromadb.config import Settings
+from pypdf import PdfReader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import os
+import uuid
 
-# Initialize heavy models/clients once
-chroma_client = chromadb.Client()
-collection = chroma_client.create_collection("docs")
-model = SentenceTransformer('all-MiniLM-L6-v2')
+from volnux import EventBase
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Global model loading (optimization)
+# Ensure we are using a model that runs locally and efficiently
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Global ChromaDB client (persistent)
+chroma_client = chromadb.Client(Settings(persist_directory="./chroma_db", is_persistent=True))
+collection = chroma_client.get_or_create_collection(name="knowledge_base")
 
 class DocReceived(EventBase):
-    def process(self, doc_path):
+    """
+    Event triggered when a new document is received.
+    For this example, we assume the input is a file path to a PDF.
+    """
+    def process(self, doc_path=None, **kwargs):
+        # Volnux passes InputDataField values as a single dict positional arg
+        if isinstance(doc_path, dict):
+            doc_path = doc_path.get("doc_path", "")
+
+        if not os.path.exists(doc_path):
+            raise FileNotFoundError(f"Document not found: {doc_path}")
+
+        logger.info(f"Received document: {doc_path}")
         return True, doc_path
 
 class TextExtracted(EventBase):
+    """
+    Extracts raw text from the PDF document using pypdf.
+    """
     def process(self, *args, **kwargs):
         doc_path = self.previous_result[0].content
-        # Real PDF extraction
-        reader = PdfReader(doc_path)
-        text = "".join([page.extract_text() for page in reader.pages])
-        return True, text
+        logger.info(f"Extracting text from {doc_path}...")
+
+        try:
+            reader = PdfReader(doc_path)
+            extracted_text = ""
+            for page in reader.pages:
+                extracted_text += page.extract_text() + "\n"
+
+            logger.info(f"Text extraction complete. Length: {len(extracted_text)} chars")
+            return True, extracted_text
+        except Exception as e:
+            logger.error(f"Failed to extract text: {e}")
+            return False, str(e)
 
 class MetadataExtracted(EventBase):
+    """
+    Extracts metadata from the PDF document using pypdf.
+    """
     def process(self, *args, **kwargs):
         doc_path = self.previous_result[0].content
-        # Real Metadata extraction
-        reader = PdfReader(doc_path)
-        return True, reader.metadata
+        logger.info(f"Extracting metadata from {doc_path}...")
+
+        try:
+            reader = PdfReader(doc_path)
+            # pypdf metadata keys usually have a slash like '/Author'
+            meta = reader.metadata
+            clean_metadata = {
+                "author": meta.get("/Author", "Unknown"),
+                "creation_date": meta.get("/CreationDate", "Unknown"),
+                "source": doc_path
+            }
+            logger.info(f"Metadata extracted: {clean_metadata}")
+            return True, clean_metadata
+        except Exception as e:
+            logger.error(f"Failed to extract metadata: {e}")
+            return False, str(e)
 
 class TextChunked(EventBase):
-    """
-    Heavy Compute Step: Splitting large text into semantically useful chunks.
-    """
     def process(self, *args, **kwargs):
-        text = ""
+        text_content = ""
         metadata = {}
-        # Collect results from previous parallel events
-        for res in self.previous_result:
-             if isinstance(res.content, str): text = res.content
-             elif isinstance(res.content, dict): metadata = res.content
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        chunks = splitter.split_text(text)
+        # Inspect all inputs from the parallel branching
+        for result in self.previous_result:
+            if isinstance(result.content, str):
+                text_content = result.content
+            elif isinstance(result.content, dict):
+                metadata = result.content
+
+        logger.info(f"Chunking text length {len(text_content)}...")
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50
+        )
+        chunks = text_splitter.split_text(text_content)
+
+        logger.info(f"Generated {len(chunks)} chunks.")
         return True, {"chunks": chunks, "metadata": metadata}
 
 class EmbeddingsGenerated(EventBase):
-    """
-    Performance Step: Batch embedding generation.
-    """
     def process(self, *args, **kwargs):
         data = self.previous_result[0].content
         chunks = data["chunks"]
+        metadata = data["metadata"]
 
-        # High-performance batch encoding
-        embeddings = model.encode(chunks)
-        return True, {"embeddings": embeddings, "chunks": chunks, "metadata": data["metadata"]}
+        logger.info(f"Generating embeddings for {len(chunks)} chunks in batch...")
+
+        # Batch embedding generation
+        embeddings = embedding_model.encode(chunks)
+
+        logger.info(f"Generated embeddings matrix: {embeddings.shape}")
+        return True, {"embeddings": embeddings, "chunks": chunks, "metadata": metadata}
 
 class Indexed(EventBase):
+    """
+    Indexes the embeddings and metadata into ChromaDB.
+    """
     def process(self, *args, **kwargs):
         data = self.previous_result[0].content
-        # Index everything at once
-        collection.add(
-            embeddings=data["embeddings"].tolist(),
-            documents=data["chunks"],
-            metadatas=[data["metadata"] for _ in data["chunks"]],
-            ids=[f"id_{i}" for i in range(len(data["chunks"]))]
-        )
-        return True, "Indexed!"
+        embeddings = data["embeddings"]
+        chunks = data["chunks"]
+        metadata = data["metadata"]
+
+        logger.info(f"Indexing {len(chunks)} chunks into ChromaDB...")
+
+        try:
+            ids = [str(uuid.uuid4()) for _ in chunks]
+            # Chroma requires a non-empty metadata dict for EACH document
+            if not metadata:
+                metadata = {"source": "unknown"}
+            metadatas = [metadata for _ in chunks]
+
+            collection.add(
+                documents=chunks,
+                embeddings=embeddings.tolist(),
+                metadatas=metadatas,
+                ids=ids
+            )
+
+            logger.info(f"Indexing complete. Inserted {len(ids)} records.")
+            return True, f"Indexed {len(ids)} chunks"
+        except Exception as e:
+            logger.error(f"Failed to index: {e}")
+            return False, str(e)
 ```
 
 ### The Pipeline
@@ -132,16 +213,44 @@ The architecture is explicitly defined. Volnux handles the complex state passing
 
 ```python
 # blog/rag_pipeline/pipeline.py
-from volnux.pipeline import Pipeline
-from .events import DocReceived, TextExtracted, MetadataExtracted, TextChunked, EmbeddingsGenerated, Indexed
+from volnux import Pipeline
+from volnux.fields import InputDataField
+import os
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class RagPipeline(Pipeline):
+    """
+    An AI-Powered RAG Ingestion Pipeline.
+
+    Flow:
+    1. DocReceived: Input document is received.
+    2. (TextExtracted & MetadataExtracted): Parallel processing to extract text and metadata.
+    3. EmbeddingsGenerated: Consumes both text and metadata to create vectors.
+    4. Indexed: Stores everything in a Vector DB.
+    """
+
+    doc_path = InputDataField(
+        data_type=str,
+        required=True,
+        default=os.path.join(_SCRIPT_DIR, "sample_document.txt")
+    )
+
     class Meta:
-         # 1. Parallel extraction
-         # 2. Sequential heavy chunking
-         # 3. Batch embedding
-        pointy = "DocReceived |-> (TextExtracted & MetadataExtracted) |-> TextChunked |-> EmbeddingsGenerated |-> Indexed"
+        # Pointy-Lang DSL defining the flow
+        # |-> : Sequential dependency (pipe pointer)
+        # ||  : Parallel execution
+        # Flow: DocReceived -> (TextExtracted || MetadataExtracted) -> TextChunked -> EmbeddingsGenerated -> Indexed
+        pointy = "DocReceived |-> TextExtracted || MetadataExtracted |-> TextChunked |-> EmbeddingsGenerated |-> Indexed"
 ```
+
+### Visualizing the Flow
+
+One of the most powerful features of Volnux is its ability to automatically generate visual representations of your pipelines. By simply calling `pipeline.draw_graphviz_image()` in your script (or `draw_ascii_graph()` for a purely terminal-based output), Volnux parses your `pointy` definition and builds a graph of your exact execution topology.
+
+Honestly, when you're dealing with messy, unpredictable AI processes, having a visual map is a lifesaver. You don't have to hold the entire architecture in your head or squint at nested concurrent calls trying to figure out what happens when. You just look at the picture. For our RAG pipeline above, the generated graph below tells the whole story: you can instantly see the text and metadata extraction splitting off to run at the same time, and then waiting for each other right before the chunking step kicks off:
+
+![Rag Pipeline Graph](https://drive.google.com/uc?export=view&id=11LhR-Kb91STDRXKnoTd42skZajfQzBbm)
 
 ### Running the Pipeline
 
@@ -149,17 +258,51 @@ Volnux pipelines are plain Python objects. You just instantiate and start them.
 
 ```python
 # blog/rag_pipeline/main.py
+import logging
+import os
+import shutil
 from .pipeline import RagPipeline
 
-if __name__ == "__main__":
-    print("Starting RAG Ingestion...")
+# Configure logging to see the events in action
+logging.basicConfig(level=logging.INFO)
 
-    # Initialize pipeline
-    # (default config looks for 'sample_document.pdf')
+# Resolve paths relative to this script's directory, not the working directory
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def main():
+    # Setup: Ensure we have a sample PDF
+    # We'll use the one found in the repo root if available, otherwise strict fail (as it's a demo)
+    # Copied for the blog folder context
+    sample_pdf = os.path.join(_SCRIPT_DIR, "sample_document.txt")
+    repo_pdf = os.path.join(_SCRIPT_DIR, "../../pointylang_vs_airflow_prefect_beam.pdf")
+
+    if not os.path.exists(sample_pdf):
+        if os.path.exists(repo_pdf):
+            print(f"Copying {repo_pdf} to {sample_pdf}...")
+            shutil.copy(repo_pdf, sample_pdf)
+        else:
+            print(f"Warning: {sample_pdf} not found. Please provide a PDF file.")
+            # We won't crash here, we let the pipeline handle the error naturally!
+
+    print("-" * 50)
+    print("Starting AI RAG Ingestion Pipeline...")
+    print("-" * 50)
+
+    # Initialize the pipeline
+    # The default 'doc_path' in pipeline.py is "sample_document.pdf", so we don't need to pass args
+    # unless we want to override it.
     pipeline = RagPipeline()
 
-    # Execute!
+    # Run it!
+    # Volnux handles the execution graph, parallelizing where possible.
     pipeline.start()
+
+    print("-" * 50)
+    print("Pipeline Execution Complete.")
+    print("-" * 50)
+
+if __name__ == "__main__":
+    main()
 ```
 
 When you run this, you'll see the logs showing `TextExtracted` and `MetadataExtracted` running simultaneously, followed by the heavy `TextChunked` job, and finally the batch `EmbeddingsGenerated`.
