@@ -137,8 +137,12 @@ class Registry:
             # except Exception as e:
             #     raise ValueError(f"Invalid version format '{version}': {e}")
 
-            if scheme_handler is not None and not scheme_handler.validate_version(version):
-                raise ValueError(f"Invalid version format '{version}': {scheme_handler}")
+            if scheme_handler is not None and not scheme_handler.validate_version(
+                version
+            ):
+                raise ValueError(
+                    f"Invalid version format '{version}': {scheme_handler}"
+                )
 
             module_label = klass.__module__
             klass_name = klass.__name__

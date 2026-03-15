@@ -52,7 +52,7 @@ def preformat_task_profile(
     ],
 ) -> typing.Deque[TaskType]:
     if isinstance(task_profiles, (PipelineTask, PipelineTaskGrouping)):
-        return deque([task_profiles]) # type: ignore
+        return deque([task_profiles])  # type: ignore
     elif isinstance(task_profiles, (list, tuple)):
         return deque(task_profiles)
     elif isinstance(task_profiles, deque):
@@ -165,8 +165,8 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         # Child inherit the same StateManager but get a unique state_id
         child = ExecutionContext(
-            task_profiles=task_profiles, # type: ignore
-            pipeline=self.pipeline, # type: ignore
+            task_profiles=task_profiles,  # type: ignore
+            pipeline=self.pipeline,  # type: ignore
             parent_context=self,  # type: ignore
         )
         self.child_contexts.append(child)  # Link Down
@@ -566,7 +566,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         - On status changes
         """
         from .state_manager import ExecutionStatus
-        from volnux.execution.rehydrator.snapshot import TraversalSnapshot, ContextSnapshot
+        from volnux.execution.rehydrator.snapshot import (
+            TraversalSnapshot,
+            ContextSnapshot,
+        )
         from volnux.execution.rehydrator.serializer import StateSerializer
 
         state = await self.state_async
@@ -660,11 +663,11 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         # If engine tracks the current task explicitly
         node = engine.current_task_node
         if node and node.task:
-                return (
-                    getattr(node.task, "id", None),
-                    node.task.event,
-                    self._task_checkpoint,
-                )
+            return (
+                getattr(node.task, "id", None),
+                node.task.event,
+                self._task_checkpoint,
+            )
 
         # Peek at the front of the queue
         # if hasattr(engine, "queue") and engine.queue:

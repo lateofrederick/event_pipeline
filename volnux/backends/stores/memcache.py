@@ -399,7 +399,10 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             raise ConnectionError(f"Failed to get record: {e}")
 
     def filter(
-        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
     ) -> List["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
 
@@ -517,7 +520,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
     #     except Exception as e:
     #         raise SerializationError(f"Failed to load record: {e}")
 
-    def reload(self, schema_name: str, record: "KeyValueStoreIntegrationMixin") -> "KeyValueStoreIntegrationMixin":
+    def reload(
+        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> "KeyValueStoreIntegrationMixin":
         """Reload a record's data from the backend.
 
         Args:
@@ -562,7 +567,10 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             raise ConnectionError(f"Failed to reload record: {e}")
 
     def bulk_insert(
-        self, schema_name: str, records: Dict[str, "KeyValueStoreIntegrationMixin"], ttl: Optional[int] = None
+        self,
+        schema_name: str,
+        records: Dict[str, "KeyValueStoreIntegrationMixin"],
+        ttl: Optional[int] = None,
     ) -> None:
         """Insert multiple records in a single operation.
 

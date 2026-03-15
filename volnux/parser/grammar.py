@@ -40,7 +40,6 @@ variables = {}
 
 precedence = (
     ("left", "RETRY", "POINTER", "PPOINTER", "PARALLEL"),
-
     ("right", "TERNARY"),
     ("left", "NULLCOALESCE"),  # ??
 )
@@ -293,7 +292,7 @@ def p_list_elements(p):
 
 
 def p_empty(p):
-    'empty :'
+    "empty :"
     pass
 
 
@@ -455,11 +454,13 @@ def p_expression_groupings(p):
     else:
         p[0] = ExpressionGroupingNode([p[2]], options=p[5])
 
+
 def p_arithmetic_expr(p):
     """
     arithmetic_expr : logical_or_expression
     """
     p[0] = p[1]
+
 
 def p_logical_or_expression(p):
     """
@@ -471,6 +472,7 @@ def p_logical_or_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_logical_and_expression(p):
     """
     logical_and_expression : logical_and_expression LOGICAL_AND bitwise_or_expression
@@ -480,6 +482,7 @@ def p_logical_and_expression(p):
         p[0] = BinOpNode(p[1], p[2], p[3])
     else:
         p[0] = p[1]
+
 
 def p_bitwise_or_expression(p):
     """
@@ -491,6 +494,7 @@ def p_bitwise_or_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_bitwise_xor_expression(p):
     """
     bitwise_xor_expression : bitwise_xor_expression BITWISE_XOR bitwise_and_expression
@@ -501,6 +505,7 @@ def p_bitwise_xor_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_bitwise_and_expression(p):
     """
     bitwise_and_expression : bitwise_and_expression BITWISE_AND arith_comparison_expression
@@ -510,6 +515,7 @@ def p_bitwise_and_expression(p):
         p[0] = BinOpNode(p[1], p[2], p[3])
     else:
         p[0] = p[1]
+
 
 def p_arith_comparison_expression(p):
     """
@@ -526,6 +532,7 @@ def p_arith_comparison_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_shift_expression(p):
     """
     shift_expression : shift_expression LSHL additive_expression
@@ -538,6 +545,7 @@ def p_shift_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_additive_expression(p):
     """
     additive_expression : additive_expression PLUS multiplicative_expression
@@ -548,6 +556,7 @@ def p_additive_expression(p):
         p[0] = BinOpNode(p[1], p[2], p[3])
     else:
         p[0] = p[1]
+
 
 def p_multiplicative_expression(p):
     """
@@ -561,6 +570,7 @@ def p_multiplicative_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_unary_expression(p):
     """
     unary_expression : LOGICAL_NOT unary_expression
@@ -573,6 +583,7 @@ def p_unary_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_primary_expression(p):
     """
     primary_expression : LPAREN arithmetic_expr RPAREN
@@ -583,6 +594,7 @@ def p_primary_expression(p):
     else:
         p[0] = p[1]
 
+
 def p_arithmetic_factor(p):
     """
     arithmetic_factor : INT
@@ -592,6 +604,7 @@ def p_arithmetic_factor(p):
     """
     factor = p[1]
     p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
+
 
 def p_error(p):
     """

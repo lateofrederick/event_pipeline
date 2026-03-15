@@ -1,3 +1,4 @@
+import zlib
 import logging
 from typing import Any, Dict, List, Optional, Union
 
@@ -119,7 +120,6 @@ class MemcacheConnector(BackendConnectorBase[Client]):
 
         # Add compression settings
         if self._enable_compression:
-            import zlib
 
             def compressor(key, value):
                 if len(value) >= self._compression_threshold:
@@ -136,6 +136,7 @@ class MemcacheConnector(BackendConnectorBase[Client]):
 
         for key, value in self.config.extra_params.items():
             if key not in params and key not in [
+                "pool_size",
                 "use_pooling",
                 "enable_compression",
                 "compression_threshold",
@@ -158,14 +159,14 @@ class MemcacheConnector(BackendConnectorBase[Client]):
         try:
             params = self._get_client_params()
 
+            pool_size = self.config.extra_params.get("pool_size", self.config.pool_size)
+
             # Create pooled or single client
             if self._use_pooling:
-                self._client = PooledClient(
-                    **params, max_pool_size=self.config.pool_size
-                )
+                self._client = PooledClient(**params, max_pool_size=pool_size)
                 logger.info(
                     f"Created Memcache connection pool for {self.config.host}:{self.config.port} "
-                    f"(pool_size={self.config.pool_size})"
+                    f"(pool_size={pool_size})"
                 )
             else:
                 self._client = Client(**params)

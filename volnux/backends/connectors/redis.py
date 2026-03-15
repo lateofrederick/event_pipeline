@@ -100,7 +100,9 @@ class RedisConnector(BackendConnectorBase[Redis]):
                 "socket_keepalive": self.config.extra_params.get(
                     "socket_keepalive", True
                 ),
-                "max_connections": self.config.pool_size,
+                "max_connections": self.config.extra_params.get(
+                    "pool_size", self.config.pool_size
+                ),
                 "decode_responses": self.config.extra_params.get(
                     "decode_responses", True
                 ),
@@ -122,6 +124,10 @@ class RedisConnector(BackendConnectorBase[Redis]):
             # Add any extra parameters
             for key, value in self.config.extra_params.items():
                 if key not in pool_kwargs and key not in [
+                    "pool_size",
+                    "timeout",
+                    "ssl_enabled",
+                    "database",
                     "socket_timeout",
                     "socket_connect_timeout",
                     "socket_keepalive",

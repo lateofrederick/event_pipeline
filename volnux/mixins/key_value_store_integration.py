@@ -138,7 +138,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             The backend store instance.
 
         Raises:
-            RuntimeError: If backend is not initialized.
+            RuntimeError: If the backend is not initialized.
         """
         if cls._backend_store is None:
             cls._initialize_backend()
@@ -159,12 +159,12 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         """Check if this instance was loaded from the backend.
 
         Returns:
-            True if loaded from backend, False if newly created.
+            True if loaded from the backend, False if newly created.
         """
         return getattr(self, "_loaded_from_backend", False)
 
     def _mark_as_loaded(self) -> None:
-        """Mark this instance as loaded from backend."""
+        """Mark this instance as loaded from the backend."""
         self._loaded_from_backend = True
 
     def save(
@@ -211,7 +211,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             raise
 
     async def save_async(
-            self, force_insert: bool = False, ttl: typing.Optional[int] = None
+        self, force_insert: bool = False, ttl: typing.Optional[int] = None
     ) -> None:
         """Save this object to the backend store."""
         await to_thread(self.save, force_insert=force_insert, ttl=ttl)

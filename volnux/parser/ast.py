@@ -91,8 +91,10 @@ class ASTNode(ABC):
     def accept(self, visitor: "ASTVisitor"):
         pass
 
+
 class ExpressionNode(ASTNode, ABC):
     pass
+
 
 @dataclass
 class ProgramNode(ASTNode):
@@ -135,6 +137,7 @@ class BinOpNode(ExpressionNode):
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_binop(self)
 
+
 @dataclass
 class UnaryOpNode(ExpressionNode):
     __slots__ = ("op", "right")
@@ -143,6 +146,7 @@ class UnaryOpNode(ExpressionNode):
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_unaryop(self)
+
 
 @dataclass
 class DirectiveNode(ASTNode):
@@ -265,6 +269,7 @@ class LiteralNode(ExpressionNode):
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_literal(self)
 
+
 @dataclass
 class ListNode(ASTNode):
     __slots__ = ("value",)
@@ -273,6 +278,7 @@ class ListNode(ASTNode):
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_list(self)
 
+
 @dataclass
 class MapNode(ASTNode):
     __slots__ = ("value",)
@@ -280,6 +286,7 @@ class MapNode(ASTNode):
 
     def accept(self, visitor: "ASTVisitor"):
         return visitor.visit_map(self)
+
 
 @dataclass
 class ExpressionGroupingNode(ASTNode):

@@ -32,9 +32,8 @@ class VersionHandler:
             scheme_class = conf.get(config_key, {}).get(
                 "VERSIONING_CLASS", SemanticVersioning
             )
-            if issubclass(scheme_class, str):
+            if isinstance(scheme_class, str):
                 try:
-                    scheme_class = cast(str, scheme_class)
                     scheme_class = import_string(scheme_class)
                 except ImportError as e:
                     raise ImproperlyConfigured(

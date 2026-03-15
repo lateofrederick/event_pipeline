@@ -2,7 +2,19 @@ import json
 import logging
 import pickle
 import sqlite3
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from types import UnionType
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic_mini import BaseModel
 
@@ -129,19 +141,11 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         return type_mapping.get(field_type, "TEXT")  # Default to TEXT for JSON
 
     def _is_optional_field(self, field_type: Any) -> bool:
-        """Check if a field type is Optional (Union with None).
-
-        Args:
-            field_type: The type annotation to check.
-
-        Returns:
-            True if the field is optional, False otherwise.
-        """
-        return (
-            hasattr(field_type, "__class__")
-            and field_type.__class__.__name__ in ("_UnionType", "UnionType")
-            and type(None) in getattr(field_type, "__args__", ())
-        )
+        """Check if a field type allows None."""
+        origin = get_origin(field_type)
+        if origin in (Union, UnionType):
+            return type(None) in get_args(field_type)
+        return False
 
     def create_schema(
         self, schema_name: str, record: BaseModel, if_not_exists: bool = True
@@ -165,11 +169,12 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             return
 
         try:
-            # Build field definitions
             fields = ["id TEXT PRIMARY KEY"]
 
+            record_type_hints = get_type_hints(record.__class__)
+
             # Add fields from record annotations
-            for field_name, field_type in record.__annotations__.items():
+            for field_name, field_type in record_type_hints.items():
                 if field_name.startswith("_"):
                     continue  # Skip private fields
 

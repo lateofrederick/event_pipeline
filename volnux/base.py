@@ -98,17 +98,17 @@ class EventMeta(abc.ABCMeta):
                 _event_registry.register(
                     event_class,
                     name=event_name,
-                    namespace=version_info['namespace'],
-                    version=version_info['version'],
-                    changelog=version_info.get('changelog'),
-                    deprecated=version_info.get('deprecated', False),
-                    deprecation_info=version_info.get('deprecation_info'),
+                    namespace=version_info["namespace"],
+                    version=version_info["version"],
+                    changelog=version_info.get("changelog"),
+                    deprecated=version_info.get("deprecated", False),
+                    deprecation_info=version_info.get("deprecation_info"),
                     scheme_handler=versioning.scheme,
                     event_type=getattr(cls, "event_type", EventType.OTHER),
                 )
 
                 # Log registration
-                status = "DEPRECATED" if version_info.get('deprecated') else "active"
+                status = "DEPRECATED" if version_info.get("deprecated") else "active"
                 logger.debug(
                     f"Registered: {cls.__module__}.{name} as "
                     f"{version_info['namespace']}::{event_name}@{version_info['version']} "
@@ -691,11 +691,11 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                 res = self.on_failure(result)
         else:
             res = EventResult(
-                error=not result_success, # type: ignore
-                content=result, # type: ignore
-                task_id=self._task_id, # type: ignore
-                event_name=self.__class__.__name__, # type: ignore
-                call_params=self._call_args, # type: ignore
+                error=not result_success,  # type: ignore
+                content=result,  # type: ignore
+                task_id=self._task_id,  # type: ignore
+                event_name=self.__class__.__name__,  # type: ignore
+                call_params=self._call_args,  # type: ignore
                 init_params=self._init_args,
             )
         raise SwitchTask(
