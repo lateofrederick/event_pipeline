@@ -195,6 +195,8 @@ class TriggerBase(ObjectIdentityMixin, ABC):
                 logger.error(f"Activation callback failed: {e}")
                 raise
 
+            return
+
         raise NotImplementedError("No activation callback implemented.")
 
     def get_activation_source(self) -> TriggerType:
