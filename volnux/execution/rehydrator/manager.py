@@ -38,9 +38,7 @@ class RehydrationManager:
 
     async def resume_workflow(
         self, workflow_id: str, engine_class: typing.Optional[typing.Type] = None
-    ) -> typing.Optional[
-        typing.Tuple["ExecutionContext", "WorkflowEngine"]
-    ]:
+    ) -> typing.Optional[typing.Tuple["ExecutionContext", "WorkflowEngine"]]:
         """
         Main entry point: Reconstruct and resume a workflow.
 

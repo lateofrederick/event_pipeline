@@ -259,7 +259,12 @@ class KeyValueStoreBackendBase(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def count(self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any) -> int:
+    def count(
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
+    ) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:

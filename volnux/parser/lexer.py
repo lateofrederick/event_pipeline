@@ -73,13 +73,11 @@ class PointyLexer(object):
             "RBRACKET",
             "LCURLY_BRACKET",
             "RCURLY_BRACKET",
-
             # Type
             "STRING_LITERAL",
             "INT",
             "FLOAT",
             "BOOLEAN",
-
             # Operators
             "NULLCOALESCE",  # ??
             "EQ",  # ==
@@ -94,9 +92,9 @@ class PointyLexer(object):
             "LOGICAL_NOT",
             "LOGICAL_AND",
             "BITWISE_NOT",
-            "LSHL", # Logical shift left
-            "LSHR", # Logical shift right
-            "ASHR", # Arithmetic shift right
+            "LSHL",  # Logical shift left
+            "LSHR",  # Logical shift right
+            "ASHR",  # Arithmetic shift right
             "BITWISE_AND",
             "BITWISE_OR",
             "BITWISE_XOR",

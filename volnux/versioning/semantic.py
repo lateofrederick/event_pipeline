@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, Optional, Type
 from packaging.version import parse as parse_version, Version
-from .base import BaseVersioning, VersionInfo,DeprecationInfo
+from .base import BaseVersioning, VersionInfo, DeprecationInfo
 
 logger = logging.getLogger(__name__)
 

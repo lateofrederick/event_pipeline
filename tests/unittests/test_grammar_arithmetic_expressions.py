@@ -8,6 +8,7 @@ from volnux.parser.ast import (
     ComparisonExprNode,
 )
 
+
 class ParserArithmeticTests(unittest.TestCase):
     def test_simple_addition(self):
         program = pointy_parser("@foo = 1 + 2")

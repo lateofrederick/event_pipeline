@@ -121,7 +121,9 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during insert: {e}")
             raise ConnectionError(f"Failed to insert record: {e}")
 
-    def update(self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin") -> None:
+    def update(
+        self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> None:
         """Update an existing record in the store.
 
         Args:
@@ -231,7 +233,10 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             raise ConnectionError(f"Failed to get record: {e}")
 
     def filter(
-        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
     ) -> List["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
 
@@ -281,7 +286,12 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during filter: {e}")
             raise ConnectionError(f"Failed to filter records: {e}")
 
-    def count(self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"], **filter_kwargs: Any) -> int:
+    def count(
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
+    ) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:
@@ -329,7 +339,9 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
     #     except Exception as e:
     #         raise SerializationError(f"Failed to load record: {e}")
 
-    def reload(self, schema_name: str, record: "KeyValueStoreIntegrationMixin") -> "KeyValueStoreIntegrationMixin":
+    def reload(
+        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> "KeyValueStoreIntegrationMixin":
         """Reload a record's data from the backend.
 
         Args:
@@ -374,7 +386,9 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during reload: {e}")
             raise ConnectionError(f"Failed to reload record: {e}")
 
-    def bulk_insert(self, schema_name: str, records: Dict[str, "KeyValueStoreIntegrationMixin"]) -> None:
+    def bulk_insert(
+        self, schema_name: str, records: Dict[str, "KeyValueStoreIntegrationMixin"]
+    ) -> None:
         """Insert multiple records in a single operation.
 
         Args:

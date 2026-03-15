@@ -111,10 +111,22 @@ class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
             "uri": self._uri,
         }
 
-        # Add any extra parameters from config
+        supported_extra_params = {
+            "factory",
+        }
+
         for key, value in self.config.extra_params.items():
-            if key not in params:
+            if key in supported_extra_params and key not in params:
                 params[key] = value
+            elif key not in supported_extra_params and key not in {
+                "host",
+                "port",
+                "enable_foreign_keys",
+                "enable_wal",
+            }:
+                logger.debug(
+                    "Ignoring unsupported SQLite connection parameter '%s'", key
+                )
 
         return params
 
