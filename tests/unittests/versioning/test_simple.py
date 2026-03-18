@@ -33,7 +33,10 @@ def test_allowed_versions_defaults_to_none():
 def test_get_version_info_uses_default_version_when_missing():
     versioning = SimpleVersioning(config_key="EVENT_VERSIONING")
 
-    with patch("volnux.versioning.base.conf.get", return_value={"DEFAULT_NAMESPACE": "configured"}):
+    with patch(
+        "volnux.versioning.base.conf.get",
+        return_value={"DEFAULT_NAMESPACE": "configured"},
+    ):
         info = versioning.get_version_info(PlainEvent)
 
     assert info["version"] == "v1"

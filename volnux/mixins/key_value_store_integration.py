@@ -70,7 +70,11 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
     _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]] = None
     _backend_config: ClassVar[Optional[Dict[str, Any]]] = None
 
-    def __model_init__(self) -> None:
+    def __post_init__(
+        self,
+        autosave: bool = False,
+        storage_backend: typing.Optional[KeyValueStoreBackendBase] = None,
+    ) -> None:
         """Initialize the model with backend integration.
 
         This method is called during object initialization to set up
@@ -80,11 +84,14 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             ImproperlyConfigured: If backend initialization fails.
         """
         ObjectIdentityMixin.__init__(self)
+        # TODO
+        # if storage_backend is not None:
+        #     self.__class__._backend_store = storage_backend
 
         if self._backend_store is None:
             self._initialize_backend()
 
-        if not self._is_loaded_from_backend():
+        if autosave and not self._is_loaded_from_backend():
             try:
                 self.save()
             except Exception as e:
@@ -563,7 +570,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 f"Cannot unpickle object of type {self.__class__.__name__}"
             )
 
-        # Ensure backend is initialized for this class
+        # Ensure the backend is initialized for this class
         if self._backend_store is None:
             self._initialize_backend()
 

@@ -7,8 +7,12 @@ import typing
 from collections import deque
 from dataclasses import dataclass, field
 
-from pydantic_mini import Attrib, BaseModel, MiniAnnotated
-from pydantic_mini.exceptions import ValidationError as PydanticMiniError
+from formax import (
+    Attrib,
+    BaseModel,
+    MiniAnnotated,
+    ValidationError as PydanticMiniError,
+)
 
 from volnux.mixins import ObjectIdentityMixin
 from volnux.parser.operator import PipeType
@@ -165,9 +169,9 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         # Child inherit the same StateManager but get a unique state_id
         child = ExecutionContext(
-            task_profiles=task_profiles,  # type: ignore
-            pipeline=self.pipeline,  # type: ignore
-            parent_context=self,  # type: ignore
+            task_profiles=task_profiles,
+            pipeline=self.pipeline,
+            parent_context=self,
         )
         self.child_contexts.append(child)  # Link Down
         return child
@@ -268,7 +272,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     async def cancel_async(self) -> None:
         """
         Async version of cancel execution - only locks THIS context.
-        Other contexts continue running unaffected.
+        Other contexts continue running unaffectedly.
         """
         await self.get_state_manager().update_status_async(
             self.state_id, ExecutionStatus.CANCELLED

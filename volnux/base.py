@@ -695,8 +695,8 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                 content=result,  # type: ignore
                 task_id=self._task_id,  # type: ignore
                 event_name=self.__class__.__name__,  # type: ignore
-                call_params=self._call_args,  # type: ignore
-                init_params=self._init_args,
+                # call_params=self._call_args,  # type: ignore
+                # init_params=self._init_args,
             )
         raise SwitchTask(
             current_task_id=self._task_id,
@@ -777,8 +777,8 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
             order=self._sequence_number,  # type: ignore
             event_name=self.__class__.__name__,  # type: ignore
             content=content,
-            call_params=self.get_call_args(),
-            init_params=self.get_init_args(),
+            # call_params=self.get_call_args(),
+            # init_params=self.get_init_args(),
         )  # type: ignore
 
     def on_success(self, execution_result: typing.Any) -> EventResult:

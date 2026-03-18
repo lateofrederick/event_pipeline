@@ -1,13 +1,47 @@
 import typing
 import logging
 from dataclasses import dataclass, asdict
-from pydantic_mini import BaseModel
+from formax import BaseModel
 
 from volnux import __version__ as volnux_version
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
+if typing.TYPE_CHECKING:
+    from volnux.parser.operator import PipeType
+
 
 logger = logging.getLogger(__name__)
+
+
+class TaskTemplate(typing.TypedDict, total=False):
+    # task identity
+    task_id: str
+    task_type: typing.Literal["normal", "group"]
+
+    # Event information
+    event_name: str
+    event_class_import_path: str
+
+    # Sink/Deferred Task Information
+    sink_node: typing.Optional["TaskTemplate"]
+    sink_pipe: typing.Optional["PipeType"]
+
+    # task configuration and states
+    options: typing.Dict[str, typing.Any]
+    condition_node: typing.List[typing.Dict[str, typing.Any]]
+    sequence_number: int
+    descriptor: typing.Optional[int]
+    descriptor_pipe_type: typing.Optional[str]
+
+    # Grouped task information
+    chain: typing.List["TaskTemplate"]
+    strategy: typing.Literal["single", "multiple"]
+
+
+class QueueTaskTemplate(typing.TypedDict, total=True):
+    task: TaskTemplate
+    position_in_queue: int
+
 
 
 @dataclass
@@ -17,22 +51,22 @@ class TraversalSnapshot:
     """
 
     # Current task being executed (maybe mid-flight)
-    current_task_id: typing.Optional[str]
-    current_task_event_name: typing.Optional[str]
-    current_task_checkpoint: typing.Optional[dict]  # For idempotency
+    current_task_id: typing.Optional[str] # The active task ID when the snapshot was taken
+    current_task_event_name: typing.Optional[str]  # Event name of the current task for debugging
+    current_task_checkpoint: typing.Optional[dict]  # For idempotency (i.e. The internal state of the task when it was checkpointed)
 
     # Remaining tasks in queue (LIFO order preserved)
     # Serialized PipelineTask objects
-    queue_snapshot: typing.List[dict]
+    queue_snapshot: typing.List[QueueTaskTemplate] # Remaining tasks in the queue at snapshot time
 
     # Queue position tracking
     # Position in the original queue
-    queue_index: int
-    total_queue_size: int
+    queue_index: int # The index of the current task in the original queue
+    total_queue_size: int # The total size of the original queue
 
     # Sink nodes (deferred execution)
     # Serialized sink tasks
-    sink_nodes: typing.List[dict]
+    sink_nodes: typing.List[QueueTaskTemplate]
 
     # Engine state markers
     tasks_processed: int  # How many tasks completed before snapshot?
@@ -59,7 +93,7 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     next_context_id: typing.Optional[str]
 
     # Task Queue State
-    traversal: "TraversalSnapshot"
+    traversal: TraversalSnapshot
 
     # Pipeline Reference
     pipeline_id: str

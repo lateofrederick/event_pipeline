@@ -1,24 +1,20 @@
 import logging
-import math
 import os
 import typing
-from dataclasses import asdict
-from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import asdict, InitVar
+from datetime import datetime, timezone
 
-from pydantic_mini import Attrib, BaseModel, MiniAnnotated
-from pydantic_mini.typing import is_builtin_type
+from formax.typing import is_builtin_type
+from formax import Attrib, BaseModel, MiniAnnotated, InitStrategy
 
-from volnux.mixins import BackendIntegrationMixin
+from volnux.mixins import KeyValueStoreIntegrationMixin
 from volnux.utils import get_obj_klass_import_str, get_obj_state
+from volnux.exceptions import MultiValueError
+from volnux.import_utils import import_string
+from volnux.typing import TypeAlias
 
-from .exceptions import MultiValueError
-from .import_utils import import_string
-
-try:
-    from typing import TypeAlias  # noqa: F401
-except ImportError:
-    from typing_extensions import TypeAlias
+if typing.TYPE_CHECKING:
+    from volnux.backends.store import KeyValueStoreBackendBase
 
 __all__ = ["EventResult", "ResultSet"]
 
@@ -29,19 +25,25 @@ T = typing.TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 Result: TypeAlias = typing.Hashable  # Placeholder for a Result type
 
 
-class EventResult(BackendIntegrationMixin, BaseModel):
+class EventResult(KeyValueStoreIntegrationMixin, BaseModel):
     error: bool
     event_name: str
     content: typing.Any
+    workflow_id: typing.Optional[str]
     task_id: typing.Optional[str]
-    init_params: typing.Optional[typing.Dict[str, typing.Any]]
-    call_params: typing.Optional[typing.Dict[str, typing.Any]]
     process_id: MiniAnnotated[int, Attrib(default_factory=lambda: os.getpid())]
     creation_time: MiniAnnotated[
-        float, Attrib(default_factory=lambda: datetime.now().timestamp())
+        float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())
     ]
+    order: typing.Optional[int] = 0
+    is_persisted: bool = False
+
+    # Internal state and configuration
+    autosave: InitVar[bool] = False
+    storage_backend: InitVar[typing.Optional["KeyValueStoreBackendBase"]] = None
 
     class Config:
+        init_strategy = InitStrategy.DATACLASS
         unsafe_hash = False
         frozen = False
         eq = True
@@ -59,16 +61,6 @@ class EventResult(BackendIntegrationMixin, BaseModel):
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
         state = self.__dict__.copy()
-        init_params: typing.Optional[typing.Dict[str, typing.Any]] = state.pop(
-            "init_params", None
-        )
-
-        if init_params:
-            execution_context = init_params.get("execution_context")
-            if execution_context and not isinstance(execution_context, str):
-                init_params["execution_context"] = execution_context.id
-        else:
-            init_params = {"execution_context": {}}
 
         if self.content is not None:
             content_type = type(self.content)
@@ -77,15 +69,12 @@ class EventResult(BackendIntegrationMixin, BaseModel):
                     "content_type_import_str": get_obj_klass_import_str(self.content),
                     "state": get_obj_state(self.content),
                 }
-        state["init_params"] = init_params
+
         return state
 
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
-        # TODO handle the init and call params
-        init_params = state.pop("init_params", None)
-        call_params = state.pop("call_params", None)
-
         content = state.get("content")
+
         if isinstance(content, dict) and "content_type_import_str" in content:
             import_str = content["content_type_import_str"]
             content_state = content["state"]
@@ -93,12 +82,6 @@ class EventResult(BackendIntegrationMixin, BaseModel):
             instance = klass.__new__(klass)  # type: ignore
             instance.__setstate__(content_state)
             state["content"] = instance
-
-        if call_params:
-            pass
-
-        if init_params:
-            pass
 
         self.__dict__.update(state)
 
@@ -505,209 +488,3 @@ class ResultSet(typing.MutableSet[Result]):
 
     def __class_getitem__(cls, item: typing.Any) -> typing.Type["ResultSet"]:
         return cls
-
-
-@dataclass
-class VirtualResultStream(typing.Generic[T]):
-    """
-    A persistent-aware, lazy-loading stream that manages large datasets
-    by treating the KeyValueStore as virtual memory.
-
-    Key design decisions:
-    - Keys are stored in a list; a parallel set tracks uniqueness in O(1).
-    - Filters are registered lazily and applied only during iteration.
-    - filter() returns a new stream (immutable/chainable pattern).
-    - __len__ reflects the number of unfiltered keys (pre-fetch).
-      Use has_results() or first() to check filtered availability.
-    - chunk_size must be >= 1; validated at construction time.
-    """
-
-    model_klass: typing.Type[T]
-    transaction_id: str
-    chunk_size: int = 100
-
-    # Internal state
-    _keys: typing.List[str] = field(default_factory=list, repr=False)
-    _key_set: set = field(default_factory=set, repr=False)
-    _predicates: typing.List[typing.Callable[[T], bool]] = field(default_factory=list, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.chunk_size < 1:
-            raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}")
-
-    @classmethod
-    def _make(
-        cls,
-        model_klass: typing.Type[T],
-        transaction_id: str,
-        keys: typing.List[str],
-        predicates: typing.List[typing.Callable[[T], bool]],
-        chunk_size: int,
-    ) -> "VirtualResultStream[T]":
-        """Internal factory that bypasses add() for bulk key assignment."""
-        stream: VirtualResultStream[T] = cls.__new__(cls)
-        stream.model_klass = model_klass
-        stream.transaction_id = transaction_id
-        stream.chunk_size = chunk_size
-        stream._keys = list(keys)
-        stream._key_set = set(keys)
-        stream._predicates = list(predicates)
-        return stream
-
-    def add(self, instance: T) -> None:
-        """
-        Adds an instance's ID to the stream.
-        """
-        key = instance.id
-        if key not in self._key_set:
-            self._keys.append(key)
-            self._key_set.add(key)
-
-    def filter(self, **filter_kwargs) -> "VirtualResultStream[T]":
-        """
-        Registers a filter predicate to be applied lazily during iteration.
-        Returns a new stream; the original is not mutated.
-
-        The backend is expected to expose a *public* create_filter_predicate()
-        method. Calling private (_-prefixed) backend methods from here would
-        break encapsulation and make the contract invisible to callers.
-        """
-        backend = self.model_klass.get_backend()
-        new_predicate: typing.Callable[[T], bool] = backend.create_filter_predicate(
-            **filter_kwargs
-        )
-        return VirtualResultStream._make(
-            model_klass=self.model_klass,
-            transaction_id=self.transaction_id,
-            keys=self._keys,
-            predicates=self._predicates + [new_predicate],
-            chunk_size=self.chunk_size,
-        )
-
-    def where(self, predicate: typing.Callable[[T], bool]) -> "VirtualResultStream[T]":
-        """
-        Lower-level alternative to filter(): register any callable predicate
-        directly without going through the backend. Useful for complex or
-        compound conditions that the backend's filter API doesn't support.
-
-        Example:
-            stream.where(lambda obj: obj.score > 0.9 and obj.active)
-        """
-        return VirtualResultStream._make(
-            model_klass=self.model_klass,
-            transaction_id=self.transaction_id,
-            keys=self._keys,
-            predicates=self._predicates + [predicate],
-            chunk_size=self.chunk_size,
-        )
-
-    def shard(self, num_shards: int) -> typing.List["VirtualResultStream[T]"]:
-        """
-        Partitions the ID list into N sub-streams for parallel processing.
-
-        If num_shards > len(keys), fewer shards than requested will be
-        returned — one per available key. Callers should not assume the
-        returned list has exactly num_shards elements.
-        """
-        if num_shards <= 1 or not self._keys:
-            return [self]
-
-        total = len(self._keys)
-        shard_size = math.ceil(total / num_shards)
-        actual_shards = math.ceil(total / shard_size)
-
-        if actual_shards < num_shards:
-            logger.warning(
-                "Requested %d shards but only %d keys available; "
-                "returning %d shard(s).",
-                num_shards,
-                total,
-                actual_shards,
-            )
-
-        return [
-            VirtualResultStream._make(
-                model_klass=self.model_klass,
-                transaction_id=self.transaction_id,
-                keys=self._keys[i : i + shard_size],
-                predicates=self._predicates,
-                chunk_size=self.chunk_size,
-            )
-            for i in range(0, total, shard_size)
-        ]
-
-    def __iter__(self) -> typing.Iterator[T]:
-        """
-        Terminal operation. Fetches objects in batches from the KeyValueStore
-        and applies the registered predicate pipeline in memory.
-
-        Errors during individual fetches are logged and skipped so that a
-        single bad record does not abort the entire stream.
-        """
-        for i in range(0, len(self._keys), self.chunk_size):
-            batch_ids = self._keys[i : i + self.chunk_size]
-            for instance in self._fetch_batch(batch_ids):
-                if all(predicate(instance) for predicate in self._predicates):
-                    yield instance
-
-    def first(self) -> typing.Optional[T]:
-        """
-        Returns the first filtered result, or None if the stream is empty.
-
-        Prefer this over is_empty() when you need the object, and over
-        __len__ == 0 when filters are registered — __len__ is pre-filter.
-
-        Cost: O(1) network round-trips in the best case (first batch only).
-        """
-        return next(iter(self), None)
-
-    def has_results(self) -> bool:
-        """
-        Returns True if at least one object survives the filter pipeline.
-
-        Named explicitly (not __bool__) to make the network cost visible
-        at the call site. Cost: up to one full batch fetch.
-        """
-        return self.first() is not None
-
-    def __len__(self) -> int:
-        """
-        Returns the number of IDs tracked *before* filtering.
-
-        This intentionally does not reflect post-filter count because
-        computing that requires a full iteration (network calls). Use
-        has_results() or first() when filters matter.
-        """
-        return len(self._keys)
-
-    def _fetch_batch(self, batch_ids: typing.List[str]) -> typing.List[T]:
-        """
-        Rehydrates a batch of IDs from storage. Errors are logged per-ID
-        so a single failure does not abort the whole batch.
-        """
-        backend = self.model_klass.get_backend()
-        # If the backend supports bulk get operation, we pull everything in 1 trip
-        if hasattr(backend, "bulk_get"):
-            return backend.bulk_get(self.model_klass.get_schema_name(), batch_ids, self.model_klass)
-
-        results: typing.List[T] = []
-        for rid in batch_ids:
-            try:
-                instance = self.model_klass.get_or_none(rid)
-                if instance is not None:
-                    results.append(instance)
-            except Exception:
-                logger.exception(
-                    "Failed to fetch %s(id=%r) from storage; skipping.",
-                    self.model_klass.__name__,
-                    rid,
-                )
-        return results
-
-    def __repr__(self) -> str:
-        return (
-            f"<VirtualResultStream: {self.model_klass.__name__} | "
-            f"Tx: {self.transaction_id} | "
-            f"Keys: {len(self._keys)} | "
-            f"Filters: {len(self._predicates)}>"
-        )

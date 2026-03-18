@@ -69,7 +69,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         """Ensure the SQLite connection is active.
 
         Raises:
-            ConnectionError: If connection cannot be established.
+            ConnectionError: If a connection cannot be established.
         """
         if not self.connector.is_connected():
             logger.warning("SQLite connection lost, attempting to reconnect...")
@@ -187,7 +187,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
 
                 fields.append(field_def)
 
-            # Add special column for serialized record state
+            # Add a special column for the serialized record state
             fields.append("_record_state BLOB NOT NULL")
 
             # Create table
@@ -351,7 +351,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
 
         Args:
             schema_name: The schema containing the record.
-            record_key: The key of the record to check.
+            record_key: The key of the record is to check.
 
         Returns:
             True if the record exists, False otherwise.
@@ -374,13 +374,20 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Error checking record existence: {e}")
             return False
 
-    def insert(self, schema_name: str, record_key: str, record: BaseModel) -> None:
+    def insert(
+        self,
+        schema_name: str,
+        record_key: str,
+        record: BaseModel,
+        ttl: Optional[int] = None,
+    ) -> None:
         """Insert a new record into the store.
 
         Args:
             schema_name: The schema to insert into.
             record_key: The unique key for the record.
             record: The record object to insert.
+            ttl: Time to live in seconds for the record. If None, no TTL is set.
 
         Raises:
             ObjectExistError: If a record with the same key already exists.
@@ -429,13 +436,13 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
 
         Args:
             schema_name: The schema containing the record.
-            record_key: The key of the record to update.
+            record_key: The key of the record is to update.
             record: The updated record object.
 
         Raises:
             ObjectDoesNotExist: If the record does not exist.
             SerializationError: If serialization fails.
-            SqlOperationError: If update fails.
+            SqlOperationError: If the update fails.
         """
         self._ensure_connected()
         record_key = str(self._convert_key_type(record_key))
@@ -529,7 +536,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
 
         Args:
             schema_name: The schema containing the record.
-            record_key: The key of the record to delete.
+            record_key: The key of the record is to delete.
 
         Raises:
             ObjectDoesNotExist: If the record does not exist.
@@ -747,7 +754,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
 
         Raises:
             ObjectDoesNotExist: If schema doesn't exist.
-            SqlOperationError: If count fails.
+            SqlOperationError: If the count fails.
         """
         self._ensure_connected()
 

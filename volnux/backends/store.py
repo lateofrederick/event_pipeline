@@ -213,7 +213,7 @@ class KeyValueStoreBackendBase(abc.ABC):
 
         Args:
             schema_name: The schema/namespace containing the record.
-            record_key: The key of the record to delete.
+            record_key: The key of the record is to delete.
 
         Raises:
             KeyError: If the record does not exist.

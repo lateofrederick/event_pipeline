@@ -8,7 +8,7 @@ MAX_EVENT_BACKOFF = 100
 
 MAX_BATCH_PROCESSING_WORKERS = 4
 
-RESULT_BACKEND_CONFIG = {
+KEY_VALUE_STORE_CONFIG = {
     "ENGINE": "volnux.backends.stores.inmemory_store.InMemoryKeyValueStoreBackend",
     # "CONNECTOR_CONFIG": {
     #     "host": "localhost",

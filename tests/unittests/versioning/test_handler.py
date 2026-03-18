@@ -63,7 +63,10 @@ def test_from_class_uses_default_version_when_class_has_no_version():
 
 
 def test_from_class_uses_configured_scheme_when_class_has_no_scheme():
-    with patch("volnux.versioning.handler.conf.get", return_value={"VERSIONING_CLASS": DummyVersioning}):
+    with patch(
+        "volnux.versioning.handler.conf.get",
+        return_value={"VERSIONING_CLASS": DummyVersioning},
+    ):
         handler = VersionHandler.from_class(PlainEvent, "EVENT_VERSIONING")
 
     assert isinstance(handler.scheme, DummyVersioning)
@@ -110,8 +113,13 @@ def test_from_class_raises_when_configured_scheme_is_not_base_versioning_subclas
     class NotAScheme:
         pass
 
-    with patch("volnux.versioning.handler.conf.get", return_value={"VERSIONING_CLASS": NotAScheme}):
-        with pytest.raises(ImproperlyConfigured, match="is not a subclass of BaseVersioning"):
+    with patch(
+        "volnux.versioning.handler.conf.get",
+        return_value={"VERSIONING_CLASS": NotAScheme},
+    ):
+        with pytest.raises(
+            ImproperlyConfigured, match="is not a subclass of BaseVersioning"
+        ):
             VersionHandler.from_class(PlainEvent, "EVENT_VERSIONING")
 
 
@@ -170,7 +178,10 @@ def test_from_class_uses_scheme_namespace_resolution():
     class EventWithoutNamespace:
         versioning_class = DummyVersioning
 
-    with patch("volnux.versioning.base.conf.get", return_value={"DEFAULT_NAMESPACE": "configured-ns"}):
+    with patch(
+        "volnux.versioning.base.conf.get",
+        return_value={"DEFAULT_NAMESPACE": "configured-ns"},
+    ):
         handler = VersionHandler.from_class(EventWithoutNamespace, "EVENT_VERSIONING")
 
     assert handler.namespace == "configured-ns"

@@ -3,7 +3,7 @@ import typing
 import logging
 
 from .base import BaseFlow
-from pydantic_mini import MiniAnnotated, Attrib
+from formax import MiniAnnotated, Attrib
 
 from volnux import Event
 from volnux.executors import (

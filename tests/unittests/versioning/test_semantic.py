@@ -34,7 +34,10 @@ def test_default_version_is_1_0_0():
 def test_get_version_info_uses_default_version_when_missing():
     versioning = SemanticVersioning(config_key="EVENT_VERSIONING")
 
-    with patch("volnux.versioning.base.conf.get", return_value={"DEFAULT_NAMESPACE": "configured"}):
+    with patch(
+        "volnux.versioning.base.conf.get",
+        return_value={"DEFAULT_NAMESPACE": "configured"},
+    ):
         info = versioning.get_version_info(PlainEvent)
 
     assert info["version"] == "1.0.0"
@@ -69,7 +72,9 @@ def test_get_version_info_raises_value_error_when_parse_version_fails():
         "volnux.versioning.semantic.parse_version",
         side_effect=Exception("bad version"),
     ):
-        with pytest.raises(ValueError, match="Invalid semantic version 'not-a-version'"):
+        with pytest.raises(
+            ValueError, match="Invalid semantic version 'not-a-version'"
+        ):
             versioning.get_version_info(InvalidVersionEvent)
 
 

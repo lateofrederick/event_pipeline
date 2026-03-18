@@ -46,7 +46,10 @@ def test_get_namespace_returns_class_namespace_when_present():
 def test_get_namespace_uses_config_default_namespace_when_class_namespace_missing():
     versioning = DummyVersioning(config_key="EVENT_VERSIONING")
 
-    with patch("volnux.versioning.base.conf.get", return_value={"DEFAULT_NAMESPACE": "configured"}):
+    with patch(
+        "volnux.versioning.base.conf.get",
+        return_value={"DEFAULT_NAMESPACE": "configured"},
+    ):
         result = versioning.get_namespace(PlainEvent)
 
     assert result == "configured"
@@ -99,7 +102,10 @@ def test_validate_version_uses_subclass_implementation():
 def test_get_version_info_uses_subclass_implementation():
     versioning = DummyVersioning(config_key="EVENT_VERSIONING")
 
-    with patch("volnux.versioning.base.conf.get", return_value={"DEFAULT_NAMESPACE": "configured"}):
+    with patch(
+        "volnux.versioning.base.conf.get",
+        return_value={"DEFAULT_NAMESPACE": "configured"},
+    ):
         info = versioning.get_version_info(PlainEvent)
 
     assert info["version"] == "1.0.0"
