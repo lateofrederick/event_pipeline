@@ -69,7 +69,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         """Ensure the Memcache connection is active.
 
         Raises:
-            ConnectionError: If connection cannot be established.
+            ConnectionError: If a connection cannot be established.
         """
         if not self.connector.is_connected():
             logger.warning("Memcache connection lost, attempting to reconnect...")
@@ -141,7 +141,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             elif operation == "remove":
                 index.discard(record_key)
 
-            # Save updated index (with no expiration)
+            # Save an updated index (with no expiration)
             serialized_index = json.dumps(index)
             self.connector.cursor.set(index_key, serialized_index, expire=0)
 

@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 class SingleFlow(BaseFlow):
-    """Setup for execution flow of a single event"""
+    """Setup for the execution flow of a single event"""
 
     task_profile: typing.Optional["TaskProtocol"] = None
 
-    def __model_init__(self, *args, **kwargs) -> None:
+    def __post_init__(self, *args, **kwargs) -> None:
         super().__model_init__(*args, **kwargs)
         self.task_profile = self.task_profiles[0]
 

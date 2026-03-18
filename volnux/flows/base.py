@@ -3,8 +3,7 @@ import logging
 import typing
 from abc import abstractmethod
 from collections import deque
-
-from pydantic_mini import BaseModel
+from formax import BaseModel
 
 from volnux.base import ExecutorInitializerConfig
 from volnux.constants import EMPTY
@@ -49,11 +48,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
     #  The profile of the tasks to be executed
     task_profiles: typing.Optional[typing.Deque[TaskType]]  # type: ignore
 
-    class Config:
-        disable_type_check = False
-        disable_all_validations = False
-
-    def __model_init__(
+    def __post_init__(
         self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
         self.task_profiles = typing.cast(

@@ -2,7 +2,7 @@ import os
 import typing
 from types import TracebackType
 
-from pydantic_mini.typing import is_type
+from formax.typing import is_type
 
 from . import default_batch_processors as batch_defaults
 from .constants import EMPTY, UNKNOWN
