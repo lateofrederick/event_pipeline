@@ -20,6 +20,7 @@ class DescriptorConfig:
     def as_dict(self) -> typing.Dict[str, typing.Any]:
         """Serialize descriptor configuration to dictionary."""
         from volnux.execution.rehydrator.serializer import StateSerializer
+
         return {
             "descriptor": self.descriptor,
             "pipe": self.pipe.value,
@@ -83,7 +84,8 @@ class ConditionalNode:
         """Serialize conditional node configuration to dictionary."""
         return {
             "_descriptors": {
-                descriptor: config.as_dict() for descriptor, config in self._descriptors.items()
+                descriptor: config.as_dict()
+                for descriptor, config in self._descriptors.items()
             }
         }
 

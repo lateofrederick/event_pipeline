@@ -1,4 +1,4 @@
-import json
+import orjson as json
 from unittest.mock import MagicMock
 
 import pytest

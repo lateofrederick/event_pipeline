@@ -1,6 +1,5 @@
-import json
+import orjson as json
 import logging
-import pickle
 import sqlite3
 from types import UnionType
 from typing import (
@@ -14,12 +13,14 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    TYPE_CHECKING,
 )
 
-from pydantic_mini import BaseModel
+from formax import BaseModel
+from formax.typing import get_type
 
 from volnux.backends.connectors.sqlite import SqliteConnector
-from volnux.backends.store import KeyValueStoreBackendBase
+from volnux.backends.store import KeyValueStoreBackendBase, YoyoMigrationsMixin
 from volnux.exceptions import (
     ObjectDoesNotExist,
     ObjectExistError,
@@ -27,14 +28,18 @@ from volnux.exceptions import (
     SerializationError,
 )
 
+if TYPE_CHECKING:
+    from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+
+
 logger = logging.getLogger(__name__)
 
 
-class SqliteStoreBackend(KeyValueStoreBackendBase):
+class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
     """SQLite-backed key-value store implementation.
 
     This backend uses SQLite tables to store records, with automatic schema
-    creation and migration support. Records are serialized using pickle and
+    creation and migration support. Records are serialized and
     stored in a dedicated column, while individual fields are also stored
     for efficient querying.
 
@@ -46,11 +51,6 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
     """
 
     connector_klass = SqliteConnector
-
-    # Configuration
-    PICKLE_PROTOCOL = pickle.HIGHEST_PROTOCOL
-
-    RESERVED_FIELDS = {"_id", "_backend", "_schema_name"}
 
     def __init__(self, **connector_config: Any):
         """Initialize the SQLite store backend.
@@ -88,7 +88,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
 
     # Schema Management
 
-    def _check_if_schema_exists(self, schema_name: str) -> bool:
+    def schema_exists(self, schema_name: str) -> bool:
         """Check if a schema (table) exists in the database.
 
         Args:
@@ -126,8 +126,6 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         Returns:
             The corresponding SQLite type as a string.
         """
-        from pydantic_mini.typing import get_type
-
         field_type = get_type(field_type)
 
         type_mapping = {
@@ -148,25 +146,19 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         return False
 
     def create_schema(
-        self, schema_name: str, record: BaseModel, if_not_exists: bool = True
+        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
     ) -> None:
         """Create a schema (table) based on a record's structure.
 
         Args:
             schema_name: The name of the schema to create.
             record: A sample record to derive the schema from.
-            if_not_exists: If True, don't raise error if schema exists.
 
         Raises:
             ObjectExistError: If schema exists and if_not_exists is False.
             SqlOperationError: If schema creation fails.
         """
         self._ensure_connected()
-
-        if self._check_if_schema_exists(schema_name):
-            if not if_not_exists:
-                raise ObjectExistError(f"Schema '{schema_name}' already exists")
-            return
 
         try:
             fields = ["id TEXT PRIMARY KEY"]
@@ -206,23 +198,16 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Error creating schema '{schema_name}': {e}")
             raise SqlOperationError(f"Error creating schema: {e}")
 
-    def drop_schema(self, schema_name: str, if_exists: bool = True) -> None:
+    def drop_schema(self, schema_name: str) -> None:
         """Drop a schema (table) from the database.
 
         Args:
             schema_name: The name of the schema to drop.
-            if_exists: If True, don't raise error if schema doesn't exist.
 
         Raises:
-            ObjectDoesNotExist: If schema doesn't exist and if_exists is False.
             SqlOperationError: If schema drop fails.
         """
         self._ensure_connected()
-
-        if not self._check_if_schema_exists(schema_name):
-            if not if_exists:
-                raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
-            return
 
         try:
             with self.connector.transaction():
@@ -258,51 +243,51 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Error listing schemas: {e}")
             raise SqlOperationError(f"Error listing schemas: {e}")
 
-    def _serialize_record(self, record: BaseModel) -> bytes:
-        """Serialize a record to bytes.
+    # def _serialize_record(self, record: BaseModel) -> bytes:
+    #     """Serialize a record to bytes.
+    #
+    #     Args:
+    #         record: The record to serialize.
+    #
+    #     Returns:
+    #         Serialized record as bytes.
+    #
+    #     Raises:
+    #         SerializationError: If serialization fails.
+    #     """
+    #     try:
+    #         state = record.__getstate__()
+    #         return pickle.dumps(state, protocol=self.PICKLE_PROTOCOL)
+    #     except Exception as e:
+    #         logger.error(f"Failed to serialize record: {e}")
+    #         raise SerializationError(f"Serialization failed: {e}")
 
-        Args:
-            record: The record to serialize.
-
-        Returns:
-            Serialized record as bytes.
-
-        Raises:
-            SerializationError: If serialization fails.
-        """
-        try:
-            state = record.__getstate__()
-            return pickle.dumps(state, protocol=self.PICKLE_PROTOCOL)
-        except Exception as e:
-            logger.error(f"Failed to serialize record: {e}")
-            raise SerializationError(f"Serialization failed: {e}")
-
-    def _deserialize_record(
-        self, data: bytes, record_klass: Type[BaseModel]
-    ) -> BaseModel:
-        """Deserialize bytes to a record object.
-
-        Args:
-            data: Serialized record data.
-            record_klass: The class to instantiate.
-
-        Returns:
-            Deserialized record instance.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            state = pickle.loads(data)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except Exception as e:
-            logger.error(f"Failed to deserialize record: {e}")
-            raise SerializationError(f"Deserialization failed: {e}")
+    # def _deserialize_record(
+    #     self, data: bytes, record_klass: Type[BaseModel]
+    # ) -> BaseModel:
+    #     """Deserialize bytes to a record object.
+    #
+    #     Args:
+    #         data: Serialized record data.
+    #         record_klass: The class to instantiate.
+    #
+    #     Returns:
+    #         Deserialized record instance.
+    #
+    #     Raises:
+    #         SerializationError: If deserialization fails.
+    #     """
+    #     try:
+    #         state = pickle.loads(data)
+    #         record = record_klass.__new__(record_klass)
+    #         record.__setstate__(state)
+    #         return record
+    #     except Exception as e:
+    #         logger.error(f"Failed to deserialize record: {e}")
+    #         raise SerializationError(f"Deserialization failed: {e}")
 
     def _prepare_record_data(
-        self, record: BaseModel, record_key: str
+        self, record: "KeyValueStoreIntegrationMixin", record_key: str
     ) -> Dict[str, Any]:
         """Prepare record data for database insertion.
 
@@ -313,9 +298,9 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         Returns:
             Dictionary of field names to values.
         """
-        record_data = {"id": record_key}
+        record_data: Dict[str, Any] = {"id": record_key}
 
-        for field_name, value in record.__dict__.items():
+        for field_name, value in record.__getstate__().items():
             if field_name in self.RESERVED_FIELDS:
                 continue
 
@@ -331,7 +316,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         return record_data
 
     def _convert_key_type(self, record_key: Union[str, int]) -> Union[str, int]:
-        """Convert record key to appropriate type.
+        """Convert the record key to the appropriate type.
 
         Args:
             record_key: The key to convert.
@@ -358,7 +343,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         """
         self._ensure_connected()
 
-        if not self._check_if_schema_exists(schema_name):
+        if not self.schema_exists(schema_name):
             return False
 
         try:
@@ -378,7 +363,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_key: str,
-        record: BaseModel,
+        record: "KeyValueStoreIntegrationMixin",
         ttl: Optional[int] = None,
     ) -> None:
         """Insert a new record into the store.
@@ -397,8 +382,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         self._ensure_connected()
 
         try:
-            if not self._check_if_schema_exists(schema_name):
-                self.create_schema(schema_name, record)
+            self.ensure_schema(schema_name, record)
 
             if self.exists(schema_name, record_key):
                 raise ObjectExistError(
@@ -431,7 +415,9 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Error inserting record: {e}")
             raise SqlOperationError(f"Error inserting record: {e}")
 
-    def update(self, schema_name: str, record_key: str, record: BaseModel) -> None:
+    def update(
+        self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> None:
         """Update an existing record in the store.
 
         Args:
@@ -498,9 +484,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         self._ensure_connected()
 
         try:
-
-            if not self._check_if_schema_exists(schema_name):
-                self.create_schema(schema_name, record)
+            self.ensure_schema(schema_name, record)
 
             record_data = self._prepare_record_data(record, record_key)
 
@@ -697,7 +681,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         """
         self._ensure_connected()
 
-        if not self._check_if_schema_exists(schema_name):
+        if not self.schema_exists(schema_name):
             raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
 
         try:
@@ -758,7 +742,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
         """
         self._ensure_connected()
 
-        if not self._check_if_schema_exists(schema_name):
+        if not self.schema_exists(schema_name):
             raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
 
         try:
@@ -780,7 +764,9 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             raise SqlOperationError(f"Error counting records: {e}")
 
     @staticmethod
-    def load_record(record_state: bytes, record_klass: Type[BaseModel]) -> BaseModel:
+    def load_record(
+        record_state: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]
+    ) -> "KeyValueStoreIntegrationMixin":
         """Load a record from its serialized state.
 
         Args:
@@ -794,14 +780,16 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
             SerializationError: If deserialization fails.
         """
         try:
-            state = pickle.loads(record_state)
+            state = json.loads(record_state)
             record = record_klass.__new__(record_klass)
             record.__setstate__(state)
             return record
         except Exception as e:
             raise SerializationError(f"Failed to load record: {e}")
 
-    def reload(self, schema_name: str, record: BaseModel) -> BaseModel:
+    def reload(
+        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> "KeyValueStoreIntegrationMixin":
         """Reload a record's data from the backend.
 
         Args:
@@ -835,7 +823,7 @@ class SqliteStoreBackend(KeyValueStoreBackendBase):
                     f"Record '{record_key}' no longer exists in schema '{schema_name}'"
                 )
 
-            state = pickle.loads(row[0])
+            state = json.loads(row[0])
             record.__setstate__(state)
 
             logger.debug(f"Reloaded record '{record_key}' from schema '{schema_name}'")

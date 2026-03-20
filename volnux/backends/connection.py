@@ -103,7 +103,7 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
     resource management.
 
     Type Parameters:
-        CursorType: The type of cursor object returned by this connector.
+        CursorType: The type of the cursor object returned by this connector.
 
     Attributes:
         config: The connection configuration object.

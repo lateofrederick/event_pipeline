@@ -1,14 +1,13 @@
 import typing
 import traceback
-from enum import Enum
-
-from .snapshot import TaskTemplate, QueueTaskTemplate
 
 from volnux.result import EventResult
 from volnux.pipeline import Pipeline
+from .snapshot import QueueTaskTemplate
 
 if typing.TYPE_CHECKING:
     from volnux.parser.protocols import TaskType
+    from volnux.engine.base import TaskNode
 
 
 class StateSerializer:
@@ -17,55 +16,56 @@ class StateSerializer:
     """
 
     @staticmethod
-    def serialize_task(task: "TaskType") -> TaskTemplate:
+    def serialize_task(task: "TaskType") -> typing.Dict[str, typing.Any]:
         """Serialize PipelineTask to dict."""
         event_class = task.get_event_class()
 
-        payload: TaskTemplate = {
+        payload = {
             "task_id": task.get_id(),
             "task_type": "group" if getattr(task, "is_grouping", False) else "normal",
             "event_name": task.get_event_name(),
             "event_class_import_path": (
                 f"{event_class.__module__}.{event_class.__name__}"
             ),
-            "options": task.options.to_dict(),
+            "sink_task_id": task.sink_node.get_id() if task.sink_node else None,
+            "sink_task_pipe": task.sink_pipe.value if task.sink_pipe else None,
+            "options": task.options.as_dict(),
             "sequence_number": task.sequence_number,
-            "descriptor": getattr(task, "descriptor", None),
+            "descriptor": task.descriptor,
             "descriptor_pipe_type": (
-                getattr(task.descriptor_pipe, "value", None)
-                if getattr(task, "descriptor_pipe", None) is not None
-                else None
+                task.descriptor_pipe.value if task.descriptor_pipe else None
             ),
+            "condition_node": task.condition_node.as_dict(),
         }
 
-        condition_node = getattr(task, "condition_node", None)
-        if condition_node is not None:
-            payload["condition_node"] = condition_node.to_dict()
-
-        chain = getattr(task, "chain", None)
-        if chain:
-            payload["chain"] = [StateSerializer.serialize_task(child) for child in chain]
-
-        strategy = getattr(task, "strategy", None)
-        if strategy is not None:
-            payload["strategy"] = str(strategy)
+        # TODO: reference the note in the task snapshot
+        #  for how we will handle checkpoint of groupings
+        # chain = getattr(task, "chains", None)
+        # if chain:
+        #     payload["chains"] = [
+        #         StateSerializer.serialize_task(child) for child in chain
+        #     ]
+        #
+        # strategy = getattr(task, "strategy", None)
+        # if strategy is not None:
+        #     payload["strategy"] = str(strategy)
 
         return payload
-
-    @staticmethod
-    def _task_ref(task: typing.Any) -> typing.Optional[dict]:
-        """Serialize a lightweight reference to a task-like object."""
-        if task is None:
-            return None
-        return {
-            "task_id": getattr(task, "task_id", getattr(task, "_id", None)),
-            "event_name": getattr(task, "event", getattr(task, "event_name", None)),
-        }
 
     @staticmethod
     def serialize_result(result: "EventResult") -> typing.Dict[str, typing.Any]:
         """Serialize EventResult."""
         return result.as_dict()
+
+    @staticmethod
+    def serialise_queue_task(
+        task_position: int, task_node: TaskNode
+    ) -> QueueTaskTemplate:
+        return {
+            "position_in_queue": task_position,
+            "task_id": task_node.task.get_id(),
+            "previous_context_id": task_node.previous_context.state_id,
+        }
 
     @staticmethod
     def serialize_exception(exc: Exception) -> typing.Dict[str, typing.Any]:

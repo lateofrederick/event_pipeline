@@ -54,6 +54,7 @@ async def test_checkpoint_all_continues_when_one_context_fails():
     assert ctx1.persist.await_count >= 1
     ctx2.persist.assert_awaited_once()
 
+
 @pytest.mark.asyncio
 async def test_checkpoint_loop_calls_checkpoint_all_periodically():
     checkpointer = AutoCheckPointer(checkpoint_interval=0.01)

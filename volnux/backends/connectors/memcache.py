@@ -99,7 +99,7 @@ class MemcacheConnector(BackendConnectorBase[Client]):
         self._client: Optional[Union[Client, PooledClient]] = None
 
     def _get_client_params(self) -> Dict[str, Any]:
-        """Build client parameters dictionary.
+        """Build a client parameters dictionary.
 
         Returns:
             Dictionary of Memcache client parameters.
@@ -147,10 +147,10 @@ class MemcacheConnector(BackendConnectorBase[Client]):
         return params
 
     def connect(self) -> None:
-        """Establish connection to Memcache server.
+        """Establish connection to the Memcache server.
 
         Raises:
-            ConnectionError: If connection cannot be established.
+            ConnectionError: If a connection cannot be established.
         """
         if self._is_connected:
             logger.debug("Already connected to Memcache")
@@ -161,7 +161,7 @@ class MemcacheConnector(BackendConnectorBase[Client]):
 
             pool_size = self.config.extra_params.get("pool_size", self.config.pool_size)
 
-            # Create pooled or single client
+            # Create a pooled or single client
             if self._use_pooling:
                 self._client = PooledClient(**params, max_pool_size=pool_size)
                 logger.info(

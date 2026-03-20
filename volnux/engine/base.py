@@ -1,15 +1,14 @@
 import typing
 import logging
-from collections import deque
 from enum import Enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from formax import BaseModel, MiniAnnotated, Attrib
 
 from volnux.pipeline import Pipeline
 from volnux.parser.protocols import TaskType
-from volnux.mixins import ObjectIdentityMixin
 from volnux.execution.context import ExecutionContext
-from volnux.execution.rehydrator.checkpoint import AutoCheckpointer
+from volnux.execution.rehydrator.checkpoint import AutoCheckPointer
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +26,45 @@ class CheckPointFrequency(str, Enum):
     ON_STATE_CHANGE = "on_state_change"  # On status changes
 
 
+class CheckPointPolicyConfig(BaseModel):
+    """
+    Configuration for when checkpointing should happen.
+
+    Time-based values are expressed in seconds.
+    """
+
+    frequency: MiniAnnotated[
+        CheckPointFrequency, Attrib(default=CheckPointFrequency.PER_TASK)
+    ]
+    checkpoint_interval_seconds: MiniAnnotated[float, Attrib(default=5.0, ge=0.0)]
+
+    class Config:
+        frozen = True
+
+
+class CheckPointRuntimeConfig(BaseModel):
+    """
+    Configuration for how checkpointing is executed.
+    """
+
+    max_concurrent_checkpoints: MiniAnnotated[int, Attrib(default=5, ge=1)]
+    retry_attempts: MiniAnnotated[int, Attrib(default=3, ge=0)]
+    retry_delay_seconds: MiniAnnotated[float, Attrib(default=1.0, ge=0.0)]
+    checkpoint_ttl_seconds: MiniAnnotated[float, Attrib(default=300.0, ge=0.0)]
+
+    class Config:
+        frozen = True
+
+
+class CheckPointConfig(BaseModel):
+    policy: MiniAnnotated[
+        CheckPointPolicyConfig, Attrib(default_factory=CheckPointPolicyConfig)
+    ]
+    runtime: MiniAnnotated[
+        CheckPointRuntimeConfig, Attrib(default_factory=CheckPointRuntimeConfig)
+    ]
+
+
 class TaskNode(typing.NamedTuple):
     task: TaskType
     previous_context: typing.Optional[ExecutionContext] = None
@@ -40,7 +78,7 @@ class EngineResult:
     tasks_processed: int = 0
 
 
-class WorkflowEngine(ObjectIdentityMixin, ABC):
+class WorkflowEngine(ABC):
     """
     Abstract interface for workflow execution engines.
 
@@ -54,22 +92,41 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
     """
 
     def __init__(
-        self, enable_checkpointing: bool = False, checkpoint_interval: float = 5.0
+        self,
+        enable_checkpointing: bool = False,
+        checkpoint_config: typing.Optional[CheckPointConfig] = None,
     ) -> None:
-        ObjectIdentityMixin.__init__(self)
-
         self.tasks_processed: int = 0
+        self.current_task_node: typing.Optional["TaskNode"] = None
+        self.final_context: typing.Optional["ExecutionContext"] = None
 
-        # task queue
-        self.queue: typing.Optional[typing.Deque[TaskNode]] = None
-        self.sink_queue: typing.Optional[typing.Deque[TaskNode]] = None
-        self.current_task_node: typing.Optional[TaskNode] = None
+        self._checkpointer: typing.Optional["AutoCheckPointer"] = None
+        self.checkpoint_config: typing.Optional[CheckPointConfig] = None
 
-        self.final_context: typing.Optional[ExecutionContext] = None
+        if enable_checkpointing:
+            self.checkpoint_config = (
+                checkpoint_config if checkpoint_config else CheckPointConfig()
+            )
 
-        # Auto checking
-        self._checkpointer: typing.Optional[AutoCheckpointer] = None
-        self._checkpoint_frequency = None
+    @property
+    @abstractmethod
+    def task_queue(self) -> typing.Any:
+        """
+        Primary engine queue used for active task scheduling.
+
+        Concrete engines decide the backing implementation.
+        """
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
+    def sink_queue(self) -> typing.Any:
+        """
+        Queue used for deferred/sink tasks.
+
+        Concrete engines decide the backing implementation.
+        """
+        raise NotImplementedError()
 
     @abstractmethod
     async def execute(
@@ -83,17 +140,9 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
         The engine orchestrates the flow but delegates execution to contexts.
         All metrics, hooks, and task execution are handled by ExecutionContext
         and the Coordinator.
-
-        Args:
-            root_task: The entry point task for the workflow
-            pipeline: The pipeline containing workflow configuration and state
-
-        Returns:
-            EngineResult with high-level execution status
         """
         pass
 
-    @abstractmethod
     def get_name(self) -> str:
         """
         Get the engine name/identifier.
@@ -101,19 +150,15 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
         Returns:
             Human-readable engine name
         """
-        pass
+        return self.__class__.__name__
 
     def enable_checkpointing(
         self,
-        checkpointer: "AutoCheckpointer",
-        checkpoint_frequency: CheckPointFrequency = CheckPointFrequency.PER_TASK,
+        checkpointer: "AutoCheckPointer",
+        checkpoint_frequency: "CheckPointFrequency" = CheckPointFrequency.PER_TASK,
     ):
         """
         Enable automatic checkpointing for this engine.
-
-        Args:
-            checkpointer: The checkpointer instance
-            checkpoint_frequency: When to checkpoint
         """
         self._checkpointer = checkpointer
         self._checkpoint_frequency = checkpoint_frequency
@@ -123,38 +168,31 @@ class WorkflowEngine(ObjectIdentityMixin, ABC):
     ):
         """
         Checkpoint before executing a task (idempotency support).
-
-        This is called by the engine before context.dispatch().
         """
         if not self._checkpointer:
             return
 
-        self._current_task_node = task_node
+        self.current_task_node = task_node
 
-        # Create checkpoint
-        if self._checkpoint_frequency == "per_task":
+        if self._checkpoint_frequency == CheckPointFrequency.PER_TASK:
             await context.persist()
             logger.debug(f"Checkpointed before task: {task_node.task.event}")
 
     async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
         """
         Checkpoint after task completion.
-
-        Args:
-            context: The execution context
-            success: Whether task completed successfully
         """
         if not self._checkpointer:
             return
 
         self.tasks_processed += 1
+        self.current_task_node = None
 
-        # Clear current task
-        self._current_task_node = None
-
-        # Checkpoint if configured
         if self._checkpoint_frequency in [
             CheckPointFrequency.PER_TASK,
             CheckPointFrequency.ON_STATE_CHANGE,
         ]:
             await context.persist()
+            logger.debug(
+                f"Checkpointed after task: {self.tasks_processed} tasks processed"
+            )

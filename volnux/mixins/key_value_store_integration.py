@@ -7,7 +7,12 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional, Type, TypeVar,
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.conf import ConfigLoader
-from volnux.exceptions import ObjectExistError, ObjectDoesNotExist, ImproperlyConfigured
+from volnux.exceptions import (
+    ObjectExistError,
+    ObjectDoesNotExist,
+    ImproperlyConfigured,
+    SerializationError,
+)
 from volnux.import_utils import import_string
 from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.utils import get_obj_klass_import_str
@@ -98,6 +103,16 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 logger.warning(f"Failed to auto-save new object: {e}")
 
     @classmethod
+    def get_migration_dir(cls) -> typing.Optional[str]:
+        """Get the directory where migrations are stored for this class."""
+        return None
+
+    @classmethod
+    def get_backend_config(cls) -> Dict[str, Any]:
+        """Get the backend configuration for this class."""
+        return CONFIG.KEY_VALUE_STORE_CONFIG
+
+    @classmethod
     def _initialize_backend(cls) -> None:
         """Initialize the backend store for this class.
 
@@ -108,7 +123,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             StopProcessingError: If backend initialization fails.
         """
         try:
-            backend_config = CONFIG.KEY_VALUE_STORE_CONFIG
+            backend_config = cls.get_backend_config()
             cls._backend_config = backend_config
 
             backend_class_path = backend_config.get("ENGINE")
@@ -160,7 +175,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         Returns:
             The schema name to use for backend storage.
         """
-        return cls.__name__
+        return f"volnux_{cls.__name__}"
 
     def _is_loaded_from_backend(self) -> bool:
         """Check if this instance was loaded from the backend.
@@ -187,7 +202,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             ttl: Optional TTL for the new record.
 
         Raises:
-            ObjectExistError: If force_insert is True and record already exists.
+            ObjectExistError: If force_insert is True and the record already exists.
         """
         try:
             backend = self.get_backend()
@@ -237,6 +252,10 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             logger.error(f"Failed to update {self.__class__.__name__}:{self.id}: {e}")
             raise
 
+    async def update_async(self) -> None:
+        """Update this object in the backend store."""
+        await to_thread(self.update)
+
     def delete(self) -> None:
         """Delete this object from the backend store.
 
@@ -250,6 +269,10 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         except Exception as e:
             logger.error(f"Failed to delete {self.__class__.__name__}:{self.id}: {e}")
             raise
+
+    async def delete_async(self) -> None:
+        """Delete this object from the backend store."""
+        await to_thread(self.delete)
 
     def reload(self) -> None:
         """Reload this object's data from the backend store.
@@ -269,7 +292,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             raise
 
     def refresh(self) -> None:
-        """Alias for reload(). Refresh data from backend."""
+        """Alias for reload(). Refresh data from the backend."""
         self.reload()
 
     def exists(self) -> bool:
@@ -288,7 +311,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             return False
 
     @classmethod
-    def get(cls: Type[T], record_id: str) -> T:
+    def get(cls, record_id: str) -> T:
         """Get an object by its ID from the backend store.
 
         Args:
@@ -311,7 +334,11 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             raise
 
     @classmethod
-    def get_or_none(cls: Type[T], record_id: str) -> Optional[T]:
+    async def get_async(cls, record_id: str) -> T:
+        return await to_thread(cls.get, record_id=record_id)
+
+    @classmethod
+    def get_or_none(cls, record_id: str) -> Optional[T]:
         """Get an object by ID, returning None if it doesn't exist.
 
         Args:
@@ -324,6 +351,10 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             return cls.get(record_id)
         except ObjectDoesNotExist:
             return None
+
+    @classmethod
+    async def get_or_none_async(cls, record_id: str) -> Optional[T]:
+        return await to_thread(cls.get_or_none, record_id=record_id)
 
     @classmethod
     def filter(cls: Type[T], **filters: Any) -> List[T]:
@@ -354,13 +385,21 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             raise
 
     @classmethod
-    def all(cls: Type[T]) -> List[T]:
+    async def filter_async(cls, **filters: Any) -> List[T]:
+        return await to_thread(cls.filter, **filters)
+
+    @classmethod
+    def all(cls) -> List[T]:
         """Get all objects of this class from the backend.
 
         Returns:
             List of all instances.
         """
         return cls.filter()
+
+    @classmethod
+    async def all_async(cls) -> List[T]:
+        return await to_thread(cls.all)
 
     @classmethod
     def count(cls, **filters: Any) -> int:
@@ -380,6 +419,10 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             raise
 
     @classmethod
+    async def count_async(cls, **filters: Any) -> int:
+        return await to_thread(cls.count, **filters)
+
+    @classmethod
     def exists_in_backend(cls, record_id: str) -> bool:
         """Check if a record with the given ID exists.
 
@@ -397,7 +440,11 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             return False
 
     @classmethod
-    def bulk_create(cls: Type[T], instances: List[T]) -> None:
+    async def exists_in_backend_async(cls, record_id: str) -> bool:
+        return await to_thread(cls.exists_in_backend, record_id=record_id)
+
+    @classmethod
+    def bulk_create(cls, instances: List[T]) -> None:
         """Create multiple instances in a single batch operation.
 
         Args:
@@ -444,7 +491,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 # Use native bulk delete if available
                 backend.bulk_delete(cls.get_schema_name(), record_ids)
             else:
-                # Fallback: delete one by one
+                # Fallback
                 for record_id in record_ids:
                     backend.delete(cls.get_schema_name(), record_id)
 
@@ -467,7 +514,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 # Fallback: get all IDs and delete
                 all_instances = cls.all()
                 record_ids = [instance.id for instance in all_instances]
-                cls.bulk_delete(record_ids)
+                cls.bulk_delete(record_ids)  # type: ignore
 
             logger.warning(f"Cleared all {cls.__name__} records from backend")
         except Exception as e:
@@ -491,7 +538,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             yield self
             self.save()
         except Exception as e:
-            # Restore original state on error
+            # Restore the original state on error
             self.__setstate__(original_state)
             logger.error(f"Atomic operation failed, state restored: {e}")
             raise
@@ -525,25 +572,26 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             yield
 
     def __getstate__(self) -> Dict[str, Any]:
-        """Prepare object for pickling.
+        """Prepare an object for serialization.
 
         Returns:
             Dictionary representation of the object state.
 
         Raises:
-            pickle.PickleError: If the object cannot be pickled.
+            SerializationError: If the object cannot be serialized.
         """
         try:
             state = self.get_state()
         except NotImplementedError:
-            raise pickle.PickleError(
-                f"Cannot pickle object of type {self.__class__.__name__}"
+            raise SerializationError(
+                f"Cannot serialise object of type {self.__class__.__name__!r}"
             )
 
+        if hasattr(self, "_id"):
+            state["id"] = self._id
+
         if hasattr(self, "_backend_store") and self._backend_store is not None:
-            state["_backend_class"] = get_obj_klass_import_str(
-                self._backend_store.__class__
-            )
+            state["_backend_class"] = get_obj_klass_import_str(self._backend_store)
 
         # Remove non-serializable attributes
         state.pop("_backend_store", None)
@@ -552,13 +600,13 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore object state after unpickling.
+        """Restore the object state after deserialization.
 
         Args:
             state: Dictionary containing object state.
 
         Raises:
-            pickle.UnpicklingError: If the object cannot be unpickled.
+            SerializationError: If the object cannot be deserialized.
         """
         # Remove backend class info (will be reinitialized)
         state.pop("_backend_class", None)
@@ -566,8 +614,8 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         try:
             self.set_state(state)
         except NotImplementedError:
-            raise pickle.UnpicklingError(
-                f"Cannot unpickle object of type {self.__class__.__name__}"
+            raise SerializationError(
+                f"Cannot deserialized object of type {self.__class__.__name__!r}"
             )
 
         # Ensure the backend is initialized for this class

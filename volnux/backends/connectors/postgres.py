@@ -209,10 +209,10 @@ class PostgresConnector(BackendConnectorBase[Cursor]):
             return tuple_row
 
     def connect(self) -> None:
-        """Establish connection to PostgreSQL server.
+        """Establish a connection to the PostgreSQL server.
 
         Raises:
-            ConnectionError: If connection cannot be established.
+            ConnectionError: If a connection cannot be established.
         """
         if self._is_connected:
             logger.debug("Already connected to PostgreSQL")

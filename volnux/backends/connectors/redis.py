@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Optional
+from contextlib import contextmanager
 
 import redis
 from redis import Redis, ConnectionPool, RedisError
@@ -251,16 +252,35 @@ class RedisConnector(BackendConnectorBase[Redis]):
 
     # Transaction Support
 
-    def begin_transaction(self) -> None:
-        """Begin a Redis transaction (MULTI).
-
-        Raises:
-            ConnectionError: If not connected.
+    def begin_transaction(self, transaction: bool = True) -> redis.client.Pipeline:
         """
-        self.ensure_connected()
-        # Redis transactions are handled via pipeline
-        # Subclasses or users should use get_pipeline() for transactions
-        logger.debug("Redis transactions should use pipeline context")
+        Begins a database transaction.
+
+        This method starts a transaction context allowing a series of operations
+        to be grouped into a single transaction. Once this method is called, the
+        transaction remains open until it is explicitly ended or rolled back.
+
+        :raises ConnectionError: If a transaction is already active.
+        :return: None
+        """
+        return self.get_pipeline(transaction=transaction)
+
+    @contextmanager
+    def transaction(self, transaction: bool = True) -> "Pipeline":
+        """Begin a Redis transaction (MULTI/EXEC) using a pipeline."""
+        pipeline = self.begin_transaction(transaction=True)
+
+        try:
+            yield pipeline
+            pipeline.execute()
+        except Exception:
+            pipeline.reset()
+            raise
+        finally:
+            try:
+                pipeline.close()
+            except Exception:
+                pass
 
     def commit(self) -> None:
         """Commit a Redis transaction (EXEC).
@@ -271,7 +291,7 @@ class RedisConnector(BackendConnectorBase[Redis]):
         logger.debug("Redis transactions are committed via pipeline.execute()")
 
     def rollback(self) -> None:
-        """Rollback a Redis transaction (DISCARD).
+        """Roll back a Redis transaction (DISCARD).
 
         Note: Redis transactions are handled via pipelines.
         Use get_pipeline() for proper transaction management.

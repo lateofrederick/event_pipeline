@@ -11,7 +11,8 @@ from formax import (
     Attrib,
     BaseModel,
     MiniAnnotated,
-    ValidationError as PydanticMiniError,
+    ValidationFlags,
+    ValidationError as FormaxValidationError,
 )
 
 from volnux.mixins import ObjectIdentityMixin
@@ -62,7 +63,7 @@ def preformat_task_profile(
     elif isinstance(task_profiles, deque):
         return task_profiles
     # TODO: descriptive error message
-    raise PydanticMiniError("invalid task format")  # type: ignore
+    raise FormaxValidationError("invalid task format")  # type: ignore
 
 
 class ExecutionContext(ObjectIdentityMixin, BaseModel):
@@ -126,10 +127,9 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     _task_checkpoint: typing.Optional[typing.Dict[str, typing.Any]] = None
 
     class Config:
-        disable_typecheck = True
-        disable_all_validation = True
+        validation = ValidationFlags.NONE
 
-    def __model_init__(
+    def __post_init__(
         self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
         from .state_manager import ExecutionState, ExecutionStatus, StateManager
@@ -140,7 +140,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         if self.__class__._state_manager is None:
             self.__class__._state_manager = StateManager()
 
-        # Create state in shared memory with its own lock
+        # Create a state in shared memory with its own lock
         initial_state = ExecutionState(ExecutionStatus.PENDING)
         self._state_manager.create_state(self.state_id, initial_state)
 
@@ -158,7 +158,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     @property
     async def state_async(self) -> "ExecutionState":
         """
-        Async version of getting current state from shared memory.
+        Async version of getting the current state from shared memory.
         """
         return await self.get_state_manager().get_state_async(self.state_id)
 

@@ -317,28 +317,6 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.error(f"Redis error during count: {e}")
             raise ConnectionError(f"Failed to count records: {e}")
 
-    # @staticmethod
-    # def load_record(record_state: bytes, record_klass: Type[BaseModel]) -> BaseModel:
-    #     """Load a record from its serialized state.
-    #
-    #     Args:
-    #         record_state: The serialized record data.
-    #         record_klass: The class to instantiate the record with.
-    #
-    #     Returns:
-    #         The instantiated record object.
-    #
-    #     Raises:
-    #         SerializationError: If deserialization fails.
-    #     """
-    #     try:
-    #         state = pickle.loads(record_state)
-    #         record = record_klass.__new__(record_klass)
-    #         record.__setstate__(state)
-    #         return record
-    #     except Exception as e:
-    #         raise SerializationError(f"Failed to load record: {e}")
-
     def reload(
         self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
     ) -> "KeyValueStoreIntegrationMixin":
@@ -387,13 +365,20 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             raise ConnectionError(f"Failed to reload record: {e}")
 
     def bulk_insert(
-        self, schema_name: str, records: Dict[str, "KeyValueStoreIntegrationMixin"]
-    ) -> None:
+        self,
+        schema_name: str,
+        records: Dict[str, "KeyValueStoreIntegrationMixin"],
+        ttl: Optional[int] = None,
+    ) -> int:
         """Insert multiple records in a single operation.
 
         Args:
             schema_name: The schema to insert into.
             records: Dictionary mapping record keys to record objects.
+            ttl: Time-to-live in seconds for the records. If None, records will not expire.
+
+        Returns:
+            Number of records inserted.
 
         Raises:
             SerializationError: If serialization fails.
@@ -416,6 +401,8 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.info(
                 f"Bulk inserted {len(records)} records into schema '{schema_name}'"
             )
+
+            return len(records)
         except SerializationError:
             raise
         except RedisError as e:
