@@ -1,8 +1,8 @@
 import logging
-import json
+import orjson as json
 from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING
 
-from pydantic_mini import BaseModel
+from formax import BaseModel
 from pymemcache.exceptions import MemcacheError
 
 from volnux.backends.connectors.memcache import MemcacheConnector
@@ -61,7 +61,6 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         self.namespace_prefix = namespace_prefix
         self.enable_indexing = enable_indexing
 
-        # Ensure connection on initialization
         if not self.connector.is_connected():
             self.connector.connect()
 

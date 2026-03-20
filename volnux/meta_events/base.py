@@ -109,7 +109,7 @@ class TaskDefinition:
 
 class ControlFlowEvent(EventBase):
     """
-    Base class for Meta Events - reserved system components that manage
+    Base class for Meta-Events-reserved system components that manage
     dynamic execution of Template Events based on control flow patterns.
 
     A Meta Event is a reserved system component in Pointy Language that wraps and manages
@@ -213,7 +213,7 @@ class ControlFlowEvent(EventBase):
         """
         Mini-orchestrator that executes template events and aggregates results.
 
-        This method is the same for all meta events. Business logic is in action().
+        This method is the same for all meta-events. Business logic is in action().
 
         Returns:
             Tuple of (success, aggregated_data)

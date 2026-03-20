@@ -13,6 +13,9 @@ class ObjectIdentityMixin:
     def id(self) -> str:
         return generate_unique_id(self)
 
+    def change_object_id(self, new_id: str) -> None:
+        self.__dict__["_id"] = new_id
+
     @property
     def __object_import_str__(self) -> typing.Type[typing.Any]:
         return get_obj_klass_import_str(self)  # type: ignore

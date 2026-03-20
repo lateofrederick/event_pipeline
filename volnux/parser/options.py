@@ -197,5 +197,5 @@ class Options(BaseModel):
         """
         return getattr(self, field_name, None) is not None
 
-    def to_dict(self):
+    def as_dict(self):
         return dataclasses.asdict(self)
