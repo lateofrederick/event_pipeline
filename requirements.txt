@@ -8,6 +8,7 @@ apscheduler<=3.11.0
 formax-py
 orjson>=3.11.7
 yoyo-migrations>=9.0.0
+celery>=5.6.2
 # graph
 graphviz==0.20.3
 # [optional]

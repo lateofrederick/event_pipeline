@@ -3,7 +3,7 @@ import typing
 from concurrent.futures import Executor
 
 from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
-from .executors.default_executor import DefaultExecutor
+from .executors.default import DefaultExecutor
 from .result_evaluators import (
     ExecutionResultEvaluationStrategyBase,
     ResultEvaluationStrategies,

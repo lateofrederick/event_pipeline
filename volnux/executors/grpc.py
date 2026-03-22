@@ -6,7 +6,7 @@ from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from volnux.protos import task_pb2, task_pb2_grpc
 from volnux.executors.message import TaskMessage
 
-from .rpc_executor import get_event_name
+from .rpc import get_event_name
 
 logger = logging.getLogger(__name__)
 

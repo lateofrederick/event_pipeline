@@ -7,11 +7,11 @@ import weakref
 from collections import deque
 
 from .snapshot import ContextSnapshot
+from volnux.execution.context import ExecutionContext
 
 if typing.TYPE_CHECKING:
     from volnux.pipeline import Pipeline
     from volnux.engine.base import WorkflowEngine
-    from volnux.execution.context import ExecutionContext
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ class RehydrationManager:
 
         Args:
             workflow_id: The workflow to resume
-            engine_class: Engine class to instantiate (defaults to CheckpointedWorkflowEngine)
+            engine_class: Engine class to instantiate
 
         Returns:
             Tuple of (root_context, engine) ready to continue execution
@@ -52,7 +52,7 @@ class RehydrationManager:
         logger.info(f"Starting workflow rehydration for {workflow_id}")
 
         # Fetch all snapshots, ordered by depth
-        snapshots = await self.state_store.get_active_snapshots(
+        snapshots = await ContextSnapshot.get_active_snapshots(
             workflow_id, statuses=["RUNNING", "PENDING"]  # Only resume active workflows
         )
 
@@ -80,10 +80,6 @@ class RehydrationManager:
 
         # Rebuild vertical links
         await self._rebuild_vertical_links(snapshots)
-
-        # Create and configure the engine
-        if engine_class is None:
-            engine_class = CheckpointedWorkflowEngine
 
         engine = engine_class(
             enable_checkpointing=True,
@@ -120,8 +116,6 @@ class RehydrationManager:
 
         Note: Links (horizontal/vertical) are set separately.
         """
-        from volnux.execution.context import ExecutionContext
-
         # Reconstruct pipeline instance
         pipeline = self._reconstruct_pipeline(
             snapshot.pipeline_id, snapshot.pipeline_class_path

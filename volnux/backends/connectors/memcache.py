@@ -287,7 +287,7 @@ class MemcacheConnector(BackendConnectorBase[Client]):
         logger.debug("Memcache operations are auto-committed")
 
     def rollback(self) -> None:
-        """Rollback a transaction (no-op for Memcache).
+        """Roll back a transaction (no-op for Memcache).
 
         Note: Memcache doesn't support rollback.
         """
@@ -473,7 +473,7 @@ class MemcacheConnector(BackendConnectorBase[Client]):
 
         Args:
             keys: List of keys to delete.
-            noreply: If True, don't wait for response.
+            noreply: If True, don't wait for a response.
 
         Returns:
             True if all deletes succeeded (when noreply is False).
