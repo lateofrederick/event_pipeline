@@ -33,8 +33,8 @@ from .exceptions import (
     StopProcessingError,
     SwitchTask,
 )
-from .executors.default_executor import DefaultExecutor
-from .executors.remote_executor import RemoteExecutor
+from .executors.default import DefaultExecutor
+from .executors.tcp import RemoteExecutor
 from .registry import Registry
 from .result import EventResult, ResultSet
 from .utils import get_function_call_args

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from volnux.execution.rehydrator.checkpoint import AutoCheckPointer
+from volnux.execution.rehydrator.engine.checkpoint import AutoCheckPointer
 
 
 class DummyContext:
