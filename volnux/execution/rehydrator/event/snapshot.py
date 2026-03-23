@@ -17,7 +17,9 @@ class InitArgsTemplate(typing.TypedDict, total=False):
 
     stop_condition: str
     run_bypass_event_checks: bool
-    options: typing.Optional["Options"]
+
+    # task configuration
+    options: typing.Optional[dict]
     sequence_number: typing.Optional[int]
     kwargs: typing.Dict[str, typing.Any]
 
