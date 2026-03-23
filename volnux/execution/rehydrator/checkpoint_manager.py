@@ -6,33 +6,47 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from .protocol import Monitorable, Snapshot
+
 logger = logging.getLogger(__name__)
 
 
-class Monitorable(Protocol):
-    """
-    Protocol for monitorable objects that can be periodically snapshotted.
-    """
-    async def create_snapshot(self, *args, **kwargs): ...
-
-
 class VolnuxCheckPointManager:
+    """
+    Manages checkpoints for monitoring and persisting application state.
+
+    The VolnuxCheckPointManager is designed to handle periodic state snapshotting,
+    queued persistence operations, and long-lived monitoring of execution contexts.
+    It supports concurrency, retry mechanisms, and snapshot expiration policies,
+    while offloading persistence to an asynchronous worker.
+
+    :ivar checkpoint_interval: Interval in seconds between periodic state snapshots.
+    :type checkpoint_interval: float
+    :ivar retry_attempts: Number of retry attempts for persistence operations.
+    :type retry_attempts: int
+    :ivar retry_delay: Delay in seconds between retry attempts for persistence operations.
+    :type retry_delay: float
+    :ivar snapshot_ttl: Time-to-live (in seconds) for captured snapshots in the state store.
+    :type snapshot_ttl: int
+    """
 
     def __init__(
             self,
-            state_store: typing.Any,
+            *,
             checkpoint_interval: float = 5.0,
             max_concurrent: int = 5,
             retry_attempts: int = 3,
-            retry_delay: float = 1.0
+            retry_delay: float = 1.0,
+            snapshot_ttl: int = 3600,
     ):
-        self.state_store = state_store
+        # self.state_store = state_store
         self.checkpoint_interval = checkpoint_interval
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
+        self.snapshot_ttl = snapshot_ttl
 
         # Push Queue
-        self._queue = asyncio.Queue()
+        self._queue: asyncio.Queue[Snapshot] = asyncio.Queue()
 
         # Monitored Set: For periodic snapshotting
         self._monitored_contexts: weakref.WeakSet[Monitorable] = weakref.WeakSet()
@@ -42,7 +56,7 @@ class VolnuxCheckPointManager:
         self._monitor_task: typing.Optional[asyncio.Task] = None
         self._running = False
 
-    def enqueue(self, snapshot: typing.Any):
+    def enqueue(self, snapshot: Snapshot):
         """
         Enqueue a snapshot for persistence.
         :param snapshot: The snapshot data to be enqueued.
@@ -106,14 +120,12 @@ class VolnuxCheckPointManager:
                 await self._persist_with_retry(snapshot)
             self._queue.task_done()
 
-    async def _persist_with_retry(self, snapshot: typing.Any):
+    async def _persist_with_retry(self, snapshot: Snapshot):
         """Implements your original retry logic with backoff."""
         last_error = None
         for attempt in range(1, self.retry_attempts + 1):
             try:
-                # Actual I/O to Redis/KV Store
-                key = f"volnux:{snapshot.type}:{snapshot.id}"
-                await self.state_store.set(key, snapshot.to_json())
+                await snapshot.save_async(ttl=self.snapshot_ttl)
                 return
             except asyncio.CancelledError:
                 raise

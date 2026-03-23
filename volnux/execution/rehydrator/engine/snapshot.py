@@ -4,10 +4,13 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from formax import BaseModel, MiniAnnotated, Attrib
 
+from volnux.engine.base import WorkflowEngine
 from volnux import __version__ as volnux_version
+from volnux.execution.context import ExecutionContext
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 if typing.TYPE_CHECKING:
+    from volnux.parser.protocols import TaskType
     from volnux.parser.operator import PipeType
 
 
@@ -61,6 +64,9 @@ class TaskSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     def get_schema_name(cls) -> str:
         return "volnux:snapshot:task"
 
+    async def restore(self) -> "TaskType":
+        pass
+
 
 @dataclass
 class TraversalSnapshot:
@@ -96,6 +102,9 @@ class TraversalSnapshot:
     # Engine state markers
     tasks_processed: int  # How many tasks completed before snapshot?
     # is_multitask_context: bool  # Was this a parallel execution group?
+
+    async def restore(self) -> WorkflowEngine:
+        pass
 
 
 class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
@@ -158,3 +167,6 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         traversal_state = state["traversal"].__dict__.copy()
         state["traversal"] = traversal_state
         return state
+
+    async def restore(self) -> ExecutionContext:
+        pass

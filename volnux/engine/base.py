@@ -3,13 +3,12 @@ import logging
 from enum import Enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from formax import BaseModel, MiniAnnotated, Attrib
 
+from .checkpoint_config import CheckPointConfig, CheckPointFrequency
 from volnux.pipeline import Pipeline
 from volnux.parser.protocols import TaskType
 from volnux.execution.context import ExecutionContext
 from volnux.execution.rehydrator.checkpoint import AutoCheckPointer
-
 
 logger = logging.getLogger(__name__)
 
@@ -18,51 +17,6 @@ class EngineExecutionResult(Enum):
     COMPLETED = "completed"
     TERMINATED_EARLY = "terminated_early"
     FAILED = "failed"
-
-
-class CheckPointFrequency(str, Enum):
-    PER_TASK = "per_task"  # Before each task execution
-    PERIODIC = "periodic"  # Only on timer (from checkpointer)
-    ON_STATE_CHANGE = "on_state_change"  # On status changes
-
-
-class CheckPointPolicyConfig(BaseModel):
-    """
-    Configuration for when checkpointing should happen.
-
-    Time-based values are expressed in seconds.
-    """
-
-    frequency: MiniAnnotated[
-        CheckPointFrequency, Attrib(default=CheckPointFrequency.PER_TASK)
-    ]
-    checkpoint_interval_seconds: MiniAnnotated[float, Attrib(default=5.0, ge=0.0)]
-
-    class Config:
-        frozen = True
-
-
-class CheckPointRuntimeConfig(BaseModel):
-    """
-    Configuration for how checkpointing is executed.
-    """
-
-    max_concurrent_checkpoints: MiniAnnotated[int, Attrib(default=5, ge=1)]
-    retry_attempts: MiniAnnotated[int, Attrib(default=3, ge=0)]
-    retry_delay_seconds: MiniAnnotated[float, Attrib(default=1.0, ge=0.0)]
-    checkpoint_ttl_seconds: MiniAnnotated[float, Attrib(default=300.0, ge=0.0)]
-
-    class Config:
-        frozen = True
-
-
-class CheckPointConfig(BaseModel):
-    policy: MiniAnnotated[
-        CheckPointPolicyConfig, Attrib(default_factory=CheckPointPolicyConfig)
-    ]
-    runtime: MiniAnnotated[
-        CheckPointRuntimeConfig, Attrib(default_factory=CheckPointRuntimeConfig)
-    ]
 
 
 class TaskNode(typing.NamedTuple):
