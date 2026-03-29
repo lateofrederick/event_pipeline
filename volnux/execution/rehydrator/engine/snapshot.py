@@ -2,7 +2,7 @@ import typing
 import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
-from formax import BaseModel, MiniAnnotated, Attrib
+from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
 
 from volnux.engine.base import WorkflowEngine
 from volnux import __version__ as volnux_version
@@ -60,6 +60,9 @@ class TaskSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())
     ]
     snapshot_version: str = volnux_version
+
+    class Config:
+        validation = ValidationFlags.NONE
 
     def get_schema_name(cls) -> str:
         return "volnux:snapshot:task"
@@ -147,6 +150,9 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())
     ]
     snapshot_version: str = volnux_version
+
+    class Config:
+        validation = ValidationFlags.NONE
 
     def get_schema_name(cls) -> str:
         return "volnux:snapshot:context"

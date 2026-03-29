@@ -20,7 +20,7 @@ from volnux.concurrency.async_utils import to_thread
 
 logger = logging.getLogger(__name__)
 
-CONFIG = ConfigLoader.get_lazily_loaded_config()
+CONFIG = VolnuxConfig.get_instance()
 
 T = TypeVar("T", bound="ObjectIdentityMixin")
 
@@ -89,9 +89,11 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             ImproperlyConfigured: If backend initialization fails.
         """
         ObjectIdentityMixin.__init__(self)
-        # TODO
-        # if storage_backend is not None:
-        #     self.__class__._backend_store = storage_backend
+
+        if storage_backend is not None and isinstance(
+            storage_backend, KeyValueStoreBackendBase
+        ):
+            pass
 
         if self._backend_store is None:
             self._initialize_backend()
@@ -165,6 +167,9 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         if cls._backend_store is None:
             cls._initialize_backend()
         return cls._backend_store
+
+    def change_storage_backend(self, backend: "KeyValueStoreIntegrationMixin"):
+        pass
 
     @classmethod
     def get_schema_name(cls) -> str:

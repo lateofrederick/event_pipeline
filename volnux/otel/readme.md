@@ -538,18 +538,3 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-
-## Summary
-
-This integration provides:
-
-✅ **Automatic instrumentation** of all Volnux components
-✅ **Distributed tracing** across workflow execution
-✅ **Multi-backend support** (Datadog, Grafana/Tempo, any OTLP-compatible)
-✅ **Context propagation** through execution chains
-✅ **Signal-based event tracking**
-✅ **Custom span attributes** and metrics
-✅ **Async/sync support**
-✅ **Production-ready** error handling and cleanup
-
-The instrumentation is non-invasive and can be enabled/disabled via configuration without code changes to existing workflows.

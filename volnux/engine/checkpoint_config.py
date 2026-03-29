@@ -44,7 +44,8 @@ class CheckPointStorageConfig(BaseModel):
     """
     Configuration for how checkpointing is stored.
     """
-    backend: str="volnux.backends.stores.inmemory_store.InMemoryKeyValueStoreBackend"
+
+    backend: str = "volnux.backends.stores.inmemory_store.InMemoryKeyValueStoreBackend"
     host: Optional[str]
     port: Optional[int]
     username: Optional[str]
@@ -96,6 +97,7 @@ class CheckPointConfig(BaseModel):
         with parameters for managing checkpoint data persistence and storage.
     :type storage: CheckPointStorageConfig
     """
+
     policy: MiniAnnotated[
         CheckPointPolicyConfig, Attrib(default_factory=CheckPointPolicyConfig)
     ]

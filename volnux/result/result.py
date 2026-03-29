@@ -59,6 +59,11 @@ class EventResult(KeyValueStoreIntegrationMixin, BaseModel):
     def success(self, value: bool) -> None:
         self.error = not value
 
+    def should_persist(self) -> bool:
+        raise NotImplementedError(
+            "should_persist method must be implemented by subclasses"
+        )
+
     def get_state(self) -> typing.Dict[str, typing.Any]:
         state = self.__dict__.copy()
 
@@ -281,6 +286,22 @@ class ResultSet(typing.MutableSet[Result]):
                 f"More than one result found for filters {filters}: {len(qs)}!=1"
             )
         return qs[0]
+
+    def get_entry_by_hash(self, hash_id: typing.Union[str, int]) -> Result:
+        """
+        Retrieves an entry from a dictionary of content using the provided hash identifier.
+
+        :param hash_id: The unique hash identifier for the entry to be retrieved.
+        :type hash_id: str
+        :return: The entry associated with the provided hash identifier.
+        :rtype: Result
+        :raises KeyError: If no entry is found with the given hash identifier.
+        """
+        key = str(hash_id) if isinstance(hash_id, int) else hash_id
+        entry = self._content.get(key)
+        if entry is None:
+            raise KeyError(f"No result found with hash {hash_id}")
+        return entry
 
     def filter(self, **filter_params: typing.Any) -> "ResultSet":
         """

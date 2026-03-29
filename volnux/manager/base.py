@@ -13,7 +13,7 @@ from volnux import EventBase
 
 logger = logging.getLogger(__name__)
 
-CONF = ConfigLoader.get_lazily_loaded_config()
+CONF = VolnuxConfig.get_instance()
 
 PROJECT_ROOT = CONF.PROJECT_ROOT_DIR
 

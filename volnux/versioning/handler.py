@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from .semantic import SemanticVersioning
 from .base import BaseVersioning, VersionInfo, DeprecationInfo
 from volnux.import_utils import import_string
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 from volnux.exceptions import ImproperlyConfigured
 
 
-conf = ConfigLoader.get_lazily_loaded_config()
+conf = VolnuxConfig.get_instance()
 
 
 @dataclass
