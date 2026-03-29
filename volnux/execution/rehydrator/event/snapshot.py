@@ -1,28 +1,27 @@
 import typing
 from enum import IntEnum
 from datetime import datetime, timezone
-from formax import BaseModel, MiniAnnotated, Attrib
+from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
 
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
 class InitArgsTemplate(typing.TypedDict, total=False):
     # The context in which the task was created
-    execution_context: typing.Optional[str]
+    execution_context_id: typing.Optional[str]
 
     # task identity
-    task_id: str
+    task_id: typing.Optional[str]
 
-    previous_result: typing.List[str]
+    previous_result: typing.List[typing.Union[str, dict]]
 
-    stop_condition: str
+    stop_condition: typing.List[str]
     run_bypass_event_checks: bool
 
     # task configuration
     options: typing.Optional[dict]
     sequence_number: typing.Optional[int]
     kwargs: typing.Dict[str, typing.Any]
-
 
 
 class CallArgsTemplate(typing.TypedDict, total=False):
@@ -37,7 +36,7 @@ class EventPhase(IntEnum):
     COMPLETED = 4
 
 
-class ResourceState(BaseModel):
+class ResourceState(typing.TypedDict, total=False):
     """Schema for user-registered external states (e.g., DB cursors, file offsets)."""
 
     resource_name: str
@@ -53,8 +52,21 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     phase: EventPhase
 
     # Arguments used to re-instantiate the class via __init__
-    init_args: MiniAnnotated[dict, Attrib(default_factory=dict)]
+    init_args: MiniAnnotated[InitArgsTemplate, Attrib(default_factory=dict)]
 
+    call_args: MiniAnnotated[CallArgsTemplate, Attrib(default_factory=dict)]
+
+    # User-defined external states registered during the 'process' step typing.Dict[str, ResourceState]
+    external_resources: MiniAnnotated[
+        typing.Dict[str, ResourceState], Attrib(default_factory=dict)
+    ]
+
+    # Metadata for the orchestrator (e.g., when it was last touched)
+    timestamp: MiniAnnotated[
+        float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())
+    ]
+
+    ## `process` method return value
     # Execution state captured at the end of the PROCESSING phase
     execution_status: typing.Optional[bool]
 
@@ -65,14 +77,8 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     # Capturing the retry state so preemption doesn't reset attempt counters
     retry_count: int = 0
 
-    # User-defined external states registered during the 'process' step typing.Dict[str, ResourceState]
-    external_resources: MiniAnnotated[dict, Attrib(default_factory=dict)]
-
-    # Metadata for the orchestrator (e.g., when it was last touched)
-    timestamp: MiniAnnotated[
-        float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())
-    ]
+    class Config:
+        validation = ValidationFlags.NONE
 
     def get_schema_name(cls) -> str:
         return "volnux:event:checkpoint"
-

@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from collections import ChainMap
-from typing import Any, Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Union
+from concurrent.futures import ThreadPoolExecutor
 
 from volnux import Event
 from volnux.base import EventType
@@ -73,7 +73,7 @@ class WorkflowSource:
 
     name: str
     source_type: RegistrySource
-    location: str  # URL, package name, or path
+    location: Union[str, Path]  # URL, package name, or path
     version: Optional[str] = None
     credentials: Optional[SourceCredentials] = None
     timeout: int = 30000
@@ -192,19 +192,25 @@ class WorkflowRegistry:
         return list(self._workflows.values())
 
     def add_workflow_source(self, source: WorkflowSource):
-        """Add a remote workflow source."""
+        """Add a workflow source."""
         sources = self.combined_workflow_sources
         if source.name in sources:
             raise ValueError(f"Workflow source '{source.name}' already registered")
+
         if source.source_type == RegistrySource.LOCAL:
             self._workflow_local_sources[source.name] = source
         else:
             self._workflow_remote_sources[source.name] = source
-        logger.info(f"Added remote source: {source.name} ({source.source_type.value})")
+
+        logger.info(
+            "Added workflow source: %s (%s)",
+            source.name,
+            source.source_type.value,
+        )
 
     def check_all(self) -> Dict[str, List[str]]:
         """Run infrastructure checks on all workflows."""
-        all_issues = {}
+        all_issues: Dict[str, List[str]] = {}
         for name, workflow in self._workflows.items():
             issues = workflow.check()
             if issues:
@@ -223,38 +229,40 @@ class WorkflowRegistry:
     ) -> None:
         """
         Populate local workflow configurations.
-        :param project_dir: Project root directory.
-        :param workflow_name: Name of the workflow to load. If None load all workflows.
-        :return:
+
+        Args:
+            project_dir: Project root directory.
+            workflow_name: Name of the workflow to load. If None, load all workflows.
         """
-        workflows_dir = project_dir / "workflows"
+        workflows_root = project_dir / "workflows"
+        if not workflows_root.exists():
+            logger.warning("Workflows directory does not exist: %s", workflows_root)
+            return
 
-        for workflows_dir in workflows_dir.iterdir():
-            if workflows_dir.is_dir():
-                dirname = workflows_dir.name
+        if not workflows_root.is_dir():
+            raise ImproperlyConfigured(f"Not a directory: {workflows_root}")
 
-                if workflow_name is not None and workflow_name != dirname:
-                    continue
+        for workflow_dir in workflows_root.iterdir():
+            if not workflow_dir.is_dir():
+                continue
 
-                local = WorkflowSource(
-                    name=dirname,
-                    location=workflows_dir,  # type: ignore
-                    source_type=RegistrySource.LOCAL,
-                    version=version,
-                )
-                self._workflow_local_sources[dirname] = local
+            dirname = workflow_dir.name
+            if workflow_name is not None and workflow_name != dirname:
+                continue
+
+            local = WorkflowSource(
+                name=dirname,
+                location=workflow_dir,
+                source_type=RegistrySource.LOCAL,
+                version=version,
+            )
+            self._workflow_local_sources[dirname] = local
 
     async def load_workflow_configs(self) -> None:
         """
-        Load workflows from source.
-        Return:
-            EventResult. Result of loader execution.
-        Raises:
-            ImproperlyConfigured: If a workflow source is not configured.
+        Load workflows from all configured sources.
         """
         self._loading = True
-
-        loop = asyncio.get_event_loop()
 
         try:
             sources = list(self.combined_workflow_sources.values())
@@ -262,10 +270,9 @@ class WorkflowRegistry:
                 logger.warning("No workflow sources to load")
                 return
 
-            params = {
-                "cache_dir": self._cache_dir,
-            }
+            params = {"cache_dir": self._cache_dir}
 
+            loop = asyncio.get_running_loop()
             with ThreadPoolExecutor(max_workers=min(4, len(sources))) as executor:
                 futures = [
                     loop.run_in_executor(
@@ -275,14 +282,17 @@ class WorkflowRegistry:
                 ]
 
                 results = await asyncio.gather(*futures, return_exceptions=True)
+
                 for source, result in zip(sources, results):
                     if isinstance(result, BaseException):
                         logger.error(
-                            f"Failed to load config from {source}: {result}",
+                            "Failed to load config from %s: %s",
+                            source.name,
+                            result,
                             exc_info=True,
                         )
                     else:
-                        logger.debug(f"Successfully loaded config from {source}")
+                        logger.debug("Successfully loaded config from %s", source.name)
 
             if self._workflows:
                 self.make_ready()
@@ -296,27 +306,26 @@ class WorkflowRegistry:
     ) -> EventResult:
         """
         Process a workflow source.
-        :param workflow_source: workflow source to process.
-        :param registry: registry to use.
-        :param params: extra params to pass to a workflow source.
-        :return: EventResult.
         """
         return workflow_source.load_workflow_config(registry, params)
 
     def get_events(self):
         if not self.is_ready():
-            raise RegistryNotReady("No workflow not ready.")
+            raise RegistryNotReady("Workflow registry is not ready yet.")
 
         events = []
-
         event_registry = get_event_registry()
+
         for workflow in self._workflows.values():
             if workflow.module:
                 events.extend(event_registry.get_classes_for_module(workflow.module))
+
         return events
 
     def get_pipeline(self):
-        pass
+        raise NotImplementedError(
+            "WorkflowRegistry.get_pipeline() is not implemented yet."
+        )
 
 
 _workflow_registry = WorkflowRegistry(cache_dir=os.environ.get("WORKFLOWS_CACHE_DIR"))

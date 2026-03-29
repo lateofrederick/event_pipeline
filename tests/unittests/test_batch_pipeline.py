@@ -246,7 +246,7 @@ class TestBatchPipeline(unittest.TestCase):
     def test_executor_config(self):
         """Test executor configuration settings"""
         batch = self.batch_cls(data=[1, 2, 3, 4])
-        conf = ConfigLoader.get_lazily_loaded_config()
+        conf = VolnuxConfig.get_instance()
 
         # Test default config
         config = batch.get_executor_config

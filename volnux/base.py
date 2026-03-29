@@ -1,11 +1,6 @@
 import abc
 import logging
-import inspect
-import multiprocessing as mp
-import time
 import typing
-from asgiref.sync import async_to_sync
-from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -16,28 +11,27 @@ from volnux.result_evaluators import (
     ExecutionResultEvaluationStrategyBase,
     ResultEvaluationStrategies,
 )
-from volnux.signal.signals import (
-    event_called,
-    event_execution_retry,
-    event_execution_retry_done,
-    event_init,
-)
+from volnux.signal.signals import event_called, event_init
 from volnux.versioning.handler import VersionHandler
 from volnux.versioning import BaseVersioning, NoVersioning, DeprecationInfo, VersionInfo
 
-from .conf import ConfigLoader
-from .constants import EMPTY, MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
+from .config import VolnuxConfig
+from .constants import EMPTY
 from .exceptions import (
     ImproperlyConfigured,
     MaxRetryError,
     StopProcessingError,
     SwitchTask,
 )
-from .executors.default import DefaultExecutor
-from .executors.tcp import RemoteExecutor
 from .registry import Registry
 from .result import EventResult, ResultSet
 from .utils import get_function_call_args
+from volnux.mixins.event import (
+    RetryMixin,
+    RetryPolicy,
+    ExecutorInitializerMixin,
+    ExecutorInitializerConfig,
+)
 
 __all__ = [
     "EventBase",
@@ -50,7 +44,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-conf = ConfigLoader.get_lazily_loaded_config()
+conf = VolnuxConfig.get_instance()
 
 _event_registry = Registry()
 
@@ -66,6 +60,17 @@ def get_event_registry():
 
 
 class EventType(Enum):
+    """
+    Enumeration of event types.
+
+    :ivar SYSTEM: Internal system events.
+    :type SYSTEM: EventType
+    :ivar META: Metadata-related events.
+    :type META: EventType
+    :ivar OTHER: General events not falling into specific predefined categories.
+    :type OTHER: EventType
+    """
+
     SYSTEM = "system"  # internal system events
     META = "meta"  # meta events
     OTHER = "other"
@@ -118,249 +123,6 @@ class EventMeta(abc.ABCMeta):
                 logger.warning(str(e))
 
         return cls
-
-
-class RetryConfigDict(typing.TypedDict, total=False):
-    max_attempts: int
-    backoff_factor: float
-    max_backoff: float
-    retry_on_exceptions: typing.List[typing.Type[Exception]]
-
-
-@dataclass
-class RetryPolicy:
-    max_attempts: int = field(
-        init=True, default=conf.get("MAX_EVENT_RETRIES", default=MAX_RETRIES)
-    )
-    backoff_factor: float = field(
-        init=True,
-        default=conf.get("MAX_EVENT_BACKOFF_FACTOR", default=MAX_BACKOFF_FACTOR),
-    )
-    max_backoff: float = field(
-        init=True, default=conf.get("MAX_EVENT_BACKOFF", default=MAX_BACKOFF)
-    )
-    retry_on_exceptions: typing.List[typing.Type[Exception]] = field(
-        default_factory=list
-    )
-
-
-class _RetryMixin:
-    retry_policy: typing.Union[
-        typing.Optional[RetryPolicy], typing.Dict[str, typing.Any], None
-    ] = None
-
-    def __init__(
-        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
-    ) -> None:
-        self._retry_count = 0
-        super().__init__(*args, **kwargs)
-
-    def get_retry_policy(self) -> typing.Union[RetryPolicy, None]:
-        if isinstance(self.retry_policy, dict):
-            self.retry_policy = RetryPolicy(**self.retry_policy)
-        return self.retry_policy
-
-    def config_retry_policy(
-        self,
-        max_attempts: int,
-        backoff_factor: float = MAX_BACKOFF_FACTOR,
-        max_backoff: float = MAX_BACKOFF,
-        retry_on_exceptions: typing.Union[
-            typing.List[typing.Type[Exception]], typing.Type[Exception], None
-        ] = None,
-    ) -> None:
-        """
-        Configures the retry policy for the event.
-        Args:
-            max_attempts (int): Maximum number of retry attempts.
-            backoff_factor (float): Factor for calculating backoff time.
-            max_backoff (float): Maximum backoff time.
-            retry_on_exceptions (Union[Tuple[Type[Exception]], Type[Exception], None]): Exceptions that trigger a retry.
-        Returns:
-            None
-        """
-        config: RetryConfigDict = {
-            "max_attempts": max_attempts,
-            "backoff_factor": backoff_factor,
-            "max_backoff": max_backoff,
-            "retry_on_exceptions": [],
-        }
-        if retry_on_exceptions:
-            retry_exceptions: typing.Sequence[typing.Type[Exception]] = (
-                retry_on_exceptions
-                if isinstance(retry_on_exceptions, (tuple, list))
-                else [retry_on_exceptions]
-            )
-            config["retry_on_exceptions"].extend(retry_exceptions)
-
-        self.retry_policy = RetryPolicy(**config)
-
-    def get_backoff_time(self) -> float:
-        if self.retry_policy is None or self._retry_count <= 1:
-            return 0
-
-        backoff_value = self.retry_policy.backoff_factor * (
-            2 ** (self._retry_count - 1)
-        )
-
-        return typing.cast(float, min(backoff_value, self.retry_policy.max_backoff))
-
-    def _sleep_for_backoff(self) -> float:
-        backoff = self.get_backoff_time()
-        if backoff <= 0:
-            return 0
-        time.sleep(backoff)
-        return backoff
-
-    def is_retryable(self, exception: Exception) -> bool:
-        if self.retry_policy is None:
-            return False
-        exception_evaluation = not self.retry_policy.retry_on_exceptions or any(
-            [
-                isinstance(exception, exc)
-                and exception.__class__.__name__ == exc.__name__
-                for exc in self.retry_policy.retry_on_exceptions
-                if exc
-            ]
-        )
-        return isinstance(exception, Exception) and exception_evaluation
-
-    def is_exhausted(self) -> bool:
-        return (
-            self.retry_policy is None
-            or self._retry_count >= self.retry_policy.max_attempts
-        )
-
-    def retry(
-        self,
-        func: typing.Callable[[typing.Any], typing.Tuple[bool, typing.Any]],
-        /,
-        *args: typing.Tuple[typing.Any],
-        **kwargs: typing.Dict[str, typing.Any],
-    ) -> typing.Tuple[bool, typing.Any]:
-        if self.retry_policy is None:
-            return func(*args, **kwargs)
-
-        exception_causing_retry = None
-
-        while True:
-            if self.is_exhausted():
-                event_execution_retry_done.emit(
-                    sender=self._execution_context.__class__,
-                    event=self,
-                    execution_context=self._execution_context,
-                    task_id=self._task_id,
-                    max_attempts=self.retry_policy.max_attempts,
-                )
-
-                raise MaxRetryError(
-                    attempt=self._retry_count,
-                    exception=exception_causing_retry,
-                    reason="Retryable event is already exhausted: actual error:{reason}".format(
-                        reason=str(exception_causing_retry)
-                    ),
-                )
-
-            logger.info(
-                "Retrying event {}, attempt {}...".format(
-                    self.__class__.__name__, self._retry_count
-                )
-            )
-
-            try:
-                self._retry_count += 1
-                if inspect.iscoroutinefunction(func):
-                    return async_to_sync(func)(*args, **kwargs)
-                else:
-                    return func(*args, **kwargs)
-            except MaxRetryError:
-                # ignore this
-                break
-            except Exception as exc:
-                if self.is_retryable(exc):
-                    if exception_causing_retry is None:
-                        exception_causing_retry = exc
-                    back_off = self._sleep_for_backoff()
-
-                    event_execution_retry.emit(
-                        sender=self._execution_context.__class__,
-                        event=self,
-                        backoff=back_off,
-                        retry_count=self._retry_count,
-                        max_attempts=self.retry_policy.max_attempts,
-                        execution_context=self._execution_context,
-                        task_id=self._task_id,
-                    )
-                    continue
-                raise
-
-        return False, None
-
-
-class _ExecutorInitializerMixin:
-    executor: typing.Type[Executor] = DefaultExecutor
-
-    executor_config: typing.Optional[ExecutorInitializerConfig] = None
-
-    def __init__(
-        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
-    ) -> None:
-        super().__init__(*args, **kwargs)
-
-        self.get_executor_initializer_config()
-
-    @classmethod
-    def get_executor_class(cls) -> typing.Type[Executor]:
-        return cls.executor
-
-    def get_executor_initializer_config(self) -> ExecutorInitializerConfig:
-        if self.executor_config:
-            if isinstance(self.executor_config, dict):
-                self.executor_config = ExecutorInitializerConfig.from_dict(
-                    self.executor_config
-                )
-        else:
-            self.executor_config = ExecutorInitializerConfig()
-        return self.executor_config
-
-    def is_multiprocessing_executor(self) -> bool:
-        """Check if using multiprocessing or remote executor"""
-        return (
-            self.get_executor_class() == ProcessPoolExecutor
-            or self.get_executor_class() == RemoteExecutor
-        )
-
-    def get_executor_context(
-        self, ctx: typing.Optional[typing.Dict[str, typing.Any]] = None
-    ) -> typing.Dict[str, typing.Any]:
-        """
-        Retrieves the execution context for the event's executor.
-
-        This method determines the appropriate execution context (e.g., multiprocessing context)
-        based on the executor class used for the event. If the executor is configured to use
-        multiprocessing, the context is set to "spawn". Additionally, any parameters required
-        for the executor's initialization are fetched and added to the context.
-
-        The resulting context dictionary is used to configure the executor for the event execution.
-
-        Returns:
-            dict: A dictionary containing the execution context for the event's executor,
-                  including any necessary parameters for initialization and multiprocessing context.
-
-        """
-        executor = self.get_executor_class()
-        context = dict()
-        if self.is_multiprocessing_executor():
-            context["mp_context"] = mp.get_context("spawn")
-        elif hasattr(executor, "get_context"):
-            context["mp_context"] = executor.get_context("spawn")  # type: ignore
-        params = get_function_call_args(
-            executor.__init__, self.get_executor_initializer_config()
-        )
-        context.update(params)
-        if ctx and isinstance(ctx, dict):
-            context.update(ctx)
-        return context
 
 
 @dataclass
@@ -487,7 +249,7 @@ class StopConditionProcessor:
         }
 
 
-class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
+class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
     """
     Abstract base class for event in the pipeline system.
 
@@ -499,25 +261,46 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
                                     Defaults to DefaultExecutor.
         executor_config (ExecutorInitializerConfig): Configuration settings for the executor.
                                                     Defaults to None.
-         result_evaluation_strategy(ExecutionResultEvaluationStrategyBase): The strategy to use in evaluating the
+        result_evaluation_strategy (ExecutionResultEvaluationStrategyBase): The strategy to use in evaluating the
                                     results of the execution of this event in the pipeline. This will inform
                                     the pipeline as to the next execution path to take.
 
     Result Evaluation Strategies:
-        ALL_MUST_SUCCEED/AllTasksMustSucceedStrategy: The event is considered successful only if all the tasks within the event
-                                        succeeded. If any task fails, the evaluation should be marked as a failure.
+        ALL_MUST_SUCCEED/AllTasksMustSucceedStrategy: The event is considered successful only if all the tasks within the
+            event succeeded. If any task fails, the evaluation should be marked as a failure.
 
-        NO_FAILURES_ALLOWED/NoFailuresAllowedStrategy: The event is considered a failure if any of the tasks fail. Even if some tasks
-                                    succeed, a failure in any one task results in the event being considered a failure.
+        NO_FAILURES_ALLOWED/NoFailuresAllowedStrategy: The event is considered a failure if any of the tasks fail. Even if
+            some tasks succeed, a failure in any one task results in the event being considered a failure.
 
-        ANY_MUST_SUCCEED/AnyTaskMustSucceedStrategy: The event is considered successful if at least one of the tasks succeeded.
-                                    This means that if any task succeeds, the event will be considered successful,
-                                    even if others fail.
+        ANY_MUST_SUCCEED/AnyTaskMustSucceedStrategy: The event is considered successful if at least one of the tasks
+            succeeded. This means that if any task succeeds, the event will be considered successful, even if others fail.
 
-        MAJORITY_MUST_SUCCEED: Event succeeds if a majority of tasks succeed
+        MAJORITY_MUST_SUCCEED: Event succeeds if a majority of tasks succeed.
 
     Subclasses must implement the `process` method to define the logic for
     processing pipeline data.
+
+    :ivar versioning_class: Versioning strategy used for this event.
+    :type versioning_class: typing.Type[BaseVersioning]
+    :ivar version: Current version of the event class.
+    :type version: str
+    :ivar changelog: Optional changelog describing changes in this version.
+    :type changelog: Optional[str]
+    :ivar deprecated: Flag to indicate whether the event is deprecated.
+    :type deprecated: bool
+    :ivar deprecation_info: Optional deprecation details if deprecated.
+    :type deprecation_info: typing.Optional[DeprecationInfo]
+    :ivar namespace: Namespace associated with the event.
+    :type namespace: str
+    :ivar name: Custom name for the event.
+    :type name: typing.Optional[str]
+    :ivar event_type: Type of the event, categorized by usage.
+    :type event_type: EventType
+    :ivar result_evaluation_strategy: Strategy to evaluate execution results.
+    :type result_evaluation_strategy: ExecutionResultEvaluationStrategyBase
+    :ivar EXTRA_INIT_PARAMS_SCHEMA: Schema for defining extra event initialization
+        arguments.
+    :type EXTRA_INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"]
     """
 
     # Version configuration
@@ -576,25 +359,31 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         """
         Initializes an EventBase instance with the provided execution context and configuration.
 
-        This constructor is used to set up the event with the necessary context for execution,
-        as well as optional configuration for handling previous results and exceptions.
+        This constructor sets up the event with required inputs such as the execution context,
+        task identifier, optional previous results, stop conditions, and configurable options.
 
-        Args:
-            execution_context (EventExecutionContext): The context in which the event will be executed,
-                                                      providing access to execution-related data.
-            task_id (str): The PipelineTask for this event.
-            previous_result (Any, optional): The result of the previous event execution.
-                                              Default to `EMPTY` if not provided.
-            stop_on_exception (bool, optional): Flag to indicate whether the event should stop execution
-                                                 if an exception occurs. Defaults to `False`.
-            stop_on_success (bool, optional): Flag to indicate whether the event should stop execution
-                                          if it is successful. Defaults to `False`.
-            stop_on_error (bool, optional): Flag to indicate whether the event should stop execution
-                                        if an error occurs. Defaults to `False`.
-            options (Options, optional): Additional options to pass to the event constructor.
-                                        This is automatically assigned at run time
-            sequence_number (int, optional): Sequence number of the event. Defaults to `None`.
-
+        :param execution_context: The context in which the event operates, providing access
+            to execution-related data.
+        :type execution_context: ExecutionContext
+        :param task_id: Unique identifier for the task associated with this event.
+        :type task_id: str
+        :param args: Positional arguments to be passed to the base class constructor.
+        :type args: Tuple[Any]
+        :param previous_result: The result of the preceding event execution. Defaults to
+            `EMPTY` when not specified.
+        :type previous_result: Union[List[EventResult], EMPTY]
+        :param stop_condition: Determines the condition under which execution should stop.
+        :type stop_condition: StopCondition
+        :param run_bypass_event_checks: A flag indicating whether to bypass event checks.
+        :type run_bypass_event_checks: bool
+        :param options: Additional options to configure the event. Passed additional runtime
+            configuration if provided.
+        :type options: Optional[Options]
+        :param sequence_number: Specifies the sequence number associated with the event,
+            if applicable.
+        :type sequence_number: Optional[int]
+        :param kwargs: Key-value arguments to provide additional flexibility for configuration.
+        :type kwargs: Dict[str, Any]
         """
         super().__init__(*args, **kwargs)
 
@@ -608,7 +397,8 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
         )
         self.run_bypass_event_checks = run_bypass_event_checks
 
-        self.get_retry_policy()  # config retry if error
+        self._retry_count = 0
+        self.init_retry()
 
         self._init_args = get_function_call_args(self.__class__.__init__, locals())  # type: ignore
         self._call_args = EMPTY
@@ -626,7 +416,7 @@ class EventBase(_RetryMixin, _ExecutorInitializerMixin, metaclass=EventMeta):
 
     @classmethod
     def get_version_handler(cls) -> VersionHandler:
-        """Get version handler for this class"""
+        """Get a version handler for this class"""
         if cls._version_handler is None:
             cls._version_handler = VersionHandler.from_class(
                 cls, config_key="DEFAULT_EVENT_VERSIONING"

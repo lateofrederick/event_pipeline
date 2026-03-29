@@ -31,13 +31,13 @@ class VolnuxCheckPointManager:
     """
 
     def __init__(
-            self,
-            *,
-            checkpoint_interval: float = 5.0,
-            max_concurrent: int = 5,
-            retry_attempts: int = 3,
-            retry_delay: float = 1.0,
-            snapshot_ttl: int = 3600,
+        self,
+        *,
+        checkpoint_interval: float = 5.0,
+        max_concurrent: int = 5,
+        retry_attempts: int = 3,
+        retry_delay: float = 1.0,
+        snapshot_ttl: int = 3600,
     ):
         # self.state_store = state_store
         self.checkpoint_interval = checkpoint_interval
@@ -108,7 +108,8 @@ class VolnuxCheckPointManager:
             for context in list(self._monitored_contexts):
                 try:
                     # Offload the work to the queue
-                    self.enqueue(context.create_snapshot())
+                    snapshot = await context.create_snapshot()
+                    self.enqueue(snapshot)
                 except Exception as e:
                     logger.error(f"Failed to sample context {context.state_id}: {e}")
 
@@ -132,11 +133,15 @@ class VolnuxCheckPointManager:
             except Exception as e:
                 last_error = e
                 delay = self.retry_delay * attempt
-                logger.warning(f"Persist failed for {snapshot.id} (attempt {attempt}): {e}")
+                logger.warning(
+                    f"Persist failed for {snapshot.id} (attempt {attempt}): {e}"
+                )
                 if attempt < self.retry_attempts:
                     await asyncio.sleep(delay)
 
-        logger.error(f"Persistence failed after {self.retry_attempts} tries: {last_error}")
+        logger.error(
+            f"Persistence failed after {self.retry_attempts} tries: {last_error}"
+        )
 
     async def flush(self):
         """The Preemption Barrier: Ensures the queue is empty before a swap."""
@@ -144,6 +149,8 @@ class VolnuxCheckPointManager:
 
     async def stop(self):
         self._running = False
-        if self._monitor_task: self._monitor_task.cancel()
+        if self._monitor_task:
+            self._monitor_task.cancel()
         await self.flush()
-        if self._worker_task: self._worker_task.cancel()
+        if self._worker_task:
+            self._worker_task.cancel()

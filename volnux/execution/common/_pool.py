@@ -4,7 +4,18 @@ import threading
 import warnings
 from collections import defaultdict
 from concurrent.futures import Future, ProcessPoolExecutor, wait, FIRST_EXCEPTION
-from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional, Set, Union, Tuple, List
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Literal,
+    Optional,
+    Set,
+    Union,
+    Tuple,
+    List,
+)
 
 try:
     from celery import Celery

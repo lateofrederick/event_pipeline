@@ -27,6 +27,7 @@ def inject_event_initialisation_extra_params(
     default values, default factories, and custom validators, then injects
     the parameters as instance attributes.
     """
+    PROTECTED_NAMES = {"process", "executor", "executor_config", "context", "start"}
     event_class = type(event)
 
     if not hasattr(event_class, "INIT_PARAMS_SCHEMA"):

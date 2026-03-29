@@ -6,7 +6,7 @@ import typing
 import weakref
 from collections import deque
 
-from .snapshot import ContextSnapshot
+from .engine.snapshot import ContextSnapshot
 from volnux.execution.context import ExecutionContext
 
 if typing.TYPE_CHECKING:

@@ -25,11 +25,6 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Metrics Setup
-# ============================================================================
-
-
 class FlowMetrics:
     """
     Centralized metrics collection for Flow execution.
@@ -177,11 +172,6 @@ class FlowMetrics:
         """Decrement parallel task counter"""
         if cls.parallel_task_gauge:
             cls.parallel_task_gauge.add(-count)
-
-
-# ============================================================================
-# Flow Instrumentation
-# ============================================================================
 
 
 def instrument_flow_run(original_run):
@@ -572,11 +562,6 @@ def instrument_get_flow_executor(original_get_executor):
     return instrumented_get_executor
 
 
-# ============================================================================
-# Patching Functions
-# ============================================================================
-
-
 def patch_flow_class():
     """
     Patch BaseFlow class to add OpenTelemetry instrumentation and metrics.
@@ -650,7 +635,6 @@ def patch_all_flow_components():
     logger.info("All Flow components instrumented with OpenTelemetry")
 
 
-# Export
 __all__ = [
     "FlowMetrics",
     "instrument_flow_run",

@@ -59,7 +59,7 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-conf = ConfigLoader.get_lazily_loaded_config()
+conf = VolnuxConfig.get_instance()
 
 
 class TreeExtraData:

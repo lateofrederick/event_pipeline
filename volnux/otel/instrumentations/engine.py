@@ -4,14 +4,17 @@ OpenTelemetry Instrumentation for DefaultWorkflowEngine
 
 import logging
 import typing
+from collections import deque
+
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from volnux.otel.tracer_setup import get_tracer
 from volnux.otel.context_manager import OTelContextManager, SpanHelper
+from volnux.engine.base import TaskNode, EngineResult, EngineExecutionResult
 
 if typing.TYPE_CHECKING:
-    from volnux.engine import EngineResult
+    from volnux.engine.base import EngineResult
     from volnux.parser.protocols import TaskType
     from volnux.pipeline import Pipeline
 
@@ -106,9 +109,6 @@ class InstrumentedDefaultWorkflowEngine:
 
         This method instruments the queue-based execution loop.
         """
-        from collections import deque
-        from volnux.engine import TaskNode, EngineResult, EngineExecutionResult
-
         queue = deque()
         queue.append(TaskNode(root_task, None))
 

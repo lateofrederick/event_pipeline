@@ -131,7 +131,6 @@ def patch_pipeline():
         logger.info("Pipeline.start instrumented with OpenTelemetry")
 
 
-# Signal-based instrumentation
 class SignalInstrumentation:
     """
     Instrumentation hooks for Volnux signals.

@@ -16,12 +16,12 @@ from volnux.utils import (
     receive_data_from_socket,
     create_client_ssl_context,
 )
-from volnux.telemetry.network import network_telemetry
+# from volnux.telemetry.network import network_telemetry
 from volnux.executors.message import TaskMessage
 
 logger = logging.getLogger(__name__)
 
-CONF = ConfigLoader.get_lazily_loaded_config()
+CONF = VolnuxConfig.get_instance()
 
 DEFAULT_TIMEOUT = CONF.DEFAULT_CONNECTION_TIMEOUT
 CHUNK_SIZE = CONF.DATA_CHUNK_SIZE

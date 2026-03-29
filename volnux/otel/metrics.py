@@ -1,37 +1,25 @@
 """
 Comprehensive Metrics Collection for Volnux
 
-This module provides complete metrics instrumentation including:
-- Workflow-level metrics
-- Task execution metrics
-- Performance metrics
-- Error tracking metrics
-- Resource utilization metrics
-- Custom business metrics
-
-Supports export to Datadog, Grafana/Prometheus, and generic OTLP backends.
+This module provides a thin OpenTelemetry metrics recording layer for Volnux.
+It assumes OpenTelemetry has already been initialized by the observability bootstrap.
 """
 
 import logging
 import typing
-from typing import Dict, Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Dict, Optional
 
 from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import (
-    PeriodicExportingMetricReader,
-    ConsoleMetricExporter,
-)
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
+
+from volnux import __version__ as volnux_version
 
 logger = logging.getLogger(__name__)
 
 
 class MetricType(str, Enum):
-    """Types of metrics collected"""
+    """Types of metrics collected."""
 
     COUNTER = "counter"
     HISTOGRAM = "histogram"
@@ -39,9 +27,9 @@ class MetricType(str, Enum):
     UP_DOWN_COUNTER = "up_down_counter"
 
 
-@dataclass
+@dataclass(frozen=True)
 class MetricDefinition:
-    """Definition of a metric"""
+    """Definition of a metric."""
 
     name: str
     description: str
@@ -53,8 +41,6 @@ class MetricDefinition:
 class VolnuxMetricsRegistry:
     """
     Central registry for all Volnux metrics.
-
-    Defines all metrics that will be collected across the system.
     """
 
     # Workflow Metrics
@@ -64,17 +50,9 @@ class VolnuxMetricsRegistry:
         unit="ms",
         metric_type=MetricType.HISTOGRAM,
     )
-
     WORKFLOW_COUNT = MetricDefinition(
         name="workflow.executions",
         description="Number of workflow executions",
-        unit="1",
-        metric_type=MetricType.COUNTER,
-    )
-
-    WORKFLOW_SUCCESS_RATE = MetricDefinition(
-        name="workflow.success_rate",
-        description="Workflow success rate",
         unit="1",
         metric_type=MetricType.COUNTER,
     )
@@ -86,14 +64,12 @@ class VolnuxMetricsRegistry:
         unit="ms",
         metric_type=MetricType.HISTOGRAM,
     )
-
     TASK_COUNT = MetricDefinition(
         name="task.executions",
         description="Number of task executions",
         unit="1",
         metric_type=MetricType.COUNTER,
     )
-
     TASK_QUEUE_SIZE = MetricDefinition(
         name="task.queue_size",
         description="Number of tasks in execution queue",
@@ -108,7 +84,6 @@ class VolnuxMetricsRegistry:
         unit="1",
         metric_type=MetricType.HISTOGRAM,
     )
-
     CONTEXT_DURATION = MetricDefinition(
         name="context.duration",
         description="ExecutionContext dispatch duration",
@@ -123,12 +98,29 @@ class VolnuxMetricsRegistry:
         unit="1",
         metric_type=MetricType.COUNTER,
     )
-
     ENGINE_PARALLEL_TASKS = MetricDefinition(
         name="engine.parallel_tasks",
         description="Number of parallel tasks detected",
         unit="1",
-        metric_type=MetricType.HISTOGRAM,
+        metric_type=MetricType.COUNTER,
+    )
+    ENGINE_TARGET_WORKERS = MetricDefinition(
+        name="engine.target_workers",
+        description="Target worker count",
+        unit="1",
+        metric_type=MetricType.UP_DOWN_COUNTER,
+    )
+    ENGINE_ACTUAL_WORKERS = MetricDefinition(
+        name="engine.actual_workers",
+        description="Actual active worker count",
+        unit="1",
+        metric_type=MetricType.UP_DOWN_COUNTER,
+    )
+    ENGINE_QUEUE_LENGTH = MetricDefinition(
+        name="engine.queue_length",
+        description="Current task queue length",
+        unit="1",
+        metric_type=MetricType.UP_DOWN_COUNTER,
     )
 
     # Flow Metrics
@@ -138,7 +130,6 @@ class VolnuxMetricsRegistry:
         unit="ms",
         metric_type=MetricType.HISTOGRAM,
     )
-
     EVENT_DURATION = MetricDefinition(
         name="event.duration",
         description="Event execution duration",
@@ -154,13 +145,6 @@ class VolnuxMetricsRegistry:
         metric_type=MetricType.COUNTER,
     )
 
-    ERROR_RATE = MetricDefinition(
-        name="error.rate",
-        description="Error rate per execution",
-        unit="1",
-        metric_type=MetricType.COUNTER,
-    )
-
     # Executor Metrics
     EXECUTOR_USAGE = MetricDefinition(
         name="executor.usage",
@@ -168,7 +152,6 @@ class VolnuxMetricsRegistry:
         unit="1",
         metric_type=MetricType.COUNTER,
     )
-
     EXECUTOR_QUEUE_TIME = MetricDefinition(
         name="executor.queue_time",
         description="Time spent waiting in executor queue",
@@ -184,13 +167,6 @@ class VolnuxMetricsRegistry:
         metric_type=MetricType.COUNTER,
     )
 
-    RETRY_SUCCESS_RATE = MetricDefinition(
-        name="retry.success_rate",
-        description="Success rate of retries",
-        unit="1",
-        metric_type=MetricType.COUNTER,
-    )
-
     # Resource Metrics
     MEMORY_USAGE = MetricDefinition(
         name="resource.memory_usage",
@@ -198,11 +174,10 @@ class VolnuxMetricsRegistry:
         unit="MB",
         metric_type=MetricType.HISTOGRAM,
     )
-
     CPU_USAGE = MetricDefinition(
         name="resource.cpu_usage",
         description="CPU usage during execution",
-        unit="%",
+        unit="cores",
         metric_type=MetricType.HISTOGRAM,
     )
 
@@ -213,7 +188,6 @@ class VolnuxMetricsRegistry:
         unit="1",
         metric_type=MetricType.COUNTER,
     )
-
     DATA_VOLUME = MetricDefinition(
         name="business.data_volume",
         description="Volume of data processed",
@@ -224,9 +198,9 @@ class VolnuxMetricsRegistry:
 
 class VolnuxMetricsCollector:
     """
-    Main metrics collector for Volnux.
+    Thin metrics collector for Volnux.
 
-    Provides a unified interface for recording metrics across all components.
+    Assumes OpenTelemetry metrics provider is already configured.
     """
 
     _instance: Optional["VolnuxMetricsCollector"] = None
@@ -234,104 +208,64 @@ class VolnuxMetricsCollector:
     _instruments: Dict[str, Any] = {}
     _initialized: bool = False
 
-    def __init__(self):
+    def __init__(self, meter: Optional[metrics.Meter] = None):
         self._instruments = {}
+        self._meter = meter or self.__class__._meter
 
     @classmethod
     def initialize(
         cls,
         service_name: str,
         service_version: str = "1.0.0",
-        endpoint: Optional[str] = None,
-        export_interval_ms: int = 60000,
-        console_export: bool = False,
     ) -> "VolnuxMetricsCollector":
         """
-        Initialize the metrics collector.
+        Initializes the `VolnuxMetricsCollector` singleton instance, setting up
+        the metrics collection instruments and returning the instance. Subsequent
+        calls will return the previously initialized instance if it exists.
 
-        Args:
-            service_name: Name of the service
-            service_version: Version of the service
-            endpoint: OTLP endpoint for metrics export
-            export_interval_ms: Interval for exporting metrics (milliseconds)
-            console_export: Enable console export for debugging
-
-        Returns:
-            Initialized VolnuxMetricsCollector instance
+        :param service_name: Name of the service for which the metrics collector
+            is being initialized.
+        :param service_version: Version of the service. Defaults to "1.0.0".
+        :return: The singleton instance of `VolnuxMetricsCollector`.
+        :rtype: VolnuxMetricsCollector
+        :raises Exception: If the metrics collector fails to initialize.
         """
         if cls._instance and cls._initialized:
             return cls._instance
 
         try:
-            # Create resource
-            resource = Resource.create(
-                {
-                    SERVICE_NAME: service_name,
-                    SERVICE_VERSION: service_version,
-                    "telemetry.sdk.name": "opentelemetry",
-                    "telemetry.sdk.language": "python",
-                }
-            )
-
-            # Setup metric readers
-            metric_readers = []
-
-            # Console exporter for debugging
-            if console_export:
-                console_reader = PeriodicExportingMetricReader(
-                    ConsoleMetricExporter(), export_interval_millis=export_interval_ms
-                )
-                metric_readers.append(console_reader)
-
-            # OTLP exporter for production
-            if endpoint:
-                otlp_exporter = OTLPMetricExporter(
-                    endpoint=endpoint,
-                    insecure=True,  # Set to False with TLS in production
-                )
-                otlp_reader = PeriodicExportingMetricReader(
-                    otlp_exporter, export_interval_millis=export_interval_ms
-                )
-                metric_readers.append(otlp_reader)
-
-            if not metric_readers:
-                logger.warning("No metric exporters configured")
-                return None
-
-            # Create meter provider
-            meter_provider = MeterProvider(
-                resource=resource, metric_readers=metric_readers
-            )
-
-            # Set as global meter provider
-            metrics.set_meter_provider(meter_provider)
-
-            # Get meter
-            cls._meter = metrics.get_meter("volnux", version=service_version)
-
-            # Create instance
-            cls._instance = cls()
+            cls._meter = metrics.get_meter(service_name, version=service_version)
+            cls._instance = cls(cls._meter)
             cls._instance._setup_instruments()
             cls._initialized = True
-
-            logger.info(f"Metrics collector initialized for {service_name}")
+            logger.info("Metrics collector initialized for %s", service_name)
             return cls._instance
-
         except Exception as e:
-            logger.error(f"Failed to initialize metrics collector: {e}", exc_info=True)
-            return None
+            logger.error("Failed to initialize metrics collector: %s", e, exc_info=True)
+            raise
 
     @classmethod
     def get_instance(cls) -> Optional["VolnuxMetricsCollector"]:
-        """Get the global metrics collector instance"""
+        """Get the global metrics collector instance."""
         return cls._instance
 
-    def _setup_instruments(self):
-        """Setup all metric instruments from registry"""
+    @classmethod
+    def shutdown(cls) -> None:
+        """Reset the collector state."""
+        cls._instance = None
+        cls._meter = None
+        cls._instruments = {}
+        cls._initialized = False
+        logger.info("Metrics collector shut down")
+
+    def _setup_instruments(self) -> None:
+        """Setup all metric instruments from registry."""
         if not self._meter:
+            logger.warning(
+                "No meter available; metrics instruments will not be created"
+            )
             return
 
-        # Get all metric definitions from registry
         registry_attrs = [
             attr
             for attr in dir(VolnuxMetricsRegistry)
@@ -362,44 +296,95 @@ class VolnuxMetricsCollector:
                         unit=metric_def.unit,
                     )
                 else:
-                    logger.warning(f"Unsupported metric type: {metric_def.metric_type}")
+                    logger.warning(
+                        "Unsupported metric type: %s", metric_def.metric_type
+                    )
                     continue
 
                 self._instruments[metric_def.name] = instrument
-                logger.debug(f"Created metric instrument: {metric_def.name}")
+                logger.debug("Created metric instrument: %s", metric_def.name)
 
             except Exception as e:
-                logger.error(f"Failed to create instrument {metric_def.name}: {e}")
+                logger.error("Failed to create instrument %s: %s", metric_def.name, e)
 
     def record_metric(
         self,
         metric_def: MetricDefinition,
         value: float,
         attributes: Optional[Dict[str, str]] = None,
-    ):
+    ) -> None:
         """
         Record a metric value.
-
-        Args:
-            metric_def: MetricDefinition to record
-            value: Value to record
-            attributes: Optional attributes for the metric
         """
         instrument = self._instruments.get(metric_def.name)
         if not instrument:
-            logger.debug(f"Instrument not found: {metric_def.name}")
+            logger.debug("Instrument not found: %s", metric_def.name)
             return
 
+        attrs = attributes or {}
         try:
-            if metric_def.metric_type in [
+            if metric_def.metric_type in (
                 MetricType.COUNTER,
                 MetricType.UP_DOWN_COUNTER,
-            ]:
-                instrument.add(value, attributes=attributes or {})
+            ):
+                instrument.add(value, attributes=attrs)
             elif metric_def.metric_type == MetricType.HISTOGRAM:
-                instrument.record(value, attributes=attributes or {})
+                instrument.record(value, attributes=attrs)
         except Exception as e:
-            logger.error(f"Failed to record metric {metric_def.name}: {e}")
+            logger.error("Failed to record metric %s: %s", metric_def.name, e)
+
+    def record_engine_metrics(
+        self, metrics_dict: Dict[str, Any], pipeline_name: str
+    ) -> None:
+        """Record runtime engine metrics from a metrics snapshot."""
+        self.record_metric(
+            VolnuxMetricsRegistry.ENGINE_QUEUE_LENGTH,
+            float(metrics_dict.get("task_queue_length", 0)),
+            attributes={"pipeline.name": pipeline_name},
+        )
+        self.record_metric(
+            VolnuxMetricsRegistry.ENGINE_TARGET_WORKERS,
+            float(metrics_dict.get("target_workers", 0)),
+            attributes={"pipeline.name": pipeline_name},
+        )
+        self.record_metric(
+            VolnuxMetricsRegistry.ENGINE_ACTUAL_WORKERS,
+            float(metrics_dict.get("actual_workers", 0)),
+            attributes={"pipeline.name": pipeline_name},
+        )
+        self.record_metric(
+            VolnuxMetricsRegistry.ENGINE_PARALLEL_TASKS,
+            float(metrics_dict.get("parallel_tasks", 0)),
+            attributes={"pipeline.name": pipeline_name},
+        )
+        self.record_metric(
+            VolnuxMetricsRegistry.CPU_USAGE,
+            float(metrics_dict.get("cpu_usage_cores", 0.0)),
+            attributes={"pipeline.name": pipeline_name},
+        )
+        self.record_metric(
+            VolnuxMetricsRegistry.MEMORY_USAGE,
+            float(metrics_dict.get("memory_usage_gb", 0.0)),
+            attributes={"pipeline.name": pipeline_name},
+        )
+
+    def record_system_utilization(
+        self,
+        cpu_usage_cores: float,
+        memory_usage_mb: float,
+        pipeline_name: str,
+    ) -> None:
+        """Record system resource utilization."""
+        self.record_metric(
+            VolnuxMetricsRegistry.CPU_USAGE,
+            cpu_usage_cores,
+            attributes={"pipeline.name": pipeline_name},
+        )
+        self.record_metric(
+            VolnuxMetricsRegistry.MEMORY_USAGE,
+            memory_usage_mb,
+            attributes={"pipeline.name": pipeline_name},
+        )
 
     def record_workflow_duration(
         self,
@@ -407,8 +392,8 @@ class VolnuxMetricsCollector:
         pipeline_name: str,
         status: str,
         environment: str = "production",
-    ):
-        """Record workflow execution duration"""
+    ) -> None:
+        """Record workflow execution duration."""
         self.record_metric(
             VolnuxMetricsRegistry.WORKFLOW_DURATION,
             duration_ms,
@@ -421,8 +406,8 @@ class VolnuxMetricsCollector:
 
     def increment_workflow_count(
         self, pipeline_name: str, status: str, environment: str = "production"
-    ):
-        """Increment workflow execution counter"""
+    ) -> None:
+        """Increment workflow execution counter."""
         self.record_metric(
             VolnuxMetricsRegistry.WORKFLOW_COUNT,
             1,
@@ -435,8 +420,8 @@ class VolnuxMetricsCollector:
 
     def record_task_duration(
         self, duration_ms: float, task_name: str, status: str, pipeline_name: str
-    ):
-        """Record task execution duration"""
+    ) -> None:
+        """Record task execution duration."""
         self.record_metric(
             VolnuxMetricsRegistry.TASK_DURATION,
             duration_ms,
@@ -447,8 +432,8 @@ class VolnuxMetricsCollector:
             },
         )
 
-    def increment_task_count(self, task_name: str, pipeline_name: str):
-        """Increment task execution counter"""
+    def increment_task_count(self, task_name: str, pipeline_name: str) -> None:
+        """Increment task execution counter."""
         self.record_metric(
             VolnuxMetricsRegistry.TASK_COUNT,
             1,
@@ -457,24 +442,24 @@ class VolnuxMetricsCollector:
 
     def increment_error_count(
         self, error_type: str, component: str, pipeline_name: Optional[str] = None
-    ):
-        """Increment error counter"""
+    ) -> None:
+        """Increment error counter."""
         attrs = {"error.type": error_type, "component": component}
         if pipeline_name:
             attrs["pipeline.name"] = pipeline_name
 
         self.record_metric(VolnuxMetricsRegistry.ERROR_COUNT, 1, attributes=attrs)
 
-    def record_parallel_tasks(self, count: int, pipeline_name: str):
-        """Record number of parallel tasks"""
+    def record_parallel_tasks(self, count: int, pipeline_name: str) -> None:
+        """Record number of parallel tasks."""
         self.record_metric(
             VolnuxMetricsRegistry.ENGINE_PARALLEL_TASKS,
             count,
             attributes={"pipeline.name": pipeline_name},
         )
 
-    def record_executor_usage(self, executor_type: str, pipeline_name: str):
-        """Record executor usage"""
+    def record_executor_usage(self, executor_type: str, pipeline_name: str) -> None:
+        """Record executor usage."""
         self.record_metric(
             VolnuxMetricsRegistry.EXECUTOR_USAGE,
             1,
@@ -483,14 +468,13 @@ class VolnuxMetricsCollector:
 
     def record_business_metric(
         self, records_processed: int, data_volume_mb: float, pipeline_name: str
-    ):
-        """Record business metrics"""
+    ) -> None:
+        """Record business metrics."""
         self.record_metric(
             VolnuxMetricsRegistry.RECORDS_PROCESSED,
             records_processed,
             attributes={"pipeline.name": pipeline_name},
         )
-
         self.record_metric(
             VolnuxMetricsRegistry.DATA_VOLUME,
             data_volume_mb,
@@ -499,37 +483,25 @@ class VolnuxMetricsCollector:
 
 
 def get_metrics_collector() -> Optional[VolnuxMetricsCollector]:
-    """Get the global metrics collector instance"""
+    """Get the global metrics collector instance."""
     return VolnuxMetricsCollector.get_instance()
 
 
 def initialize_metrics(
-    service_name: str, endpoint: Optional[str] = None, console_export: bool = False
+    service_name: str,
+    service_version: str = volnux_version,
 ) -> Optional[VolnuxMetricsCollector]:
     """
     Initialize metrics collection.
 
-    Args:
-        service_name: Name of the service
-        endpoint: OTLP endpoint (e.g., "http://localhost:4317")
-        console_export: Enable console export for debugging
-
-    Returns:
-        Initialized metrics collector
-
-    Example:
-        >>> from volnux.otel.metrics import initialize_metrics
-        >>> collector = initialize_metrics(
-        ...     service_name="workflow-service",
-        ...     endpoint="http://localhost:4317"
-        ... )
+    OTEL bootstrap should be done first.
     """
     return VolnuxMetricsCollector.initialize(
-        service_name=service_name, endpoint=endpoint, console_export=console_export
+        service_name=service_name,
+        service_version=service_version,
     )
 
 
-# Export
 __all__ = [
     "MetricType",
     "MetricDefinition",

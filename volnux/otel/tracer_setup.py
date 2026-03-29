@@ -4,13 +4,20 @@ Supports Datadog and Grafana backends
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
+
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import (
+    ALWAYS_OFF,
+    ALWAYS_ON,
+    ParentBased,
+    TraceIdRatioBased,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +39,15 @@ class VolnuxTracerConfig:
         # Sampling
         sample_rate: float = 1.0,
         # Additional attributes
-        custom_attributes: Optional[dict] = None,
+        custom_attributes: Optional[dict[str, Any]] = None,
     ):
+        if not 0.0 <= sample_rate <= 1.0:
+            raise ValueError("sample_rate must be between 0.0 and 1.0")
+
         self.service_name = service_name
         self.service_version = service_version
         self.environment = environment
-        self.otlp_endpoint = otlp_endpoint or "http://localhost:4317"
+        self.otlp_endpoint = otlp_endpoint
         self.datadog_agent_url = datadog_agent_url
         self.tempo_endpoint = tempo_endpoint
         self.sample_rate = sample_rate
@@ -50,6 +60,8 @@ class VolnuxTracer:
     _instance: Optional["VolnuxTracer"] = None
     _tracer: Optional[trace.Tracer] = None
     _provider: Optional[TracerProvider] = None
+    _logging_instrumented: bool = False
+    _global_provider_set: bool = False
 
     def __init__(self, config: VolnuxTracerConfig):
         self.config = config
@@ -67,10 +79,16 @@ class VolnuxTracer:
         """Get the global tracer instance"""
         return cls._instance
 
+    def _build_sampler(self):
+        if self.config.sample_rate <= 0.0:
+            return ALWAYS_OFF
+        if self.config.sample_rate >= 1.0:
+            return ALWAYS_ON
+        return ParentBased(TraceIdRatioBased(self.config.sample_rate))
+
     def _setup_tracer(self):
         """Setup OpenTelemetry tracer with exporters"""
 
-        # Create resource with service information
         resource = Resource.create(
             {
                 SERVICE_NAME: self.config.service_name,
@@ -80,54 +98,57 @@ class VolnuxTracer:
             }
         )
 
-        # Create tracer provider
-        self._provider = TracerProvider(resource=resource)
+        self._provider = TracerProvider(
+            resource=resource, sampler=self._build_sampler()
+        )
 
-        # Setup exporters based on configuration
         self._setup_exporters()
 
-        # Set as global tracer provider
-        trace.set_tracer_provider(self._provider)
+        if not self.__class__._global_provider_set:
+            trace.set_tracer_provider(self._provider)
+            self.__class__._global_provider_set = True
 
-        # Get tracer
         self._tracer = trace.get_tracer(
             instrumenting_module_name="volnux",
             instrumenting_library_version=self.config.service_version,
         )
 
-        # Instrument logging to correlate logs with traces
-        LoggingInstrumentor().instrument(set_logging_format=True)
+        if not self.__class__._logging_instrumented:
+            LoggingInstrumentor().instrument(set_logging_format=True)
+            self.__class__._logging_instrumented = True
 
-        logger.info(f"OpenTelemetry tracer initialized for {self.config.service_name}")
+        logger.info("OpenTelemetry tracer initialized for %s", self.config.service_name)
 
     def _setup_exporters(self):
         """Setup span exporters for different backends"""
 
-        # OTLP Exporter (Universal - works with Datadog, Grafana, etc.)
-        if self.config.otlp_endpoint:
-            otlp_exporter = OTLPSpanExporter(
-                endpoint=self.config.otlp_endpoint,
-                insecure=True,  # Set to False in production with TLS
-            )
-            self._provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-            logger.info(f"OTLP exporter configured: {self.config.otlp_endpoint}")
+        exporters_added = 0
+        seen_endpoints: set[str] = set()
 
-        # Datadog specific configuration
-        if self.config.datadog_agent_url:
-            # Datadog accepts OTLP, just point to Datadog Agent
-            datadog_exporter = OTLPSpanExporter(
-                endpoint=self.config.datadog_agent_url, insecure=True
-            )
-            self._provider.add_span_processor(BatchSpanProcessor(datadog_exporter))
-            logger.info(f"Datadog exporter configured: {self.config.datadog_agent_url}")
+        def add_otlp_exporter(endpoint: Optional[str], label: str) -> None:
+            nonlocal exporters_added
+            if not endpoint:
+                return
+            if endpoint in seen_endpoints:
+                logger.info(
+                    "%s exporter skipped (duplicate endpoint): %s", label, endpoint
+                )
+                return
 
-        # Grafana Tempo specific configuration
-        if self.config.tempo_endpoint:
-            tempo_exporter = OTLPSpanExporter(
-                endpoint=self.config.tempo_endpoint, insecure=True
+            seen_endpoints.add(endpoint)
+            exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+            self._provider.add_span_processor(BatchSpanProcessor(exporter))
+            exporters_added += 1
+            logger.info("%s exporter configured: %s", label, endpoint)
+
+        add_otlp_exporter(self.config.otlp_endpoint, "OTLP")
+        add_otlp_exporter(self.config.datadog_agent_url, "Datadog")
+        add_otlp_exporter(self.config.tempo_endpoint, "Tempo")
+
+        if exporters_added == 0:
+            logger.warning(
+                "No trace exporter configured. Traces will stay local unless an endpoint is provided."
             )
-            self._provider.add_span_processor(BatchSpanProcessor(tempo_exporter))
-            logger.info(f"Tempo exporter configured: {self.config.tempo_endpoint}")
 
     def get_tracer(self) -> trace.Tracer:
         """Get the OpenTelemetry tracer"""
@@ -142,7 +163,6 @@ class VolnuxTracer:
             logger.info("OpenTelemetry tracer shutdown complete")
 
 
-# Convenience function
 def get_tracer() -> Optional[trace.Tracer]:
     """Get the global tracer instance"""
     instance = VolnuxTracer.get_instance()

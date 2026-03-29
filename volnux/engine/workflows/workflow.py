@@ -37,7 +37,7 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-system_conf = ConfigLoader.get_lazily_loaded_config()
+system_conf = VolnuxConfig.get_instance()
 
 
 class WorkflowExecutionError(Exception):

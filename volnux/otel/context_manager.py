@@ -256,12 +256,15 @@ class SpanHelper:
         """
         span.set_attribute("context.id", execution_context.id)
         span.set_attribute("context.is_multitask", execution_context.is_multitask())
+        if execution_context.pipeline:
+            span.set_attribute("context.pipeline_id", execution_context.pipeline.id)
 
         task_profiles = execution_context.get_task_profiles()
         span.set_attribute("context.task_count", len(task_profiles))
 
         task_names = [task.get_event_name() for task in task_profiles]
         span.set_attribute("context.tasks", ",".join(task_names))
+        span.set_attribute("context.depth", execution_context.get_depth())
 
         if execution_context.previous_context:
             span.set_attribute(

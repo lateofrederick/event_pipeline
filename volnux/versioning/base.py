@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List, TypedDict, Union
 
 from volnux.conf import ConfigLoader
 
-conf = ConfigLoader.get_lazily_loaded_config()
+conf = VolnuxConfig.get_instance()
 
 
 class DeprecationInfo(TypedDict, total=False):

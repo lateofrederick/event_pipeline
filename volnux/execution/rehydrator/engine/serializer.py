@@ -1,5 +1,6 @@
 import typing
 import traceback
+from typing import Union, Dict, Any
 
 from volnux.result import EventResult
 from volnux.pipeline import Pipeline
@@ -16,7 +17,7 @@ class StateSerializer:
     """
 
     @staticmethod
-    def serialize_task(task: "TaskType") -> typing.Dict[str, typing.Any]:
+    def serialize_task(task: "TaskType") -> Dict[str, Any]:
         """Serialize PipelineTask to dict."""
         event_class = task.get_event_class()
 
@@ -53,9 +54,11 @@ class StateSerializer:
         return payload
 
     @staticmethod
-    def serialize_result(result: "EventResult") -> typing.Dict[str, typing.Any]:
+    def serialize_result(result: "EventResult") -> Union[Dict[str, typing.Any], str]:
         """Serialize EventResult."""
-        return result.as_dict()
+        if result.should_persist():
+            return result.as_dict()
+        return result.id
 
     @staticmethod
     def serialise_queue_task(
