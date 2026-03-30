@@ -35,7 +35,8 @@ class ClientTaskRegistry:
 
     def get_task(self, client_task_id: str) -> typing.Union[typing.Dict[str, typing.Any], None]:
         """Get a registered client task by its ID."""
-        return self.tasks.get(client_task_id)
+        with self._lock:
+            return self.tasks.get(client_task_id)
 
     def remove(self, client_task_id: str) -> None:
         """Remove a task from the registry."""
