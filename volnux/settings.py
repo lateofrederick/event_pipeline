@@ -65,8 +65,10 @@ LOGGING_CONFIG = {
 
 REMOTE_EVENT_TIMEOUT = None
 
-# Secret key for HMAC authentication (should be set in production)
-SECRET_KEY = None
+# Polling Configuration
+POLLING_INTERVAL = 1.0
+POLLING_TIMEOUT = 300.0
+POLLING_MAX_INTERVAL = 60.0
 
 # SSL/TLS Configuration
 # These settings control secure communication for remote executors and managers.
