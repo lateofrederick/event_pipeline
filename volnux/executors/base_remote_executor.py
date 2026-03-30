@@ -12,6 +12,7 @@ from volnux.types import (
     TaskExecutionSuccessResponse,
     Payload,
 )
+from volnux.executors.polling import HttpPollingClient, TcpPollingClient
 
 CONF = ConfigLoader.get_lazily_loaded_config()
 ALGORITHM = "sha256"
@@ -56,6 +57,51 @@ class BaseRemoteExecutor(Executor):
     def query_event_exists(self, data: QueryEventPayload) -> QueryEventResponse:
         """Query the remote manager for the existence of an event."""
         raise NotImplementedError
+
+    async def poll_result(
+        self,
+        correlation_id: str,
+        base_url: typing.Optional[str] = None,
+        interval: typing.Optional[float] = None,
+        timeout: typing.Optional[float] = None,
+        use_exponential_backoff: bool = False,
+        **kwargs
+    ) -> typing.Dict[str, typing.Any]:
+        """
+        Poll for a result using the correlation_id.
+        """
+
+        url = base_url or getattr(CONF, "POLLING_BASE_URL", None)
+
+        # Determine a client type based on url
+        if url and (url.startswith("http://") or url.startswith("https://")):
+            client = HttpPollingClient(
+                base_url=url,
+                interval=interval,
+                timeout=timeout,
+                use_exponential_backoff=use_exponential_backoff,
+                **kwargs
+            )
+        else:
+            # Default to TCP if no URL or if it looks like host:port
+            host = getattr(self, "host", "localhost")
+            port = getattr(self, "port", 8000)
+            
+            if url and ":" in url and not url.startswith("http"):
+                parts = url.split(":")
+                host = parts[0]
+                port = int(parts[1])
+            
+            client = TcpPollingClient(
+                host=host,
+                port=port,
+                interval=interval,
+                timeout=timeout,
+                use_exponential_backoff=use_exponential_backoff,
+                **kwargs
+            )
+            
+        return await client.poll_result(correlation_id)
 
     def parse_task_execution_response(
         self,
