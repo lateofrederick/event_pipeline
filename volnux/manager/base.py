@@ -243,7 +243,7 @@ class BaseManager(ABC):
         task_node = TaskNode(
             id=uuid.uuid4(),
             event=event_instance,
-            correlation_id=uuid.UUID(correlation_id),
+            correlation_id=correlation_id,
             timeout=datetime.timedelta(seconds=getattr(CONF, "TASK_TIMEOUT", 300)),
             created_at=datetime.datetime.now()
         )
@@ -303,6 +303,9 @@ class BaseManager(ABC):
                     result = await to_thread(get_result)
                 except queue.Empty:
                     continue
+
+                # Store result in ResultStore for polling
+                get_result_store().store(result.get("correlation_id", "unknown"), result)
 
                 # Now processing async routing directly in the loop
                 await self._route_response(result)
