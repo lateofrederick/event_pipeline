@@ -189,3 +189,8 @@ class HandshakeError(Exception):
 class CertificatePinningError(Exception):
     """Raised when certificate pinning validation fails."""
     pass
+
+
+class PollingTimeoutError(Exception):
+    """Exception raised when polling times out."""
+    pass
