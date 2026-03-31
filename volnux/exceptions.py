@@ -158,7 +158,23 @@ class PointyNotExecutable(Exception):
 
 class RemoteExecutionError(Exception):
     """Exception raised when a remote execution fails."""
-    pass
+
+    def __init__(self, message: str, code: typing.Optional[str] = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class CircuitBreakerOpenError(Exception):
+    """Raised when the remote submission circuit breaker is open."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        recovery_in_seconds: typing.Optional[float] = None,
+    ) -> None:
+        super().__init__(message)
+        self.recovery_in_seconds = recovery_in_seconds
 
 
 class SSLConfigurationError(Exception):
