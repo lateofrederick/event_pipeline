@@ -1,9 +1,20 @@
 import asyncio
 import logging
-import typing
-from abc import abstractmethod
 from collections import deque
-from formax import BaseModel
+from typing import (
+    Optional,
+    Deque,
+    Dict,
+    Any,
+    Union,
+    List,
+    Tuple,
+    cast,
+    Set,
+    Type,
+    TYPE_CHECKING,
+)
+from formax import BaseModel, InitVar, ValidationFlags
 
 from volnux.base import ExecutorInitializerConfig
 from volnux.constants import EMPTY
@@ -16,44 +27,70 @@ from volnux.parser.protocols import TaskGroupingProtocol, TaskProtocol, TaskType
 from volnux.signal import SoftSignal
 from volnux.signal.signals import event_execution_end, event_execution_start
 from volnux.utils import build_event_arguments_from_pipeline, get_function_call_args
+from .bridge.communications.tasks import (
+    create_communication_bridge,
+    TaskCommunicationBridge,
+)
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from volnux import Event
 
 
 logger = logging.getLogger(__name__)
 
 
-def attach_signal_emitter(
-    signal: SoftSignal, **signal_kwargs: typing.Dict[str, typing.Any]
-) -> None:
+def attach_signal_emitter(signal: SoftSignal, **signal_kwargs: Dict[str, Any]) -> None:
     """Attaches a signal emitter to the execution context."""
     signal.emit(**signal_kwargs)
 
 
 def format_task_profiles(
-    task_profiles: typing.Any,
-) -> typing.Set[TaskType]:
+    task_profiles: Any,
+) -> Set[TaskType]:
     if isinstance(task_profiles, (TaskProtocol, TaskGroupingProtocol)):
         return {
             task_profiles,
         }
-    return typing.cast(typing.Set[TaskType], task_profiles)
+    return cast(Set[TaskType], task_profiles)
 
 
 class BaseFlow(BaseModel, ObjectIdentityMixin):
+    """
+    BaseFlow class.
+
+    A class designed to handle the execution flow of tasks within a pipeline. It manages
+    task profiles, event initialization, configuration, and communication bridging. This
+    class is intended as a base class and requires specific methods to be implemented by
+    subclasses.
+
+    :ivar context: The execution context for this flow.
+    :type context: ExecutionContext
+    :ivar task_profiles: The profile of the tasks to be executed.
+    :type task_profiles: Optional[Deque[TaskType]]
+    """
+
     # The execution context for this flow
     context: ExecutionContext
 
     #  The profile of the tasks to be executed
-    task_profiles: typing.Optional[typing.Deque[TaskType]]  # type: ignore
+    task_profiles: Optional[Deque[TaskType]]
 
-    def __post_init__(
-        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
-    ) -> None:
-        self.task_profiles = typing.cast(
-            typing.Deque[TaskType], self.context.task_profiles
-        )
+    # Task communication bridge
+    _comm_bridge: Optional[TaskCommunicationBridge]
+    enable_communication: InitVar[bool] = True
+
+    class Config:
+        validation = ValidationFlags.NONE
+
+    def __post_init__(self, *args: Any, **kwargs: Dict[str, Any]) -> None:
+        enable_communication = kwargs.pop("enable_communication", True)
+        self.task_profiles = cast(Deque[TaskType], self.context.task_profiles)
+
+        if enable_communication:
+            self._comm_bridge = create_communication_bridge(
+                self.context, "executor_type"
+            )
+
         super().__init__(*args, **kwargs)  # type: ignore
 
     def add_task_profile(self, task_profile: TaskType) -> None:
@@ -78,7 +115,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         )
         total_retries = options_retries
         if total_retries > 1:  # type: ignore
-            event_retry_policy = event.get_retry_policy()
+            event_retry_policy = event.init_retry()
             if event_retry_policy:
                 event_retry_policy.max_attempts = total_retries  # type: ignore
             else:
@@ -86,7 +123,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
 
     def get_initialized_event(
         self, task_profile: TaskType
-    ) -> typing.Tuple["Event", typing.Dict[str, typing.Any]]:
+    ) -> Tuple["Event", Dict[str, Any]]:
         """
         Initialized and configure event
         :param task_profile: The task profile to initialize
@@ -135,8 +172,8 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
 
     @staticmethod
     async def get_task_executor_from_options(
-        task_profile: typing.Union[TaskProtocol, TaskGroupingProtocol],
-    ) -> typing.Optional[typing.Type[BaseExecutor]]:
+        task_profile: Union[TaskProtocol, TaskGroupingProtocol],
+    ) -> Optional[Type[BaseExecutor]]:
         """
         Get the executor class from the task profile options if available.
         Args:
@@ -148,9 +185,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
             executor_str: str = task_profile.options.executor  # type: ignore
             if executor_str is not None:
                 try:
-                    instance = typing.cast(
-                        typing.Type[BaseExecutor], import_string(executor_str)
-                    )
+                    instance = cast(Type[BaseExecutor], import_string(executor_str))
                     if not issubclass(instance, BaseExecutor):
                         raise ValueError(f"Unsupported executor type {executor_str}")
                     return instance
@@ -162,8 +197,8 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
 
     @staticmethod
     def parse_executor_initialisation_configuration(
-        executor: typing.Type[BaseExecutor], execution_config: ExecutorInitializerConfig
-    ) -> typing.Dict[str, typing.Any]:
+        executor: Type[BaseExecutor], execution_config: ExecutorInitializerConfig
+    ) -> Dict[str, Any]:
         """
         Parse the executor initialization configuration
         Args:
@@ -174,11 +209,12 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         """
         return get_function_call_args(executor.__init__, execution_config.to_dict())
 
-    @abstractmethod
     async def get_flow_executor(
-        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
-    ) -> typing.Type[BaseExecutor]:
-        raise NotImplementedError()
+        self, *args: Any, **kwargs: Dict[str, Any]
+    ) -> Type[BaseExecutor]:
+        raise NotImplementedError(
+            "get_flow_executor() must be implemented by subclasses"
+        )
 
     async def get_flow_executor_config(
         self, task_profile: TaskType
@@ -212,9 +248,9 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         self,
         executor: BaseExecutor,
         event: "Event",
-        event_call_kwargs: typing.Dict[str, typing.Any],
+        event_call_kwargs: Dict[str, Any],
         *,
-        loop: typing.Optional[asyncio.AbstractEventLoop] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> asyncio.Future:
         """
         Submit event for execution via the provided executor.
@@ -259,7 +295,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
     async def _map_events_to_executor(
         self,
         executor: BaseExecutor,
-        event_execution_config: typing.Dict["Event", typing.Any],
+        event_execution_config: Dict["Event", Any],
     ) -> asyncio.Future:
         """
         Submit events to the provided executor class.
@@ -283,7 +319,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
 
     @staticmethod
     def validate_executor_class_and_config(
-        executor_class: typing.Type[BaseExecutor],
+        executor_class: Type[BaseExecutor],
         executor_config: ExecutorInitializerConfig,
     ) -> None:
         if isinstance(executor_class, Exception):
@@ -291,7 +327,6 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         if isinstance(executor_config, Exception):
             raise ValueError(f"Invalid executor config: {executor_config}")
 
-    @abstractmethod
     async def run(self) -> asyncio.Future:
         """
         Run the flow.
@@ -301,11 +336,19 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
             asyncio.TimeoutError: If the flow times out during execution.
             Exception: For any other exceptions that may occur.
         """
+        raise NotImplementedError("run() must be implemented by subclasses")
 
-    async def cancel(
-        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
-    ) -> None:
+    async def close(self) -> None:
+        # Cleanup communication bridge
+        if self._comm_bridge:
+            await self._comm_bridge.shutdown()
+
+    async def cancel(self, *args: Any, **kwargs: Dict[str, Any]) -> None:
         """
         Cancel the flow execution.
         """
-        pass
+        if self._comm_bridge:
+            for task_profile in self.context.task_profiles:
+                task_id = task_profile.get_id()
+                command = TaskCommand(task_id=task_id, command_type=CommandType.CANCEL)
+                await self._comm_bridge.send_command(task_id, command)

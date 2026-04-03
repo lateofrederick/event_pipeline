@@ -31,7 +31,10 @@ from volnux.mixins.event import (
     RetryPolicy,
     ExecutorInitializerMixin,
     ExecutorInitializerConfig,
+    EventCheckPointingMixin,
 )
+from volnux.execution.rehydrator.event.snapshot import EventPhase
+from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 
 __all__ = [
     "EventBase",
@@ -249,7 +252,9 @@ class StopConditionProcessor:
         }
 
 
-class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
+class EventBase(
+    RetryMixin, ExecutorInitializerMixin, EventCheckPointingMixin, metaclass=EventMeta
+):
     """
     Abstract base class for event in the pipeline system.
 
@@ -349,6 +354,7 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
         execution_context: "ExecutionContext",
         task_id: str,
         *args: typing.Tuple[typing.Any],
+        checkpoint_manager: typing.Optional[VolnuxCheckPointManager] = None,
         previous_result: typing.Union[typing.List[EventResult], EMPTY] = EMPTY,
         stop_condition: StopCondition = StopCondition.NEVER,
         run_bypass_event_checks: bool = False,
@@ -369,6 +375,9 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
         :type task_id: str
         :param args: Positional arguments to be passed to the base class constructor.
         :type args: Tuple[Any]
+        :param checkpoint_manager: The checkpoint manager instance to use for event
+            checkpointing. Defaults to None.
+        :type checkpoint_manager: Optional[VolnuxCheckPointManager]
         :param previous_result: The result of the preceding event execution. Defaults to
             `EMPTY` when not specified.
         :type previous_result: Union[List[EventResult], EMPTY]
@@ -388,19 +397,34 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
         super().__init__(*args, **kwargs)
 
         self._execution_context = execution_context
+
+        self._phase: EventPhase = EventPhase.INITIALIZED
+        self.checkpoint_manager = checkpoint_manager
+
+        # Task ID
         self._task_id = task_id
         self._sequence_number = sequence_number
+
+        # Configurations
         self.options = options
+
+        # The previous result of the event, if any.
         self.previous_result = previous_result
         self.stop_condition = StopConditionProcessor(
             stop_condition=stop_condition, logger=logger
         )
         self.run_bypass_event_checks = run_bypass_event_checks
 
+        # Retry configuration
         self._retry_count = 0
         self.init_retry()
 
+        # The executor used to execute the event.
+        self._execution_status: bool = False
+        self.execution_result: typing.Any = None
+
         self._init_args = get_function_call_args(self.__class__.__init__, locals())  # type: ignore
+        self._init_args.pop("checkpoint_manager", None)
         self._call_args = EMPTY
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
@@ -539,7 +563,7 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
         return False, None
 
     @abc.abstractmethod
-    def process(
+    async def process(
         self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
     ) -> typing.Tuple[bool, typing.Any]:
         """
@@ -547,7 +571,7 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
 
         This method must be implemented by any class inheriting from EventBase.
         It defines the logic for processing pipeline data, taking in any necessary
-        arguments, and returning a tuple containing:
+         arguments and returning a tuple containing:
             - A boolean indicating the success or failure of the processing.
             - The result of the processing, which could vary based on the event logic.
 
@@ -555,6 +579,11 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
             A tuple (success_flag, result), where:
                 - success_flag (bool): True if processing is successful, False otherwise.
                 - result (Any): The output or result of the processing, which can vary.
+
+        Note:
+            The result must be serializable (primitives, dicts, lists).
+            Avoid returning file handles, sockets, or other non-serializable objects.
+            For complex state, use external_resources with custom serialization.
         """
         raise NotImplementedError()
 
@@ -562,14 +591,12 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
         self, error: bool, content: typing.Dict[str, typing.Any]
     ) -> EventResult:
         return EventResult(
-            error=error,  # type: ignore
-            task_id=self._task_id,  # type: ignore
-            order=self._sequence_number,  # type: ignore
-            event_name=self.__class__.__name__,  # type: ignore
+            error=error,
+            task_id=self._task_id,
+            order=self._sequence_number,
+            event_name=self.__class__.__name__,
             content=content,
-            # call_params=self.get_call_args(),
-            # init_params=self.get_init_args(),
-        )  # type: ignore
+        )
 
     def on_success(self, execution_result: typing.Any) -> EventResult:
         self.stop_condition.message = execution_result
@@ -659,39 +686,39 @@ class EventBase(RetryMixin, ExecutorInitializerMixin, metaclass=EventMeta):
         """Clear the cached subclass registry"""
         _event_registry.clear()
 
-    def __call__(
-        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
-    ) -> EventResult:
-        self._call_args = get_function_call_args(self.__class__.__call__, locals())  # type: ignore
-
-        if self.run_bypass_event_checks:
-            try:
-                should_skip, data = self.can_bypass_current_event()
-            except Exception as e:
-                logger.error(
-                    "Error in event setup status checks: %s", str(e), exc_info=e
-                )
-                raise
-
-            if should_skip:
-                execution_result = {
-                    "status": 1,
-                    "skip_event_execution": should_skip,
-                    "data": data,
-                }
-                return self.on_success(execution_result)
-
-        try:
-            self._execution_status, execution_result = self.retry(
-                self.process, *args, **kwargs
-            )
-        except MaxRetryError as e:
-            logger.error(str(e), exc_info=e.exception)
-            return self.on_failure(e)
-        except Exception as e:
-            if not isinstance(e, SwitchTask):
-                logger.error(str(e), exc_info=e)
-            return self.on_failure(e)
-        if self._execution_status:
-            return self.on_success(execution_result)
-        return self.on_failure(execution_result)
+    # def __call__(
+    #     self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+    # ) -> EventResult:
+    #     self._call_args = get_function_call_args(self.__class__.__call__, locals())  # type: ignore
+    #
+    #     if self.run_bypass_event_checks:
+    #         try:
+    #             should_skip, data = self.can_bypass_current_event()
+    #         except Exception as e:
+    #             logger.error(
+    #                 "Error in event setup status checks: %s", str(e), exc_info=e
+    #             )
+    #             raise
+    #
+    #         if should_skip:
+    #             execution_result = {
+    #                 "status": 1,
+    #                 "skip_event_execution": should_skip,
+    #                 "data": data,
+    #             }
+    #             return self.on_success(execution_result)
+    #
+    #     try:
+    #         self._execution_status, execution_result = self.retry(
+    #             self.process, *args, **kwargs
+    #         )
+    #     except MaxRetryError as e:
+    #         logger.error(str(e), exc_info=e.exception)
+    #         return self.on_failure(e)
+    #     except Exception as e:
+    #         if not isinstance(e, SwitchTask):
+    #             logger.error(str(e), exc_info=e)
+    #         return self.on_failure(e)
+    #     if self._execution_status:
+    #         return self.on_success(execution_result)
+    #     return self.on_failure(execution_result)

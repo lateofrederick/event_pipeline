@@ -1,12 +1,21 @@
 import logging
-import pickle
 import typing
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Type, TypeVar, cast
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    Type,
+    TypeVar,
+    cast,
+    TYPE_CHECKING,
+)
 
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.conf import ConfigLoader
 from volnux.exceptions import (
     ObjectExistError,
     ObjectDoesNotExist,
@@ -18,9 +27,10 @@ from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.utils import get_obj_klass_import_str
 from volnux.concurrency.async_utils import to_thread
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from volnux.config import VolnuxConfig
 
-CONFIG = VolnuxConfig.get_instance()
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="ObjectIdentityMixin")
 
@@ -110,9 +120,15 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         return None
 
     @classmethod
+    def get_volnux_config(cls) -> "VolnuxConfig":
+        from volnux.config import VolnuxConfig
+
+        return VolnuxConfig.get_instance()
+
+    @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:
         """Get the backend configuration for this class."""
-        return CONFIG.KEY_VALUE_STORE_CONFIG
+        return cls.get_volnux_config().KEY_VALUE_STORE_CONFIG
 
     @classmethod
     def _initialize_backend(cls) -> None:

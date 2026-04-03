@@ -11,11 +11,10 @@ from cryptography.exceptions import InvalidSignature
 
 from volnux import settings as default_settings
 from volnux.concurrency.async_utils import to_thread
-from volnux.result import ResultSet
 from volnux.constants import UNKNOWN
 from volnux.crypto.signer import Signer, KeyLoader
 
-__all__ = ["VolnuxConfig"]
+__all__ = ["VolnuxConfig", "ConfigEntry"]
 
 ENV_CONFIG = "VOLNUX_CONFIG"
 ENV_CONFIG_DIR = "VOLNUX_CONFIG_DIR"
@@ -193,6 +192,8 @@ class VolnuxConfig:
             related signing operations.
         :type signer: Optional[Signer]
         """
+        from volnux.result.result import ResultSet
+
         self._store: ResultSet[ConfigEntry] = ResultSet()
         self._lamport_clock = 0
         self._signer = signer

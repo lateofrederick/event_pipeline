@@ -139,6 +139,12 @@ class SwitchTask(Exception):
         super().__init__(message)
 
 
+class SuspendTask(Exception):
+    def __init__(self, task_instance: "EventBase"):
+        self.task_instance = task_instance
+        super().__init__("Task suspended for higher priority execution")
+
+
 class TaskSwitchingError(PipelineError):
     """TaskSwitchingError raised when a task switch fails."""
 

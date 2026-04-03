@@ -3,7 +3,7 @@ import typing
 from datetime import datetime
 from typing import Optional, Dict, Any, List, TypedDict, Union
 
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 
 conf = VolnuxConfig.get_instance()
 

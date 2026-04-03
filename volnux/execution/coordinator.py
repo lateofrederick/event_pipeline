@@ -63,7 +63,7 @@ class ExecutionCoordinator:
             Configured execution flow ready for running
 
         Raises:
-            ValueError: If execution context is invalid
+            ValueError: If the execution context is invalid
         """
         try:
             logger.info("Setting up execution flow")

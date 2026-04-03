@@ -21,7 +21,7 @@ try:
 except ImportError:
     graphviz = None
 
-from .conf import ConfigLoader
+from .config import VolnuxConfig
 from .constants import EMPTY, PIPELINE_FIELDS, PIPELINE_STATE, UNKNOWN
 from .exceptions import (
     BadPipelineError,

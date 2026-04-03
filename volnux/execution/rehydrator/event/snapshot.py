@@ -3,6 +3,7 @@ from enum import IntEnum
 from datetime import datetime, timezone
 from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
 
+from volnux.constants import MAX_RETRIES
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -68,14 +69,16 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
 
     ## `process` method return value
     # Execution state captured at the end of the PROCESSING phase
-    execution_status: typing.Optional[bool]
+    exec_status: typing.Optional[bool]
 
     # The result of process() or the error raised
     # This might be a Dict, List, or a Serialized Exception Dict
-    execution_result: typing.Any = None
+    exec_result: typing.Any = None
 
     # Capturing the retry state so preemption doesn't reset attempt counters
     retry_count: int = 0
+
+    max_retry_attempts: int = MAX_RETRIES
 
     class Config:
         validation = ValidationFlags.NONE
