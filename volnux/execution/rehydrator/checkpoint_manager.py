@@ -2,9 +2,8 @@ import asyncio
 import logging
 import weakref
 import typing
-import time
-from dataclasses import dataclass
-from typing import Protocol
+import random
+from collections import defaultdict
 
 from .protocol import Monitorable, Snapshot
 
@@ -38,18 +37,21 @@ class VolnuxCheckPointManager:
         retry_attempts: int = 3,
         retry_delay: float = 1.0,
         snapshot_ttl: int = 3600,
+        max_queue_size: int = 1000,
     ):
-        # self.state_store = state_store
         self.checkpoint_interval = checkpoint_interval
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
         self.snapshot_ttl = snapshot_ttl
 
         # Push Queue
-        self._queue: asyncio.Queue[Snapshot] = asyncio.Queue()
+        maxsize = max_queue_size if max_queue_size > 0 else 0
+        self._queue: asyncio.Queue[Snapshot] = asyncio.Queue(maxsize=maxsize)
 
         # Monitored Set: For periodic snapshotting
         self._monitored_contexts: weakref.WeakSet[Monitorable] = weakref.WeakSet()
+        self._context_error_counts: defaultdict[str, int] = defaultdict(int)
+        self._max_context_errors = 5
 
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._worker_task: typing.Optional[asyncio.Task] = None
@@ -80,7 +82,7 @@ class VolnuxCheckPointManager:
 
     def unmonitor(self, context: Monitorable):
         """
-        Unmonitors the given monitorable context by discarding it from the set of
+        Unmonitored the given monitorable context by discarding it from the set of
         monitored contexts.
 
         This method provides a standard 'Pull' interface for handling long-lived
@@ -94,24 +96,68 @@ class VolnuxCheckPointManager:
         self._monitored_contexts.discard(context)
 
     async def start(self):
-        """Starts both the consumer and the periodic monitor."""
+        """Start both the consumer and the periodic monitor."""
         if self._running:
+            logger.warning("CheckpointManager already running")
             return
+
         self._running = True
-        self._worker_task = asyncio.create_task(self._persistence_loop())
-        self._monitor_task = asyncio.create_task(self._periodic_monitor())
-        logger.info("Unified CheckpointManager started.")
+        await self._start_worker()
+        await self._start_monitor()
+        logger.info("CheckpointManager started")
+
+    async def _start_worker(self):
+        """Start the persistence worker task (Restartable protocol)."""
+        if self._worker_task and not self._worker_task.done():
+            logger.debug("Worker task already running")
+            return
+
+        self._worker_task = asyncio.create_task(
+            self._persistence_loop(), name="checkpoint-worker"
+        )
+        logger.debug("Persistence worker started")
+
+    async def _start_monitor(self):
+        """Start the periodic monitor task (Restartable protocol)."""
+        if self._monitor_task and not self._monitor_task.done():
+            logger.debug("Monitor task already running")
+            return
+
+        self._monitor_task = asyncio.create_task(
+            self._periodic_monitor(), name="checkpoint-monitor"
+        )
+        logger.debug("Periodic monitor started")
 
     async def _periodic_monitor(self):
         while self._running:
             await asyncio.sleep(self.checkpoint_interval)
+
             for context in list(self._monitored_contexts):
+                context_id = getattr(context, "id", id(context))
                 try:
                     # Offload the work to the queue
                     snapshot = await context.create_snapshot()
                     self.enqueue(snapshot)
+
+                    # Reset error count
+                    self._context_error_counts.pop(context_id, None)
                 except Exception as e:
-                    logger.error(f"Failed to sample context {context.state_id}: {e}")
+                    self._context_error_counts[context_id] += 1
+                    error_count = self._context_error_counts[context_id]
+
+                    logger.error(
+                        f"Failed to snapshot context {context_id} "
+                        f"({error_count}/{self._max_context_errors}): {e}"
+                    )
+
+                    # Remove context if it's failing repeatedly
+                    if error_count >= self._max_context_errors:
+                        logger.warning(
+                            f"Removing context {context_id} from monitoring "
+                            f"after {error_count} consecutive failures"
+                        )
+                        self.unmonitor(context)
+                        self._context_error_counts.pop(context_id, None)
 
     async def _persistence_loop(self):
         """The single consumer for all persistence requests."""
@@ -132,12 +178,20 @@ class VolnuxCheckPointManager:
                 raise
             except Exception as e:
                 last_error = e
-                delay = self.retry_delay * attempt
+
+                base_delay = self.retry_delay * (2 ** (attempt - 1))
+                jitter = random.uniform(0, base_delay * 0.1)  # 10% jitter
+                delay = min(base_delay + jitter, 30.0)  # Cap at 30 seconds
+
+                # delay = self.retry_delay * attempt
+
                 logger.warning(
-                    f"Persist failed for {snapshot.id} (attempt {attempt}): {e}"
+                    f"Persist failed for {snapshot.id} (attempt {attempt}/{self.retry_attempts}): {e}"
+                    f"Retrying in {delay:.2f}s"
                 )
-                if attempt < self.retry_attempts:
-                    await asyncio.sleep(delay)
+
+                # if attempt < self.retry_attempts:
+                await asyncio.sleep(delay)
 
         logger.error(
             f"Persistence failed after {self.retry_attempts} tries: {last_error}"
@@ -147,10 +201,100 @@ class VolnuxCheckPointManager:
         """The Preemption Barrier: Ensures the queue is empty before a swap."""
         await self._queue.join()
 
+    def get_managed_tasks(self) -> typing.Dict[str, "TaskInfo"]:
+        """
+        Get information about all managed tasks.
+
+        Returns:
+            Dictionary mapping task names to TaskInfo
+        """
+        return {
+            "worker": {
+                "alive": self._worker_task is not None and not self._worker_task.done(),
+                "task": self._worker_task,
+                "restart_function": "_start_worker",
+            },
+            "monitor": {
+                "alive": self._monitor_task is not None
+                and not self._monitor_task.done(),
+                "task": self._monitor_task,
+                "restart_function": "_start_monitor",
+            },
+        }
+
+    async def restart_task(self, task_name: str) -> None:
+        """
+        Restart a specific task by name.
+
+        Args:
+            task_name: Name of the task to restart
+
+        Raises:
+            ValueError: If task_name is not recognized
+            RuntimeError: If restart fails
+        """
+        if task_name == "worker":
+            await self._start_worker()
+        elif task_name == "monitor":
+            await self._start_monitor()
+        else:
+            raise ValueError(
+                f"Unknown task name: {task_name}. "
+                f"Valid tasks: {list(self.get_managed_tasks().keys())}"
+            )
+
+    def is_healthy(self) -> bool:
+        """Check if the checkpoint manager is healthy."""
+        if not self._running:
+            return False
+
+        tasks = self.get_managed_tasks()
+        return all(task["alive"] for task in tasks.values())
+
+    async def health_check(self) -> typing.Dict[str, typing.Any]:
+        """Comprehensive health check."""
+        tasks = self.get_managed_tasks()
+
+        return {
+            "healthy": self.is_healthy(),
+            "running": self._running,
+            "tasks": {name: {"alive": info["alive"]} for name, info in tasks.items()},
+            "queue_size": self._queue.qsize(),
+            "queue_max_size": self._queue.maxsize,
+            "monitored_contexts": len(list(self._monitored_contexts)),
+        }
+
     async def stop(self):
+        """
+        Stop the checkpoint manager gracefully.
+
+        Cancels monitoring, flushes pending checkpoints, and stops the worker.
+        """
+        if not self._running:
+            return
+
         self._running = False
-        if self._monitor_task:
+        logger.info("Stopping checkpoint manager...")
+
+        # Cancel monitor task
+        if self._monitor_task and not self._monitor_task.done():
             self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+            logger.debug("Monitor task stopped")
+
+        logger.info(f"Flushing {self._queue.qsize()} pending checkpoints...")
         await self.flush()
-        if self._worker_task:
+
+        # Cancel worker task
+        if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+            logger.debug("Worker task stopped")
+
+        logger.info("Checkpoint manager stopped successfully")

@@ -34,7 +34,7 @@ from .state_manager import ExecutionState, ExecutionStatus, StateManager
 
 if typing.TYPE_CHECKING:
     from volnux.engine.base import WorkflowEngine
-    from volnux.execution.rehydrator.snapshot import ContextSnapshot
+    from volnux.execution.rehydrator.engine.snapshot import ContextSnapshot
 
 logger = logging.getLogger(__name__)
 

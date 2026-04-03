@@ -250,6 +250,7 @@ event_called = SoftSignal(
     "event_called",
     provide_args=["event", "init_kwargs", "call_kwargs", "hook_type", "result"],
 )
+event_phase_changed = SoftSignal("event_phase_changed", provide_args=["event", "phase"])
 
 event_execution_init = SoftSignal(
     "event_execution_init",

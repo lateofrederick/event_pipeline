@@ -1,5 +1,6 @@
 import functools
 import typing
+import logging
 from concurrent.futures import Executor
 
 from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
@@ -12,6 +13,9 @@ from .utils import validate_event_process_method
 
 if typing.TYPE_CHECKING:
     from .signal import SoftSignal
+
+
+logger = logging.getLogger(__name__)
 
 
 F = typing.TypeVar("F", bound=typing.Callable[..., typing.Any])

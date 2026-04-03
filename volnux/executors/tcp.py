@@ -10,12 +10,13 @@ import zlib
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from multiprocessing.reduction import ForkingPickler
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 from volnux.utils import (
     send_data_over_socket,
     receive_data_from_socket,
     create_client_ssl_context,
 )
+
 # from volnux.telemetry.network import network_telemetry
 from volnux.executors.message import TaskMessage
 
