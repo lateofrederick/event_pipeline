@@ -80,6 +80,24 @@ _OPTIONS_KNOWN_FIELDS: typing.FrozenSet[str] = frozenset(
     }
 )
 
+# ---------------------------------------------------------------------------
+# Expression-level operator classification
+# ---------------------------------------------------------------------------
+
+# Pipeline operators — never subject to expression-level type checks.
+_PIPELINE_OPS: typing.FrozenSet[str] = frozenset({"->", "|->"})
+
+# Bitwise and shift operators — both operands must be integers.
+_BITWISE_OPS: typing.FrozenSet[str] = frozenset({"|", "&", "^", "<<", ">>", ">>>"})
+
+# Arithmetic operators — operands must be numeric (not string or bool).
+_ARITHMETIC_OPS: typing.FrozenSet[str] = frozenset({"+", "-", "*", "/", "%"})
+
+# LiteralTypes that represent string-like values.
+_STRING_TYPES: typing.FrozenSet[LiteralType] = frozenset(
+    {LiteralType.STRING, LiteralType.IMPORT_STRING}
+)
+
 
 def _is_pascal_case(name: str) -> bool:
     """Return True when *name* looks like PascalCase.
@@ -283,8 +301,141 @@ class Sema(ASTVisitorInterface):
         self._visit(node.left)
         self._visit(node.right)
 
+        op = node.op
+
+        # Pipeline operators carry no expression-level type meaning.
+        if op in _PIPELINE_OPS:
+            return
+
+        left_lit = node.left if isinstance(node.left, LiteralNode) else None
+        right_lit = node.right if isinstance(node.right, LiteralNode) else None
+
+        # --- Division by zero ---
+        if op == "/" and right_lit is not None:
+            if right_lit.type == LiteralType.NUMBER and right_lit.value == 0:
+                self._err("Division by zero", node)
+
+        # --- Modulo by zero ---
+        if op == "%" and right_lit is not None:
+            if right_lit.type == LiteralType.NUMBER and right_lit.value == 0:
+                self._err("Modulo by zero", node)
+
+        # --- Arithmetic on string or boolean literal ---
+        if op in _ARITHMETIC_OPS:
+            for lit, side in ((left_lit, "left"), (right_lit, "right")):
+                if lit is None:
+                    continue
+                if lit.type in _STRING_TYPES:
+                    self._warn(
+                        f"Arithmetic operator '{op}': {side} operand is a string "
+                        f"literal ({lit.value!r}); strings are not numeric",
+                        node,
+                    )
+                elif lit.type == LiteralType.BOOLEAN:
+                    self._warn(
+                        f"Arithmetic operator '{op}': {side} operand is a boolean "
+                        f"literal ({lit.value!r}); booleans are not numeric",
+                        node,
+                    )
+
+        # --- Constant logical short-circuit ---
+        # false && x  or  x && false  →  expression is always false
+        if op == "&&":
+            for lit, side in ((left_lit, "left"), (right_lit, "right")):
+                if (
+                    lit is not None
+                    and lit.type == LiteralType.BOOLEAN
+                    and lit.value is False
+                ):
+                    self._warn(
+                        f"Logical AND '&&': {side} operand is a constant 'false'; "
+                        f"the expression is always false",
+                        node,
+                    )
+
+        # true || x  or  x || true  →  expression is always true
+        # (only inside attribute expressions; pipeline || has TaskNode children, not LiteralNodes)
+        if op == "||":
+            for lit, side in ((left_lit, "left"), (right_lit, "right")):
+                if (
+                    lit is not None
+                    and lit.type == LiteralType.BOOLEAN
+                    and lit.value is True
+                ):
+                    self._warn(
+                        f"Logical OR '||': {side} operand is a constant 'true'; "
+                        f"the expression is always true",
+                        node,
+                    )
+
+        # --- Bitwise / shift on float or string literal ---
+        if op in _BITWISE_OPS:
+            for lit, side in ((left_lit, "left"), (right_lit, "right")):
+                if lit is None:
+                    continue
+                if lit.type == LiteralType.NUMBER and isinstance(lit.value, float):
+                    self._warn(
+                        f"Bitwise/shift operator '{op}': {side} operand is a float "
+                        f"literal ({lit.value!r}); bitwise operations require integers",
+                        node,
+                    )
+                elif lit.type in _STRING_TYPES:
+                    self._warn(
+                        f"Bitwise/shift operator '{op}': {side} operand is a string "
+                        f"literal ({lit.value!r}); bitwise operations require integers",
+                        node,
+                    )
+
     def visit_unaryop(self, node: "UnaryOpNode") -> None:
         self._visit(node.right)
+
+        # Bitwise NOT on a non-integer literal is always wrong.
+        if node.op == "~" and isinstance(node.right, LiteralNode):
+            lit = node.right
+            if lit.type == LiteralType.NUMBER and isinstance(lit.value, float):
+                self._warn(
+                    f"Bitwise NOT '~' applied to a float literal ({lit.value!r}); "
+                    f"bitwise operations require integers",
+                    node,
+                )
+            elif lit.type in _STRING_TYPES:
+                self._warn(
+                    f"Bitwise NOT '~' applied to a string literal ({lit.value!r}); "
+                    f"bitwise operations require integers",
+                    node,
+                )
+
+        # Unary minus on a string or boolean literal is meaningless.
+        if node.op == "-" and isinstance(node.right, LiteralNode):
+            lit = node.right
+            if lit.type in _STRING_TYPES:
+                self._warn(
+                    f"Unary minus '-' applied to a string literal ({lit.value!r}); "
+                    f"strings are not numeric",
+                    node,
+                )
+            elif lit.type == LiteralType.BOOLEAN:
+                self._warn(
+                    f"Unary minus '-' applied to a boolean literal ({lit.value!r}); "
+                    f"booleans are not numeric",
+                    node,
+                )
+
+        # Logical NOT on a non-boolean literal is likely a mistake.
+        if node.op == "!" and isinstance(node.right, LiteralNode):
+            lit = node.right
+            if lit.type == LiteralType.NUMBER:
+                self._warn(
+                    f"Logical NOT '!' applied to a numeric literal ({lit.value!r}); "
+                    f"expected a boolean operand",
+                    node,
+                )
+            elif lit.type in _STRING_TYPES:
+                self._warn(
+                    f"Logical NOT '!' applied to a string literal ({lit.value!r}); "
+                    f"expected a boolean operand",
+                    node,
+                )
 
     def visit_retry(self, node: "RetryNode") -> None:
         self._visit(node.job)
@@ -314,9 +465,37 @@ class Sema(ASTVisitorInterface):
         self._visit(node.left)
         self._visit(node.right)
 
+        # A known non-null constant on the left means the right branch is dead.
+        if (
+            isinstance(node.left, LiteralNode)
+            and node.left.type != LiteralType.NULL
+        ):
+            self._warn(
+                f"Left operand of '??' is a non-null literal; "
+                f"the right branch is unreachable",
+                node,
+            )
+
     def visit_comparison_expr(self, node: "ComparisonExprNode") -> None:
         self._visit(node.left)
         self._visit(node.right)
+
+        # Ordering comparisons (<, >, <=, >=) between a string and a number
+        # literal are almost certainly a mistake. Equality (==, !=) is fine.
+        if node.operator in {"<", ">", "<=", ">="}:
+            left_lit = node.left if isinstance(node.left, LiteralNode) else None
+            right_lit = node.right if isinstance(node.right, LiteralNode) else None
+            if left_lit is not None and right_lit is not None:
+                left_str = left_lit.type in _STRING_TYPES
+                right_str = right_lit.type in _STRING_TYPES
+                left_num = left_lit.type == LiteralType.NUMBER
+                right_num = right_lit.type == LiteralType.NUMBER
+                if (left_str and right_num) or (left_num and right_str):
+                    self._warn(
+                        f"Ordering comparison '{node.operator}' between a string "
+                        f"literal and a number literal is likely a mistake",
+                        node,
+                    )
 
     def visit_branch(self, node: "BranchNode") -> None:
         # Branches are visited directly in visit_conditional; this is a no-op
@@ -349,3 +528,12 @@ class Sema(ASTVisitorInterface):
         self._visit(node.condition)
         self._visit(node.true_expr)
         self._visit(node.false_expr)
+
+        # A constant literal as the condition means one branch is always dead.
+        if isinstance(node.condition, LiteralNode):
+            self._warn(
+                f"Ternary condition is a constant literal; "
+                f"one branch is always unreachable",
+                node,
+            )
+

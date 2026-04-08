@@ -118,10 +118,12 @@ class TestSemaClean(unittest.TestCase):
         self._assert_clean("Worker[executor = $env.EXECUTOR]")
 
     def test_ternary_in_attribute(self):
-        self._assert_clean('Worker[retry_attempts = (1 ?? 2) ? 3 : 4]')
+        # null on the left of ?? means no "non-null literal" warning
+        self._assert_clean('Worker[retry_attempts = (null ?? 2) ? 3 : 4]')
 
     def test_null_coalesce_in_attribute(self):
-        self._assert_clean('Worker[retry_attempts = 1 ?? 2]')
+        # null on the left is the intended usage — right is the fallback
+        self._assert_clean('Worker[retry_attempts = null ?? 2]')
 
     def test_complex_chain_clean(self):
         self._assert_clean(
@@ -538,6 +540,484 @@ class TestSemanticResult(unittest.TestCase):
     def test_bool_true_when_clean(self):
         result = _analyse('FetchData')
         self.assertTrue(bool(result))
+
+
+# ===========================================================================
+# Expression-level semantic checks
+# ===========================================================================
+
+class TestSemaExpressions(unittest.TestCase):
+    """Checks that fire on expression nodes inside attribute values."""
+
+    # ------------------------------------------------------------------
+    # Division by zero  →  ERROR
+    # ------------------------------------------------------------------
+
+    def test_division_by_zero_is_error(self):
+        result = _analyse('Worker[opt = 3 / 0]')
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Division by zero"))
+
+    def test_zero_divided_by_zero_is_error(self):
+        result = _analyse('Worker[opt = 0 / 0]')
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Division by zero"))
+
+    def test_valid_division_no_error(self):
+        result = _analyse('Worker[opt = 10 / 2]')
+        self.assertFalse(_has_error_containing(result, "Division by zero"))
+
+    def test_division_variable_denominator_no_error(self):
+        # denominator is a variable — cannot know at sema time
+        result = _analyse('@v = 2 Worker[opt = 10 / $v]')
+        self.assertFalse(_has_error_containing(result, "Division by zero"))
+
+    def test_division_by_zero_in_chain(self):
+        result = _analyse('FetchData -> Worker[opt = 10 / 0]')
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Division by zero"))
+
+    def test_division_by_zero_level_is_error_not_warning(self):
+        result = _analyse('Worker[opt = 1 / 0]')
+        errors = [d for d in result.errors if "Division by zero" in d.message]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].level, SemanticLevel.ERROR)
+
+    # ------------------------------------------------------------------
+    # Bitwise / shift on float  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_shift_left_float_left_operand_warns(self):
+        result = _analyse('Worker[opt = 3.14 << 2]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+        self.assertTrue(_has_warning_containing(result, "<<"))
+
+    def test_shift_right_float_right_operand_warns(self):
+        result = _analyse('Worker[opt = 4 >> 1.5]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+        self.assertTrue(_has_warning_containing(result, ">>"))
+
+    def test_arith_shift_right_float_warns(self):
+        result = _analyse('Worker[opt = 4 >>> 1.5]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+
+    def test_bitwise_or_float_left_warns(self):
+        result = _analyse('Worker[opt = 3.14 | 2]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+        self.assertTrue(_has_warning_containing(result, "|"))
+
+    def test_bitwise_and_float_right_warns(self):
+        result = _analyse('Worker[opt = 1 & 2.5]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+
+    def test_bitwise_xor_float_left_warns(self):
+        result = _analyse('Worker[opt = 3.14 ^ 2]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+
+    def test_integer_bitwise_no_warning(self):
+        result = _analyse('Worker[opt = 3 & 5]')
+        self.assertFalse(_has_warning_containing(result, "float"))
+        self.assertFalse(_has_warning_containing(result, "string"))
+
+    def test_integer_shift_no_warning(self):
+        result = _analyse('Worker[opt = 4 << 2]')
+        self.assertFalse(_has_warning_containing(result, "float"))
+
+    # ------------------------------------------------------------------
+    # Bitwise / shift on string  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_bitwise_or_string_left_warns(self):
+        result = _analyse('Worker[opt = "hello" | 1]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "|"))
+
+    def test_bitwise_and_string_right_warns(self):
+        result = _analyse('Worker[opt = 1 & "world"]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_shift_left_string_warns(self):
+        result = _analyse('Worker[opt = "foo" << 1]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_bitwise_xor_both_strings_warns(self):
+        result = _analyse('Worker[opt = "a" ^ "b"]')
+        string_ws = [d for d in result.warnings if "string" in d.message]
+        self.assertGreaterEqual(len(string_ws), 1)
+
+    # ------------------------------------------------------------------
+    # Bitwise NOT (~) on float / string  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_bitwise_not_float_warns(self):
+        result = _analyse('Worker[opt = ~3.14]')
+        self.assertTrue(_has_warning_containing(result, "float"))
+        self.assertTrue(_has_warning_containing(result, "~"))
+
+    def test_bitwise_not_string_warns(self):
+        result = _analyse('Worker[opt = ~"hello"]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "~"))
+
+    def test_bitwise_not_int_no_warning(self):
+        result = _analyse('Worker[opt = ~5]')
+        self.assertFalse(_has_warning_containing(result, "float"))
+        self.assertFalse(_has_warning_containing(result, "string"))
+
+    # ------------------------------------------------------------------
+    # Ordering comparison type mismatch  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_comparison_string_gt_number_warns(self):
+        result = _analyse('Worker[opt = "a" > 1]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "number"))
+
+    def test_comparison_number_lt_string_warns(self):
+        result = _analyse('Worker[opt = 1 < "world"]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_comparison_number_le_string_warns(self):
+        result = _analyse('Worker[opt = 1 <= "world"]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_comparison_string_ge_number_warns(self):
+        result = _analyse('Worker[opt = "a" >= 1]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_comparison_eq_string_number_no_warning(self):
+        # == between string and number is intentionally not flagged
+        result = _analyse('Worker[opt = "1" == 1]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+
+    def test_comparison_ne_string_number_no_warning(self):
+        result = _analyse('Worker[opt = "a" != 1]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+
+    def test_comparison_same_type_string_no_warning(self):
+        result = _analyse('Worker[opt = "a" < "b"]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+
+    def test_comparison_same_type_number_no_warning(self):
+        result = _analyse('Worker[opt = 1 > 2]')
+        self.assertFalse(_has_warning_containing(result, "number"))
+
+    # ------------------------------------------------------------------
+    # Non-null literal on left of ??  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_null_coalesce_int_left_warns(self):
+        result = _analyse('Worker[opt = 1 ?? 2]')
+        self.assertTrue(_has_warning_containing(result, "non-null"))
+        self.assertTrue(_has_warning_containing(result, "unreachable"))
+
+    def test_null_coalesce_string_left_warns(self):
+        result = _analyse('Worker[opt = "hello" ?? "world"]')
+        self.assertTrue(_has_warning_containing(result, "non-null"))
+
+    def test_null_coalesce_bool_left_warns(self):
+        result = _analyse('Worker[opt = true ?? false]')
+        self.assertTrue(_has_warning_containing(result, "non-null"))
+
+    def test_null_coalesce_null_left_no_warning(self):
+        result = _analyse('Worker[opt = null ?? 2]')
+        self.assertFalse(_has_warning_containing(result, "non-null"))
+
+    def test_null_coalesce_variable_left_no_warning(self):
+        # runtime value of variable unknown — no warning
+        result = _analyse('@v = 1 Worker[opt = $v ?? 2]')
+        self.assertFalse(_has_warning_containing(result, "non-null"))
+
+    # ------------------------------------------------------------------
+    # Constant literal ternary condition  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_ternary_bool_true_condition_warns(self):
+        result = _analyse('Worker[opt = true ? 1 : 2]')
+        self.assertTrue(_has_warning_containing(result, "Ternary condition"))
+        self.assertTrue(_has_warning_containing(result, "unreachable"))
+
+    def test_ternary_int_literal_condition_warns(self):
+        result = _analyse('Worker[opt = 1 ? 2 : 3]')
+        self.assertTrue(_has_warning_containing(result, "Ternary condition"))
+
+    def test_ternary_string_literal_condition_warns(self):
+        result = _analyse('Worker[opt = "on" ? 1 : 2]')
+        self.assertTrue(_has_warning_containing(result, "Ternary condition"))
+
+    def test_ternary_variable_condition_no_warning(self):
+        result = _analyse('@v = true Worker[opt = $v ? 1 : 2]')
+        self.assertFalse(_has_warning_containing(result, "Ternary condition"))
+
+    def test_ternary_expr_condition_not_flagged_as_constant(self):
+        # (null ?? 2) is a NullCoalesceExprNode, not a bare LiteralNode
+        result = _analyse('Worker[opt = (null ?? 2) ? 3 : 4]')
+        self.assertFalse(_has_warning_containing(result, "Ternary condition is a constant"))
+
+    # ------------------------------------------------------------------
+    # Diagnostic level sanity
+    # ------------------------------------------------------------------
+
+    def test_expression_warning_level_is_warning_not_error(self):
+        result = _analyse('Worker[opt = 3.14 << 2]')
+        self.assertFalse(result.has_errors)
+        self.assertTrue(result.has_warnings)
+        self.assertEqual(result.warnings[0].level, SemanticLevel.WARNING)
+
+    def test_parallel_chain_operator_not_flagged(self):
+        # || in chain context must never trigger expression-level checks
+        result = _analyse('FetchData || ProcessResult')
+        expr_issues = [
+            d for d in result.all
+            if any(k in d.message for k in ("float", "string", "bitwise", "Division"))
+        ]
+        self.assertEqual(len(expr_issues), 0)
+
+    # ------------------------------------------------------------------
+    # Modulo by zero  →  ERROR
+    # ------------------------------------------------------------------
+
+    def test_modulo_by_zero_is_error(self):
+        result = _analyse('Worker[opt = 5 % 0]')
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Modulo by zero"))
+
+    def test_zero_modulo_zero_is_error(self):
+        result = _analyse('Worker[opt = 0 % 0]')
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Modulo by zero"))
+
+    def test_valid_modulo_no_error(self):
+        result = _analyse('Worker[opt = 10 % 3]')
+        self.assertFalse(_has_error_containing(result, "Modulo by zero"))
+
+    def test_modulo_variable_denominator_no_error(self):
+        # denominator is a variable — cannot know at sema time
+        result = _analyse('@v = 3 Worker[opt = 10 % $v]')
+        self.assertFalse(_has_error_containing(result, "Modulo by zero"))
+
+    def test_modulo_by_zero_level_is_error(self):
+        result = _analyse('Worker[opt = 7 % 0]')
+        errors = [d for d in result.errors if "Modulo by zero" in d.message]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].level, SemanticLevel.ERROR)
+
+    def test_modulo_by_zero_in_chain(self):
+        result = _analyse('FetchData -> Worker[opt = 9 % 0]')
+        self.assertTrue(result.has_errors)
+        self.assertTrue(_has_error_containing(result, "Modulo by zero"))
+
+    # ------------------------------------------------------------------
+    # Arithmetic on string literal  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_string_plus_number_warns(self):
+        result = _analyse('Worker[opt = "hello" + 1]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "+"))
+
+    def test_number_plus_string_warns(self):
+        result = _analyse('Worker[opt = 1 + "world"]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "+"))
+
+    def test_string_minus_number_warns(self):
+        result = _analyse('Worker[opt = "foo" - 1]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "-"))
+
+    def test_string_multiply_number_warns(self):
+        result = _analyse('Worker[opt = "bar" * 2]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_string_divide_number_warns(self):
+        result = _analyse('Worker[opt = "baz" / 2]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_string_modulo_number_warns(self):
+        result = _analyse('Worker[opt = "qux" % 2]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_integer_addition_no_string_warning(self):
+        result = _analyse('Worker[opt = 1 + 2]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+
+    def test_integer_arithmetic_no_warning(self):
+        result = _analyse('Worker[opt = 2 + 3 * 4 - 1]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+        self.assertFalse(_has_warning_containing(result, "bool"))
+
+    def test_arithmetic_string_warning_is_not_error(self):
+        result = _analyse('Worker[opt = "hello" + 1]')
+        self.assertFalse(result.has_errors)
+        self.assertTrue(result.has_warnings)
+        w = [d for d in result.warnings if "string" in d.message][0]
+        self.assertEqual(w.level, SemanticLevel.WARNING)
+
+    # ------------------------------------------------------------------
+    # Arithmetic on boolean literal  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_bool_plus_int_warns(self):
+        result = _analyse('Worker[opt = true + 1]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+        self.assertTrue(_has_warning_containing(result, "+"))
+
+    def test_int_plus_bool_warns(self):
+        result = _analyse('Worker[opt = 1 + false]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+
+    def test_bool_multiply_int_warns(self):
+        result = _analyse('Worker[opt = false * 2]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+
+    def test_int_divide_bool_warns(self):
+        result = _analyse('Worker[opt = 4 / true]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+
+    def test_int_modulo_bool_warns(self):
+        # true has value True (non-zero), so no modulo-by-zero error
+        result = _analyse('Worker[opt = 5 % true]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+        self.assertFalse(_has_error_containing(result, "Modulo by zero"))
+
+    def test_arithmetic_bool_warning_is_not_error(self):
+        result = _analyse('Worker[opt = true + 1]')
+        self.assertFalse(result.has_errors)
+        self.assertTrue(result.has_warnings)
+
+    def test_two_bools_in_arithmetic_warns_twice(self):
+        result = _analyse('Worker[opt = true + false]')
+        bool_warnings = [d for d in result.warnings if "bool" in d.message]
+        self.assertEqual(len(bool_warnings), 2)
+
+    # ------------------------------------------------------------------
+    # Unary minus on string / boolean  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_unary_minus_string_warns(self):
+        result = _analyse('Worker[opt = -"hello"]')
+        self.assertTrue(_has_warning_containing(result, "string"))
+        self.assertTrue(_has_warning_containing(result, "-"))
+
+    def test_unary_minus_bool_warns(self):
+        result = _analyse('Worker[opt = -true]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+        self.assertTrue(_has_warning_containing(result, "-"))
+
+    def test_unary_minus_false_warns(self):
+        result = _analyse('Worker[opt = -false]')
+        self.assertTrue(_has_warning_containing(result, "bool"))
+
+    def test_unary_minus_int_no_warning(self):
+        result = _analyse('Worker[opt = -5]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+        self.assertFalse(_has_warning_containing(result, "bool"))
+
+    def test_unary_minus_float_no_warning(self):
+        result = _analyse('Worker[opt = -3.14]')
+        self.assertFalse(_has_warning_containing(result, "string"))
+        self.assertFalse(_has_warning_containing(result, "bool"))
+
+    def test_unary_minus_string_warning_level_is_warning(self):
+        result = _analyse('Worker[opt = -"hello"]')
+        self.assertFalse(result.has_errors)
+        self.assertTrue(result.has_warnings)
+
+    # ------------------------------------------------------------------
+    # Logical NOT (!) on non-boolean literal  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_logical_not_on_int_warns(self):
+        result = _analyse('Worker[opt = !5]')
+        self.assertTrue(_has_warning_containing(result, "!"))
+
+    def test_logical_not_on_float_warns(self):
+        result = _analyse('Worker[opt = !3.14]')
+        self.assertTrue(_has_warning_containing(result, "!"))
+
+    def test_logical_not_on_string_warns(self):
+        result = _analyse('Worker[opt = !"hello"]')
+        self.assertTrue(_has_warning_containing(result, "!"))
+        self.assertTrue(_has_warning_containing(result, "string"))
+
+    def test_logical_not_on_bool_no_warning(self):
+        result = _analyse('Worker[opt = !true]')
+        logical_not_warnings = [
+            d for d in result.warnings if "Logical NOT" in d.message
+        ]
+        self.assertEqual(len(logical_not_warnings), 0)
+
+    def test_logical_not_on_false_no_warning(self):
+        result = _analyse('Worker[opt = !false]')
+        logical_not_warnings = [
+            d for d in result.warnings if "Logical NOT" in d.message
+        ]
+        self.assertEqual(len(logical_not_warnings), 0)
+
+    def test_logical_not_warning_level_is_warning(self):
+        result = _analyse('Worker[opt = !5]')
+        self.assertFalse(result.has_errors)
+        self.assertTrue(result.has_warnings)
+        w = [d for d in result.warnings if "!" in d.message][0]
+        self.assertEqual(w.level, SemanticLevel.WARNING)
+
+    # ------------------------------------------------------------------
+    # Constant short-circuit: false in &&, true in ||  →  WARNING
+    # ------------------------------------------------------------------
+
+    def test_false_left_in_logical_and_warns(self):
+        result = _analyse('Worker[opt = false && true]')
+        self.assertTrue(_has_warning_containing(result, "&&"))
+        self.assertTrue(_has_warning_containing(result, "always false"))
+
+    def test_false_right_in_logical_and_warns(self):
+        result = _analyse('Worker[opt = true && false]')
+        self.assertTrue(_has_warning_containing(result, "&&"))
+        self.assertTrue(_has_warning_containing(result, "always false"))
+
+    def test_false_both_sides_in_logical_and_warns_twice(self):
+        result = _analyse('Worker[opt = false && false]')
+        and_warnings = [d for d in result.warnings if "always false" in d.message]
+        self.assertEqual(len(and_warnings), 2)
+
+    def test_true_left_in_logical_or_warns(self):
+        # || inside an attribute expression is logical OR
+        result = _analyse('Worker[opt = true || false]')
+        self.assertTrue(_has_warning_containing(result, "||"))
+        self.assertTrue(_has_warning_containing(result, "always true"))
+
+    def test_true_right_in_logical_or_warns(self):
+        result = _analyse('Worker[opt = false || true]')
+        self.assertTrue(_has_warning_containing(result, "||"))
+        self.assertTrue(_has_warning_containing(result, "always true"))
+
+    def test_true_both_sides_in_logical_or_warns_twice(self):
+        result = _analyse('Worker[opt = true || true]')
+        or_warnings = [d for d in result.warnings if "always true" in d.message]
+        self.assertEqual(len(or_warnings), 2)
+
+    def test_true_and_true_no_always_false_warning(self):
+        result = _analyse('Worker[opt = true && true]')
+        self.assertFalse(_has_warning_containing(result, "always false"))
+
+    def test_false_or_false_no_always_true_warning(self):
+        result = _analyse('Worker[opt = false || false]')
+        self.assertFalse(_has_warning_containing(result, "always true"))
+
+    def test_pipeline_parallel_not_flagged_as_logical_or(self):
+        # FetchData || ProcessResult is pipeline parallel — children are TaskNodes,
+        # not LiteralNodes, so the "always true" check must not fire.
+        result = _analyse('FetchData || ProcessResult')
+        self.assertFalse(_has_warning_containing(result, "always true"))
+        self.assertFalse(_has_warning_containing(result, "always false"))
+
+    def test_short_circuit_warning_level_is_warning(self):
+        result = _analyse('Worker[opt = false && true]')
+        self.assertFalse(result.has_errors)
+        self.assertTrue(result.has_warnings)
+        w = [d for d in result.warnings if "always false" in d.message][0]
+        self.assertEqual(w.level, SemanticLevel.WARNING)
 
 
 if __name__ == "__main__":
