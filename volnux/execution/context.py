@@ -72,15 +72,23 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     This class encapsulates the necessary data and state associated with
     executing an event, such as the task being processed and the pipeline
-    it belongs to.
+    it belongs to. It ensures thread safety using a conditional variable for
+    concurrent event execution.
 
-    Individual events executed concurrently must acquire the "conditional_variable"
-    before they can make any changes to the execution context. This ensures that only one
-    event can modify the context at a time, preventing race conditions and ensuring thread safety.
-
-    Attributes:
-        task_profiles: The specific PipelineTask that is being executed.
-        pipeline: The Pipeline that orchestrates the execution of the task.
+    :ivar task_profiles: The specific tasks being executed within the pipeline.
+    :ivar pipeline: The pipeline that orchestrates the execution of the task.
+    :ivar metrics: Execution metrics for monitoring and evaluating performance.
+    :ivar previous_context: The preceding context in a doubly-linked list structure.
+    :ivar next_context: The succeeding context in a doubly-linked list structure.
+    :ivar parent_context: The parent context in a tree structure, used for hierarchical task management.
+    :ivar child_contexts: The child contexts in a tree structure, representing branches of execution.
+    :type task_profiles: typing.Deque[TaskType]
+    :type pipeline: Pipeline
+    :type metrics: ExecutionMetrics
+    :type previous_context: typing.Optional[ExecutionContext]
+    :type next_context: typing.Optional[ExecutionContext]
+    :type parent_context: typing.Optional[ExecutionContext]
+    :type child_contexts: typing.List[ExecutionContext]
 
     Details:
         Represents the execution context of the pipeline as a bidirectional (doubly-linked) list.
@@ -164,8 +172,16 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     def spawn_child(self, task_profiles: typing.Deque[TaskType]) -> "ExecutionContext":
         """
-        Factory method to create a nested context (a branch in the tree).
-        Ensures the parent remains 'alive' by holding a reference.
+        Creates and returns a child ExecutionContext. The child inherits the same
+        StateManager as the parent but is assigned a unique state_id. The parent-child
+        relationship is established by linking the child context to the parent's list
+        of child contexts.
+
+        :param task_profiles: A deque containing TaskType instances to be executed in
+            the context of the child ExecutionContext.
+        :return: A newly created ExecutionContext configured as a child of the
+            current context.
+        :rtype: ExecutionContext
         """
         # Child inherit the same StateManager but get a unique state_id
         child = ExecutionContext(
@@ -344,7 +360,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         )
 
     def get_state_snapshot(self) -> "ExecutionState":
-        """Get a thread-safe copy of current state."""
+        """Get a thread-safe copy of the current state."""
         return self.state
 
     def bulk_update(
@@ -475,22 +491,19 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         self,
     ) -> typing.Optional[TaskType]:
         """
-        Retrieves task profile for use in making decisions.
+        Retrieves a task profile crucial for decision-making processes.
 
-        This method examines the list of task profiles to identify the last task in
-        a pipeline. If there is only one task profile, it returns that profile directly.
-        For multiple task profiles, it iterates through each profile and checks the
-        pointer type associated with the event.
+        This method identifies the final task in a pipeline or sequence of tasks.
+        If a single task profile exists, it is directly returned. For multiple
+        task profiles, the method analyzes each profile to determine its role in
+        a parallel task pipeline scenario. Specifically, it identifies a task profile
+        associated with parallelism (PipeType.PARALLELISM) while ensuring the
+        subsequent condition does not point to parallelism, marking it as the
+        concluding task of the pipeline.
 
-        Specifically, it looks for a task profile whose pointer type indicates parallelism
-        (PipeType.PARALLELISM) and ensures that its on-success pipe type is not parallelism.
-
-        This helps in identifying the last task in a sequence when tasks are executed in parallel
-        followed by a task that depends on the success of those parallel tasks.
-
-        Returns:
-            PipelineTask: The last task profile in the chain or the single task profile
-                           if only one exists.
+        :return: A PipelineTask object representing the final task profile in the
+                 pipeline or None if no such profile is found.
+        :rtype: Optional[TaskType]
         """
         task_profiles = self.get_task_profiles()
         if len(task_profiles) == 1:
@@ -561,93 +574,19 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     async def create_snapshot(self) -> "ContextSnapshot":
         """
-        Create a serializable snapshot of the current state.
-        This is the core method for persistence.
+        Creates a snapshot of the current context.
 
-        This should be called by the engine at strategic checkpoints:
-        - Before executing each task
-        - After task completion
-        - On status changes
+        The method asynchronously generates a snapshot of the current
+        context state using the `SnapshotBuilder`. This snapshot can be
+        used for preserving the state or for other rehydration operations.
+
+        :return: An instance of `ContextSnapshot` representing the captured snapshot.
+        :rtype: ContextSnapshot
         """
-        from .state_manager import ExecutionStatus
-        from volnux.execution.rehydrator.snapshot import (
-            TraversalSnapshot,
-            ContextSnapshot,
-        )
-        from volnux.execution.rehydrator.serializer import StateSerializer
 
-        state = await self.state_async
+        from .rehydrator.engine.builder import SnapshotBuilder
 
-        # Get the engine to capture its queue state
-        engine = self.get_engine()
-        sink_nodes = []
-        tasks_processed = 0
-        current_task_info = (None, None, None)
-
-        if engine:
-            # Capture the current task being processed
-            # The engine should expose this via a getter
-            current_task_info = self._extract_current_task_from_engine(engine)
-
-            # Capture sink queue
-            if hasattr(engine, "sink_queue"):
-                sink_nodes = [
-                    StateSerializer.serialize_task(task) for task in engine.sink_queue
-                ]
-
-            # Get task counter
-            tasks_processed = engine.tasks_processed
-
-        current_task_id, current_event_name, _ = current_task_info
-
-        # Serialize task queue
-        traversal = TraversalSnapshot(
-            current_task_id=current_task_id,
-            current_task_event_name=current_event_name,
-            current_task_checkpoint=self._task_checkpoint,
-            queue_snapshot=[
-                StateSerializer.serialize_task(task) for task in self.task_profiles
-            ],
-            queue_index=0,
-            total_queue_size=len(self.task_profiles),
-            sink_nodes=sink_nodes,
-            tasks_processed=tasks_processed,
-            is_multitask_context=self.is_multitask(),
-        )
-
-        # Get pipeline reference
-        pipeline_id, pipeline_class_path = StateSerializer.serialize_pipeline_ref(
-            self.pipeline
-        )
-
-        # Serialize errors and results
-        errors = [StateSerializer.serialize_exception(e) for e in state.errors]
-        results = [StateSerializer.serialize_result(r) for r in state.results]
-
-        snapshot = ContextSnapshot(
-            state_id=self.state_id,
-            workflow_id=self.workflow_id or f"workflow_{self.get_root_context().id}",
-            parent_id=self.parent_context.state_id if self.parent_context else None,
-            child_ids=[child.state_id for child in self.child_contexts],
-            depth=self.get_depth(),
-            previous_context_id=(
-                self.previous_context.state_id if self.previous_context else None
-            ),
-            next_context_id=(self.next_context.state_id if self.next_context else None),
-            traversal=traversal,
-            pipeline_id=pipeline_id,
-            pipeline_class_path=pipeline_class_path,
-            status=state.status.value,
-            errors=errors,
-            results=results,
-            metrics={
-                "start_time": self.metrics.start_time,
-                "end_time": self.metrics.end_time,
-                "duration": self.metrics.duration,
-            },
-            snapshot_timestamp=datetime.datetime.now().timestamp(),
-        )
-
+        snapshot = await SnapshotBuilder().build(self)
         return snapshot
 
     def _extract_current_task_from_engine(

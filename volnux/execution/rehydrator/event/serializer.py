@@ -1,12 +1,8 @@
-from typing import Dict, Any, Optional, Union, List, Hashable
+import logging
+from typing import Dict, Any, Optional, Union, List, Hashable, Tuple
 
 from .snapshot import InitArgsTemplate, CallArgsTemplate
 from volnux.parser.options import StopCondition
-
-import typing
-import logging
-from typing import Any, Dict, List, Tuple, Union, Hashable
-from collections.abc import Mapping, Sequence
 
 from volnux.result import EventResult
 from volnux.utils import get_obj_klass_import_str

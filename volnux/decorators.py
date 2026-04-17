@@ -3,7 +3,9 @@ import typing
 import logging
 from concurrent.futures import Executor
 
-from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
+from .event import EventBase
+from .mixins.event import RetryPolicy
+from volnux.parser.executor_config import ExecutorInitializerConfig
 from .executors.default import DefaultExecutor
 from .result_evaluators import (
     ExecutionResultEvaluationStrategyBase,

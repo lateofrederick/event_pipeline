@@ -10,12 +10,12 @@ from typing import Any, Dict, List, Optional, Union
 from concurrent.futures import ThreadPoolExecutor
 
 from volnux import Event
-from volnux.base import EventType
+from volnux.event.base import EventType, get_event_registry
 from volnux import __version__ as version
-from volnux.base import RetryPolicy, get_event_registry
+from volnux.mixins.event import RetryPolicy
 from volnux.exceptions import ImproperlyConfigured
 from volnux.parser.options import Options
-from volnux.registry import RegistryNotReady
+from volnux.event.registry import RegistryNotReady
 from volnux.result import EventResult
 from volnux.utils import get_function_call_args
 

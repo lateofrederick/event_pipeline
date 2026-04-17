@@ -4,12 +4,12 @@ import sys
 import types
 import typing
 import asyncio
-from abc import ABCMeta, abstractmethod
+from abc import ABCMeta, abstractmethod, ABC
 from enum import Enum
 from typing import Optional, Any, Dict
 from pathlib import Path
 
-from volnux.registry import Registry
+from volnux.event.registry import Registry
 from volnux.setup import initialise_workflows
 from volnux.import_utils import load_module_from_path
 from volnux.engine.workflows import WorkflowRegistry
@@ -21,6 +21,14 @@ _command_registry = Registry()
 
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "BaseCommand",
+    "CommandError",
+    "CommandCategory",
+    "TemplateType",
+    "SubCommand",
+]
 
 
 def get_command_registry():
@@ -47,24 +55,24 @@ class TemplateType(Enum):
     CLASS = "class"
 
 
-class CommandMeta(ABCMeta):
-    def __new__(mcs, name, bases, namespace, **kwargs):
-        """
-        Called when a new class is created.
-        Automatically registers the class with the global registry.
-        """
-        cls = super().__new__(mcs, name, bases, namespace)
-
-        # Register it if it's not the base class
-        if name != "BaseCommand" and any(
-            isinstance(base, CommandMeta) for base in bases
-        ):
-            try:
-                _command_registry.register(cls, getattr(cls, "name", None))
-            except RuntimeError as e:
-                logger.warning(str(e))
-
-        return cls
+# class CommandMeta(ABCMeta):
+#     def __new__(mcs, name, bases, namespace, **kwargs):
+#         """
+#         Called when a new class is created.
+#         Automatically registers the class with the global registry.
+#         """
+#         cls = super().__new__(mcs, name, bases, namespace)
+#
+#         # Register it if it's not the base class
+#         if name != "BaseCommand" and any(
+#             isinstance(base, CommandMeta) for base in bases
+#         ):
+#             try:
+#                 _command_registry.register(cls, getattr(cls, "name", None))
+#             except RuntimeError as e:
+#                 logger.warning(str(e))
+#
+#         return cls
 
 
 def get_commands_by_category(category: CommandCategory) -> typing.List["BaseCommand"]:
@@ -85,10 +93,19 @@ def get_commands_by_category(category: CommandCategory) -> typing.List["BaseComm
     return commands
 
 
-class BaseCommand(metaclass=CommandMeta):
+class SubCommand(metaclass=ABCMeta):
     """
-    Base class for all Volnux commands.
-    Similar to Django's BaseCommand.
+    SubCommand serves as a base class for defining CLI subcommands. It provides
+    common functionalities such as argument parsing, help message printing, and
+    execution handling. Subclasses must implement specific logic by overriding
+    `handle` and `add_arguments` methods.
+
+    :ivar help: Optional description of the subcommand for help messages.
+    :type help: str
+    :ivar name: Identifier for the command. Defaults to the class name if not set.
+    :type name: Optional[str]
+    :ivar category: Category of the command to group similar commands.
+    :type category: CommandCategory
     """
 
     help = ""
@@ -104,28 +121,37 @@ class BaseCommand(metaclass=CommandMeta):
         self.stderr = sys.stderr
         self.style = Style()
 
-    def create_parser(self, prog_name: str, subcommand: str) -> argparse.ArgumentParser:
+    def create_parser(
+        self, prog_name: str, command: str, subcommand: Optional[str] = None
+    ) -> argparse.ArgumentParser:
         """
         Create and return the ArgumentParser for this command.
         """
+        command_str = f"{prog_name} {command}"
+        if subcommand:
+            command_str = f"{command_str} {subcommand}"
+
         parser = argparse.ArgumentParser(
-            prog=f"{prog_name} {subcommand}",
+            prog=command_str,
             description=self.help or None,
         )
         self.add_arguments(parser)
         return parser
 
+    @abstractmethod
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """
         Entry point for subclassed commands to add custom arguments.
         """
         pass
 
-    def print_help(self, prog_name: str, subcommand: str) -> None:
+    def print_help(
+        self, prog_name: str, command: str, subcommand: Optional[str] = None
+    ) -> None:
         """
         Print the help message for this command.
         """
-        parser = self.create_parser(prog_name, subcommand)
+        parser = self.create_parser(prog_name, command, subcommand)
         parser.print_help()
 
     def execute(self, *args, **options) -> None:
@@ -177,7 +203,7 @@ class BaseCommand(metaclass=CommandMeta):
         if ".." in template_name or template_name.startswith("/"):
             raise ValueError(f"Invalid template name: {template_name}")
 
-        # Construct template path
+        # Construct a template path
         current_dir = Path(__file__).parent
         templates_dir = current_dir / "builtins" / "templates"
         template_file_path = templates_dir / template_name
@@ -240,7 +266,7 @@ class BaseCommand(metaclass=CommandMeta):
             engine = await initialise_workflows(project_dir, workflow_name)
 
         try:
-            workflows_registry = engine.get_workflows_registry()
+            workflows_registry = engine.get_workflow_registry()
         except WorkflowExecutionError:
             raise CommandError(
                 "Workflow executor was not provided. The framework was not initialized."
@@ -293,7 +319,7 @@ class BaseCommand(metaclass=CommandMeta):
         self,
     ) -> typing.Tuple[Path, types.ModuleType]:
         """
-        Get project root directory and module path.
+        Get the project root directory and module path.
         Returns:
              Project root directory and module path.
         Raises:
@@ -323,3 +349,32 @@ class BaseCommand(metaclass=CommandMeta):
     def error(self, message: str) -> None:
         """Write an error message."""
         self.stderr.write(self.style.ERROR(message))
+
+
+class BaseCommand(SubCommand, ABC):
+    """
+    Base class for all commands.
+
+    This class serves as the base for all command implementations. It provides
+    the foundational structure and functionality for creating and managing command
+    objects. Subclasses of this class can be automatically registered in the
+    command registry unless they are abstract. To effectively use this class,
+    inherit from it and implement the required command-specific behavior.
+
+    :ivar name: Optional name of the command. If specified, it determines how the
+        command is identified in the registry.
+    :type name: str
+    """
+
+    def __init_subclass__(cls, **kwargs):
+
+        super().__init_subclass__(**kwargs)
+
+        if getattr(cls, "__abstractmethods__", None):
+            return
+
+        command_name = getattr(cls, "name", None)
+        try:
+            _command_registry.register(cls, command_name)
+        except Exception as e:
+            logger.warning(f"Could not register {cls.__name__}: {e}")

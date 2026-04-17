@@ -7,7 +7,7 @@ import inspect
 from pathlib import Path
 from importlib import import_module
 from abc import ABC, abstractmethod
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 from volnux import EventBase
 
 

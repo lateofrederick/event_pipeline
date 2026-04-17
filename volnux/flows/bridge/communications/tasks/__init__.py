@@ -16,6 +16,8 @@ Exports:
 
 """
 
+from typing import TYPE_CHECKING
+
 from .base import (
     TaskExecutionHandle,
     TaskCommunicationBridge,
@@ -31,6 +33,9 @@ from .local import LocalTaskCommunicationBridge
 from .process import ProcessTaskCommunicationBridge
 from .celery import CeleryTaskCommunicationBridge
 from .remote import RemoteTaskCommunicationBridge
+
+if TYPE_CHECKING:
+    from volnux.execution.context import ExecutionContext
 
 
 def create_communication_bridge(
@@ -70,4 +75,6 @@ __all__ = [
     "ProcessTaskCommunicationBridge",
     "TaskExecutionHandle",
     "create_communication_bridge",
+    "TaskCommand",
+    "CommandType",
 ]

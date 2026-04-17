@@ -68,7 +68,31 @@ class ExecutionState:
 
 
 class StateManager:
-    """Singleton manager for execution states with per-state locks."""
+    """
+    Singleton manager for execution states with per-state locks.
+
+    This class provides thread-safe and asynchronous management of shared execution
+    states, including creating, updating, and removing states with dedicated
+    per-state locks. It utilizes Python's multiprocessing for shared memory
+    management and supports optimized operations to minimize overhead.
+
+    Attributes:
+        attribute1: Stores the dictionary representation of shared states in shared
+            memory for direct access.
+        attribute2: Contains locks for each state to ensure thread-safe operations.
+
+    :ivar _states: Shared dictionary storing the states for each state_id.
+    :type _states: multiprocessing.Manager.dict
+    :ivar _locks: Shared dictionary of locks for each state_id to enable
+        thread-safe access.
+    :type _locks: multiprocessing.Manager.dict
+    :ivar _ref_counts: Shared dictionary for reference counting to safely manage
+        state lifecycle.
+    :type _ref_counts: multiprocessing.Manager.dict
+    :ivar _creation_lock: Lock to synchronize the creation of new states and
+        associated locks.
+    :type _creation_lock: multiprocessing.Manager.Lock
+    """
 
     _instance: typing.Optional["StateManager"] = None
     _instance_lock = ThreadLock()

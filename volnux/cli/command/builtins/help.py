@@ -19,19 +19,35 @@ class HelpCommand(BaseCommand):
         parser.add_argument(
             "command", nargs="?", help="Command to show help for (optional)"
         )
+        parser.add_argument(
+            "subcommand", nargs="?", help="Subcommand to show help for (optional)"
+        )
 
     def handle(self, *args, **options) -> Optional[str]:
         command_name = options.get("command")
+        subcommand_name = options.get("subcommand")
 
         if command_name:
-            # Show help for specific command
+            # Show help for a specific command
             loader = get_command_registry()
             command_class = loader.get_by_name(command_name)
 
             if not command_class:
                 raise CommandError(f"Unknown command: '{command_name}'")
+
             command = command_class()
-            command.print_help("volnux", command_name)
+            subcommand_dict = getattr(command, "subcommands", None)
+            if subcommand_dict and subcommand_name:
+                subcommand_class = subcommand_dict.get(subcommand_name)
+                if not subcommand_class:
+                    raise CommandError(
+                        f"Unknown subcommand '{subcommand_name}' for command '{command_name}'\n"
+                        f"Available: {', '.join(subcommand_dict.keys())}"
+                    )
+                subcommand = subcommand_class()
+                subcommand.print_help("volnux", command_name, subcommand_name)
+            else:
+                command.print_help("volnux", command_name)
             return None
 
         # Show general help and list all commands
@@ -72,9 +88,9 @@ class HelpCommand(BaseCommand):
 
         self.stdout.write(self.style.NOTICE("\nEXAMPLES:\n"))
         self.stdout.write("  # Create a new project\n")
-        self.stdout.write("  \t$ volnux startproject data_pipeline\n")
+        self.stdout.write("  \t$ volnux init data_pipeline\n")
         self.stdout.write("  # Create a new workflow with DAG template\n")
-        self.stdout.write("  \t$ volnux startworkflow etl_process --template=dag\n")
+        self.stdout.write("  \t$ volnux workflow init etl_process --template=dag\n")
         self.stdout.write("  # Run workflow with parameters\n")
         self.stdout.write(
             '  \t$ volnux run etl_process --params \'{"source": "db", "target": "s3"}\'\n'

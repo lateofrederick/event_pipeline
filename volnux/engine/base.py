@@ -8,7 +8,8 @@ from .checkpoint_config import CheckPointConfig, CheckPointFrequency
 from volnux.pipeline import Pipeline
 from volnux.parser.protocols import TaskType
 from volnux.execution.context import ExecutionContext
-from volnux.execution.rehydrator.checkpoint import AutoCheckPointer
+
+# from volnux.execution.rehydrator.checkpoint import AutoCheckPointer
 
 logger = logging.getLogger(__name__)
 

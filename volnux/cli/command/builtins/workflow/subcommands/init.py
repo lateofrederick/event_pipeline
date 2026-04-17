@@ -5,19 +5,19 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from ..base import BaseCommand, CommandCategory, CommandError
 from volnux import __version__ as version
 from volnux.engine.workflows.loaders.utils import (
     get_workflow_config_name,
     get_workflow_class_name,
 )
+from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
 
 
-class StartWorkflowCommand(BaseCommand):
+class InitWorkflowCommand(SubCommand):
     """Command to scaffold a new workflow with configuration, pipeline, and event files."""
 
     help = "Create a new workflow with all necessary scaffolding"
-    name = "startworkflow"
+    name = "init"
     category = CommandCategory.WORKFLOW_MANAGEMENT
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -214,7 +214,7 @@ class StartWorkflowCommand(BaseCommand):
     def _create_batch_pipeline_file(
         self, workflow_dir: Path, workflow_name: str
     ) -> None:
-        """Create batch pipeline file."""
+        """Create a batch pipeline file."""
         batch_pipeline_file = workflow_dir / "batch_pipeline.py"
 
         batch_pipeline_script_content = self._get_rendered_template(

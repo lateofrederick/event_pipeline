@@ -20,20 +20,23 @@ import typing
 import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, List, Optional, Callable, Awaitable
+from typing import Any, List, Optional, Callable, Awaitable, Dict, Type, Literal
 
 from .registry import (
     WorkflowSource,
     get_workflow_registry,
 )
+from volnux.executors.utils.registry import get_global_executor_registry
 from volnux.result import ResultSet as TriggerSet
 from volnux.pipeline import Pipeline, BatchPipeline
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
 if typing.TYPE_CHECKING:
+    from volnux.executors import BaseExecutor
     from .trigger.triggers import TriggerBase, TriggerActivation
     from .trigger.triggers.base import TriggerType
+    from volnux.executors.utils.registry import ExecutorRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,28 @@ class WorkflowConfig(ABC):
     """
     Base class for workflow configuration.
 
+    This class serves as a foundational component for managing and configuring workflows. It
+    establishes the structure, default settings, and executor registration mechanisms required
+    to implement a comprehensive workflow management system. Subclasses are expected to
+    override certain attributes and implement the `ready` method to customize workflow behavior.
+
+    :ivar name: Name of the workflow configuration. Must be overridden in subclass.
+    :type name: str
+    :ivar verbose_name: Human-readable name of the workflow configuration.
+    :type verbose_name: Optional[str]
+    :ivar version: Version of the workflow. Defaults to "1.0.0".
+    :type version: str
+    :ivar mode: Workflow mode defining its structural representation. Defaults to "CFG".
+    :type mode: Literal["DAG", "CFG"]
+    :ivar path: Path to the workflow’s configuration file or directory. Set automatically by registries.
+    :type path: Optional[Path]
+    :ivar default_timeout: Default timeout setting for tasks (in milliseconds). Defaults to 300000.
+    :type default_timeout: int
+    :ivar default_retries: Default number of retries for tasks. Defaults to 3.
+    :type default_retries: int
+    :ivar default_auto_cleanup: Flag to determine if auto-cleanup should be performed. Defaults to False.
+    :type default_auto_cleanup: bool
+
     Example:
         class SimpleConfig(WorkflowConfig):
             name = 'simple'
@@ -130,7 +155,7 @@ class WorkflowConfig(ABC):
     name: str = None
     verbose_name: Optional[str] = None
     version: str = "1.0.0"
-    mode: typing.Literal["DAG", "CFG"] = "CFG"
+    mode: Literal["DAG", "CFG"] = "CFG"
 
     # Paths (automatically set by registry)
     path: Optional[Path] = None
@@ -154,20 +179,204 @@ class WorkflowConfig(ABC):
 
         self.path = workflow_path
         if self.path is None:
-            pass
+            raise ValueError("WorkflowConfig.path must be set")
 
         self.module: Optional[types.ModuleType] = None
 
         # Registry storage
         self._registry = None
-        self._settings: ConfigLoader = system_conf
+        self._settings: VolnuxConfig = system_conf
 
         self._loaded_modules: typing.Dict[str, types.ModuleType] = {}
 
         self.triggers: TriggerRegistry = TriggerRegistry()
 
+        # Initialize the executor registry for this workflow
+        self._executor_registry = get_global_executor_registry()
+
         # Call ready hook for infrastructure setup
         self.ready()
+
+    def get_executor_registry(self) -> "ExecutorRegistry":
+        """
+        Get the executor registry for this workflow.
+
+        Returns:
+            ExecutorRegistry: The executor registry instance
+        """
+        return self._executor_registry
+
+    def register_executor(
+        self,
+        label: str,
+        executor_class: Type["BaseExecutor"],
+        *,
+        override: bool = False,
+        reinit_callback: Optional[Callable[[], "BaseExecutor"]] = None,
+        shared: bool = False,
+        auto_shutdown: bool = True,
+        health_check_enabled: bool = True,
+    ) -> None:
+        """
+        Register a custom executor for the workflow.
+
+        This method enables the registration of executor classes with a specific
+        label to be used within the workflow. The feature helps streamline the
+        configuration and execution of tasks, allowing users to refer to executors
+        using labels instead of importing classes directly. The executors can be
+        configured with options such as re-initialization callbacks, shared usage,
+        and more.
+
+        :param label: A string used to uniquely identify the executor in the
+            workflow. Common labels might denote specific task execution
+            environments (e.g., "gpu", "redis-queue").
+        :type label: str
+
+        :param executor_class: The executor class to register under the
+            specified label. The class should inherit from `BaseExecutor` and
+            implement the required interface for execution.
+        :type executor_class: Type["BaseExecutor"]
+
+        :param override: Specifies if an already existing registration with
+            the same label should be overridden. Defaults to `False`.
+        :type override: bool
+
+        :param reinit_callback: An optional callable that will be used to
+            reinitialize the executor when necessary. This is particularly
+            useful for dynamic workflows where executor instances may need to
+            be created or reset.
+        :type reinit_callback: Optional[Callable[[], "BaseExecutor"]]
+
+        :param shared: Indicates if the registered executor should be shared
+            among multiple tasks or workflows. If set to `True`, the same instance
+            may be reused. Defaults to `False`.
+        :type shared: bool
+
+        :param auto_shutdown: If `True`, enables automatic shutdown for the
+            executor when the workflow concludes. This helps manage resources
+            effectively. Defaults to `True`.
+        :type auto_shutdown: bool
+
+        :param health_check_enabled: If `True`, enables periodic health checks
+            for the executor to verify availability and functionality. Defaults
+            to `True`.
+        :type health_check_enabled: bool
+
+        :return: This method does not return any value as it updates the
+            workflow's executor registry.
+        :rtype: None
+
+        Example:
+            >>> from myapp.executors import GPUExecutor, AccraCeleryExecutor
+            >>>
+            >>> def ready(self):
+            ...     # Now you can use "gpu" in your events
+            ...     self.register_executor("gpu", GPUExecutor)
+            ...
+            ...     # And "accra-celery" for named Celery queues
+            ...     self.register_executor("accra-celery", AccraCeleryExecutor)
+
+            Then in your event:
+            >>> class ProcessImage(EventBase):
+            ...     executor = "gpu"  # Uses GPUExecutor
+            ...
+            ...     async def process(self, image):
+            ...         return True, processed_image
+        """
+        registry = self.get_executor_registry()
+        registry.register(
+            label,
+            executor_class,
+            override=override,
+            reinit_callback=reinit_callback,
+            shared=shared,
+            auto_shutdown=auto_shutdown,
+            health_check_enabled=health_check_enabled,
+        )
+        logger.info(
+            f"Registered executor '{label}' for workflow '{self.name}': "
+            f"{executor_class.__module__}.{executor_class.__name__}"
+        )
+
+    def register_executor_factory(
+        self,
+        pattern: str,
+        factory: Callable[..., Type["BaseExecutor"]],
+        *,
+        override: bool = False,
+    ) -> None:
+        """
+        Register a factory function for dynamic executor creation.
+
+        Useful for executors that need runtime configuration based on the label.
+
+        Args:
+            pattern: Pattern with placeholders (e.g., "redis-{queue}", "celery-{region}")
+            factory: Function that creates executor class from extracted parameters
+            override: Allow overriding existing factories
+
+        Example:
+            >>> def redis_executor_factory(queue: str):
+            ...     class RedisQueueExecutor(BaseExecutor):
+            ...         queue_name = queue
+            ...         # ... implementation
+            ...     return RedisQueueExecutor
+            >>>
+            >>> def ready(self):
+            ...     self.register_executor_factory("redis-{queue}", redis_executor_factory)
+
+            Now you can use:
+            - executor = "redis-orders"  -> creates executor with queue="orders"
+            - executor = "redis-payments" -> creates executor with queue="payments"
+        """
+        registry = self.get_executor_registry()
+        registry.register_factory(pattern, factory, override=override)
+        logger.info(
+            f"Registered executor factory pattern '{pattern}' for workflow '{self.name}'"
+        )
+
+    def register_executor_alias(self, alias: str, target: str) -> None:
+        """
+        Create an alias for an existing executor label.
+
+        Args:
+            alias: The new alias name
+            target: The existing label to point to
+
+        Example:
+            >>> def ready(self):
+            ...     self.register_executor("gpu-v100", V100Executor)
+            ...     self.register_executor_alias("gpu", "gpu-v100")  # Default GPU
+        """
+        registry = self.get_executor_registry()
+        registry.alias(alias, target)
+        logger.debug(
+            f"Created executor alias '{alias}' -> '{target}' for workflow '{self.name}'"
+        )
+
+    def get_executor(self, label: str, **kwargs) -> Optional[Type["BaseExecutor"]]:
+        """
+        Resolve the executor class from the label for this workflow.
+
+        Args:
+            label: The executor label
+            **kwargs: Additional arguments for factory executors
+
+        Returns:
+            Executor class or None if not found
+        """
+        registry = self.get_executor_registry()
+        return registry.get(label, **kwargs)
+
+    def list_executors(self) -> Dict[str, str]:
+        """
+        List all registered executors for this workflow.
+
+        Returns:
+            Dict mapping labels to executor class names
+        """
+        registry = self.get_executor_registry()
+        return registry.list_executors()
 
     @abstractmethod
     def ready(self):
@@ -182,7 +391,7 @@ class WorkflowConfig(ABC):
         """
         pass
 
-    def get_registry(self):
+    def get_registry(self) -> "WorkflowRegistry":
         if self._registry is None:
             self._registry = get_workflow_registry()
         return self._registry
@@ -208,11 +417,11 @@ class WorkflowConfig(ABC):
 
     def _load_workflow_module(self) -> typing.Optional[types.ModuleType]:
         """
-        Load workflow module from a path.
+        Load a workflow module from a path.
         Returns:
              (WorkflowConfig) workflow module
         Raises:
-            ImportError: if workflow module cannot be loaded
+            ImportError: if the workflow module cannot be loaded
         """
         if not self.path or not self.path.exists():
             raise ImportError(
@@ -228,7 +437,7 @@ class WorkflowConfig(ABC):
         """
         Load workflow module components
         Raises:
-            RuntimeError: if workflow module cannot be loaded
+            RuntimeError: if the workflow module cannot be loaded
         """
         if self._loaded_modules:
             return self._loaded_modules
@@ -293,7 +502,7 @@ class WorkflowConfig(ABC):
         Returns:
             (Pipeline) pipeline class
         Raises:
-            RuntimeError: if pipeline class cannot be loaded or found
+            RuntimeError: if the pipeline class cannot be loaded or found
         """
         module = self.get_pipeline_module()
         if not module:

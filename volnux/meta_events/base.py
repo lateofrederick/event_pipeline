@@ -67,7 +67,7 @@ def validate_meta_event(
     meta_event: "ControlFlowEvent",
 ) -> None:
     """
-    Validate meta-event at semantic analysis phase
+    Validate meta-event at the semantic analysis phase
 
     Args:
         nested_event_class: MetaEventNode from AST
@@ -249,9 +249,9 @@ class ControlFlowEvent(EventBase):
             pipeline_tasks = self._create_pipeline_tasks(task_definitions)
 
             flow = MetaFlow(
-                task_profiles=deque(pipeline_tasks),  # type: ignore
-                context=self._execution_context,  # type: ignore
-                attributes=attributes,  # type: ignore
+                task_profiles=deque(pipeline_tasks),
+                context=self._execution_context,
+                attributes=attributes,
             )
             run_coro = flow.run()
             future = (

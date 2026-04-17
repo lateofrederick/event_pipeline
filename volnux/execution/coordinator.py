@@ -178,6 +178,9 @@ class ExecutionCoordinator:
             logger.error(f"Unexpected execution error: {e}", exc_info=True)
             await self.execution_context.failed_async()
             raise
+        finally:
+            if self._flow:
+                await self._flow.close()
 
     async def execute_async(self) -> Tuple[Any, Any]:
         """

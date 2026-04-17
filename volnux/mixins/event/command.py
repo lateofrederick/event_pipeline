@@ -5,6 +5,7 @@ from volnux.flows.bridge.communications.tasks import (
     CommandType,
     MessageType,
     TaskMessage,
+    TaskCommand,
 )
 
 logger = logging.getLogger(__name__)

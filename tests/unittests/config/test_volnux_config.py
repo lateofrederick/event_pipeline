@@ -6,7 +6,13 @@ from unittest.mock import Mock
 import pytest
 
 import volnux.config as config_module
-from volnux.config import ConfigEntry, VolnuxConfig, ENV_MESH_NODE_ID, ENV_MESH_PUBLIC_KEY, ENV_MESH_PRIVATE_KEY
+from volnux.config import (
+    ConfigEntry,
+    VolnuxConfig,
+    ENV_MESH_NODE_ID,
+    ENV_MESH_PUBLIC_KEY,
+    ENV_MESH_PRIVATE_KEY,
+)
 
 
 class DummyStore:
@@ -53,16 +59,24 @@ class DummySigner:
 @pytest.fixture
 def cfg(monkeypatch):
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
-    monkeypatch.setattr(config_module, "default_settings", ModuleType("default_settings"))
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        config_module, "default_settings", ModuleType("default_settings")
+    )
+    monkeypatch.setattr(
+        VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None)
+    )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
     return VolnuxConfig(config_file=None)
 
 
 def test_get_instance_returns_singleton(monkeypatch):
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
-    monkeypatch.setattr(config_module, "default_settings", ModuleType("default_settings"))
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        config_module, "default_settings", ModuleType("default_settings")
+    )
+    monkeypatch.setattr(
+        VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None)
+    )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
 
     VolnuxConfig._instance = None
@@ -74,8 +88,12 @@ def test_get_instance_returns_singleton(monkeypatch):
 
 def test_get_node_id_returns_generated_or_existing_value(monkeypatch):
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
-    monkeypatch.setattr(config_module, "default_settings", ModuleType("default_settings"))
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        config_module, "default_settings", ModuleType("default_settings")
+    )
+    monkeypatch.setattr(
+        VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None)
+    )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
 
     monkeypatch.delenv(config_module.ENV_MESH_NODE_ID, raising=False)
@@ -87,7 +105,11 @@ def test_get_node_id_returns_generated_or_existing_value(monkeypatch):
 
 
 def test_get_config_files_respects_precedence(monkeypatch):
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: "/tmp/current/settings.py"))
+    monkeypatch.setattr(
+        VolnuxConfig,
+        "_search_for_config_file_in_dir",
+        staticmethod(lambda: "/tmp/current/settings.py"),
+    )
     monkeypatch.setenv(config_module.ENV_CONFIG, "/tmp/env/settings.py")
 
     inst = object.__new__(VolnuxConfig)
@@ -102,24 +124,36 @@ def test_get_config_files_respects_precedence(monkeypatch):
 
 def test_search_for_config_file_in_dir_returns_current_file(monkeypatch):
     monkeypatch.setenv(config_module.ENV_CONFIG_DIR, "/tmp/app")
-    monkeypatch.setattr(config_module.os.path, "isfile", lambda p: p == "/tmp/app/settings.py")
+    monkeypatch.setattr(
+        config_module.os.path, "isfile", lambda p: p == "/tmp/app/settings.py"
+    )
 
     assert VolnuxConfig._search_for_config_file_in_dir() == "/tmp/app/settings.py"
 
 
 def test_search_for_config_file_in_dir_finds_immediate_subdir(monkeypatch):
     monkeypatch.setenv(config_module.ENV_CONFIG_DIR, "/tmp/app")
-    monkeypatch.setattr(config_module.os.path, "isfile", lambda p: p == "/tmp/app/workflow/settings.py")
+    monkeypatch.setattr(
+        config_module.os.path, "isfile", lambda p: p == "/tmp/app/workflow/settings.py"
+    )
     monkeypatch.setattr(config_module.os, "listdir", lambda p: ["workflow"])
-    monkeypatch.setattr(config_module.os.path, "isdir", lambda p: p == "/tmp/app/workflow")
+    monkeypatch.setattr(
+        config_module.os.path, "isdir", lambda p: p == "/tmp/app/workflow"
+    )
 
-    assert VolnuxConfig._search_for_config_file_in_dir() == "/tmp/app/workflow/settings.py"
+    assert (
+        VolnuxConfig._search_for_config_file_in_dir() == "/tmp/app/workflow/settings.py"
+    )
 
 
 def test_load_module_adds_supported_values(monkeypatch):
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
-    monkeypatch.setattr(config_module, "default_settings", ModuleType("default_settings"))
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        config_module, "default_settings", ModuleType("default_settings")
+    )
+    monkeypatch.setattr(
+        VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None)
+    )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
 
     inst = VolnuxConfig(config_file=None)
@@ -194,8 +228,12 @@ def test_add_uppercases_key_and_stores_value(cfg):
 
 def test_add_uses_current_node_id_when_node_id_is_missing(monkeypatch):
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
-    monkeypatch.setattr(config_module, "default_settings", ModuleType("default_settings"))
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        config_module, "default_settings", ModuleType("default_settings")
+    )
+    monkeypatch.setattr(
+        VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None)
+    )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
 
     inst = VolnuxConfig(config_file=None)
@@ -210,14 +248,20 @@ def test_add_uses_current_node_id_when_node_id_is_missing(monkeypatch):
 
 def test_add_entry_config_signs_local_entry_when_signer_is_present(monkeypatch):
     # monkeypatch.setattr(config_module, "ResultSet", lambda: DummyStore())
-    monkeypatch.setattr(config_module, "default_settings", ModuleType("default_settings"))
-    monkeypatch.setattr(VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        config_module, "default_settings", ModuleType("default_settings")
+    )
+    monkeypatch.setattr(
+        VolnuxConfig, "_search_for_config_file_in_dir", staticmethod(lambda: None)
+    )
     monkeypatch.setattr(VolnuxConfig, "load_from_file", lambda self, file_path: None)
 
     signer = DummySigner()
     inst = VolnuxConfig(config_file=None, signer=signer)
 
-    entry = ConfigEntry(value="hello", name="MESSAGE", origin_mesh_node=inst.get_node_id())
+    entry = ConfigEntry(
+        value="hello", name="MESSAGE", origin_mesh_node=inst.get_node_id()
+    )
     inst.add_entry_config(entry)
 
     assert entry.signature is not None
@@ -226,7 +270,9 @@ def test_add_entry_config_signs_local_entry_when_signer_is_present(monkeypatch):
 
 def test_update_from_mesh_accepts_newer_entry(cfg):
     local = ConfigEntry(value="old", name="KEY", origin_mesh_node="node-a", timestamp=1)
-    incoming = ConfigEntry(value="new", name="KEY", origin_mesh_node="node-b", timestamp=2)
+    incoming = ConfigEntry(
+        value="new", name="KEY", origin_mesh_node="node-b", timestamp=2
+    )
 
     cfg._store.add(local)
 
@@ -239,7 +285,9 @@ def test_update_from_mesh_accepts_tie_breaker_by_node_id(cfg):
     # monkeypatch.setenv(ENV_MESH_NODE_ID, "node-a")
 
     local = ConfigEntry(value="old", name="KEY", origin_mesh_node="node-a", timestamp=5)
-    incoming = ConfigEntry(value="new", name="KEY", origin_mesh_node="node-z", timestamp=5)
+    incoming = ConfigEntry(
+        value="new", name="KEY", origin_mesh_node="node-z", timestamp=5
+    )
 
     cfg._store.add(local)
 
@@ -249,7 +297,9 @@ def test_update_from_mesh_accepts_tie_breaker_by_node_id(cfg):
 
 def test_update_from_mesh_rejects_stale_entry(cfg):
     local = ConfigEntry(value="old", name="KEY", origin_mesh_node="node-z", timestamp=5)
-    incoming = ConfigEntry(value="new", name="KEY", origin_mesh_node="node-a", timestamp=4)
+    incoming = ConfigEntry(
+        value="new", name="KEY", origin_mesh_node="node-a", timestamp=4
+    )
 
     cfg._store.add(local)
 

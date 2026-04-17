@@ -3,10 +3,10 @@ import json
 from typing import Optional
 from pathlib import Path
 
-from ..base import BaseCommand, CommandCategory, CommandError
+from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
 
 
-class RunWorkflowCommand(BaseCommand):
+class RunWorkflowCommand(SubCommand):
     help = "Run a workflow"
     name = "run"
     category = CommandCategory.EXECUTION
@@ -36,7 +36,7 @@ class RunWorkflowCommand(BaseCommand):
         self.stdout.write(f"\nParameters: {params}\n")
 
         engine = self.initialise_workflows(project_dir, workflow_name)
-        workflow_registry = engine.get_workflows_registry()
+        workflow_registry = engine.get_workflow_registry()
 
         workflow = workflow_registry.get_workflow_config(workflow_name)
         if not workflow:

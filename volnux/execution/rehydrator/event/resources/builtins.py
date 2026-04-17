@@ -135,10 +135,9 @@ class PostgresCursorProvider(ResourceProvider):
         conn = psycopg2.connect(data["dsn"])
         cursor = conn.cursor()
 
-        # Re-execute query if present
         if data.get("query"):
             cursor.execute(data["query"])
-            # Skip to previous position
+
             if data.get("rowcount", 0) > 0:
                 cursor.fetchmany(data["rowcount"])
 

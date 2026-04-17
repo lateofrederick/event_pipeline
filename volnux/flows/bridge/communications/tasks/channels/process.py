@@ -1,7 +1,11 @@
 import multiprocessing as mp
+from typing import TYPE_CHECKING, Optional
 
 from volnux.concurrency.async_utils import to_thread
-from .base import CommandChannelBase, TaskCommand, TaskMessage
+from .base import CommandChannelBase
+
+if TYPE_CHECKING:
+    from ..base import TaskCommand, TaskMessage
 
 
 class ProcessCommandChannel(CommandChannelBase):
@@ -24,17 +28,17 @@ class ProcessCommandChannel(CommandChannelBase):
         super().__init__(task_id)
 
         ctx = mp.get_context("spawn")
-        self._command_queue: mp.Queue[TaskCommand] = ctx.Queue()
-        self._message_queue: mp.Queue[TaskMessage] = ctx.Queue()
+        self._command_queue: mp.Queue["TaskCommand"] = ctx.Queue()
+        self._message_queue: mp.Queue["TaskMessage"] = ctx.Queue()
 
-    async def send_command(self, command: TaskCommand) -> None:
+    async def send_command(self, command: "TaskCommand") -> None:
         """Send command from coordinator to task"""
 
         await to_thread(self._command_queue.put, command)
 
     async def receive_command(
-        self, timeout: typing.Optional[float] = None
-    ) -> typing.Optional[TaskCommand]:
+        self, timeout: Optional[float] = None
+    ) -> Optional["TaskCommand"]:
         """Receive command in task"""
 
         try:
@@ -42,14 +46,14 @@ class ProcessCommandChannel(CommandChannelBase):
         except Exception:
             return None
 
-    async def send_message(self, message: TaskMessage) -> None:
+    async def send_message(self, message: "TaskMessage") -> None:
         """Send message from task to coordinator"""
 
         await to_thread(self._message_queue.put, message)
 
     async def receive_message(
-        self, timeout: typing.Optional[float] = None
-    ) -> typing.Optional[TaskMessage]:
+        self, timeout: Optional[float] = None
+    ) -> Optional["TaskMessage"]:
         """Receive message in coordinator"""
 
         try:

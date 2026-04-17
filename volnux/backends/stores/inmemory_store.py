@@ -38,6 +38,19 @@ class DummyConnector(BackendConnectorBase):
 
 
 class InMemoryKeyValueStoreBackend(KeyValueStoreBackendBase):
+    """
+    In-memory implementation of the KeyValueStoreBackend.
+
+    This class provides a simple in-memory key-value storage solution. It acts
+    as a backend for managing data associated with different schemas and offers
+    CRUD functionalities. The data is stored in memory, and no persistence is
+    provided. It is suitable for testing and scenarios where persistence is
+    not required.
+
+    :ivar connector_klass: Specifies the default connector class for the
+        backend. This is set to `DummyConnector`.
+    :type connector_klass: type
+    """
 
     connector_klass = DummyConnector
 

@@ -7,7 +7,7 @@ import typing
 from pathlib import Path
 
 from volnux import Event
-from volnux.base import EventType
+from volnux.event.base import EventType
 from volnux.exceptions import PointyNotExecutable
 
 from .utils import initialize_and_register_workflow

@@ -18,4 +18,4 @@ class TaskProtocol(TaskProtocolMixin, typing.Protocol):
     ) -> None: ...
 
     def get_event_class(self) -> typing.Type["EventBase"]:
-        """Return event class of task"""
+        """Return event class of a task"""

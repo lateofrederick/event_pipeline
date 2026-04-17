@@ -24,12 +24,27 @@ Result: TypeAlias = typing.Hashable  # Placeholder for a Result type
 @dataclass
 class ResultStream(typing.Generic[T]):
     """
-    Hybrid lazy-loading result stream with a transient in-memory tier and an
-    optional persisted tier.
+    Hybrid lazy-loading result stream with a transient in-memory tier and an optional
+    persisted tier.
 
-    Resolution order:
-    1. in-memory backend
-    2. persisted backend (if the object is marked as persisted)
+    The `ResultStream` class facilitates working with large datasets by leveraging a
+    hybrid storage model, providing lazy-loading mechanisms with an in-memory layer
+    and an optional persisted backend. It supports filtering, partitioning (sharding),
+    and iterative processing while keeping memory usage efficient.
+
+    Each object in the stream is identified using a key, and predicates can be registered
+    to apply filters lazily during iteration. The class ensures that newly added objects
+    can be persisted and tracked effectively.
+
+    :ivar model_klass: The model class associated with the result stream.
+    :ivar transaction_id: Identifier representing the unique transactional scope
+        for the stream.
+    :ivar chunk_size: The size of the data chunks to be retrieved during iteration,
+        defaults to 100.
+    :ivar memory_backend: Optional in-memory storage backend for the stream.
+    :type memory_backend: typing.Optional[KeyValueStoreBackendBase]
+    :ivar persisted_backend: Optional persisted storage backend for the stream.
+    :type persisted_backend: typing.Optional[KeyValueStoreBackendBase]
     """
 
     model_klass: typing.Type[T]
@@ -98,7 +113,8 @@ class ResultStream(typing.Generic[T]):
                     self._schema_name(), record_id, self.model_klass
                 ),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to fetch %s: %s", record_id, e)
             return None
 
     def _persisted_get_or_none(self, record_id: str) -> typing.Optional[T]:
@@ -122,7 +138,7 @@ class ResultStream(typing.Generic[T]):
         If `persist` is True, or the instance advertises `is_persisted=True`,
         it is also mirrored to the durable backend.
         """
-        key = instance.id
+        key: str = instance.id
         should_persist = (
             persist if persist is not None else getattr(instance, "is_persisted", False)
         )
@@ -154,13 +170,13 @@ class ResultStream(typing.Generic[T]):
             self._keys.append(instance.id)
             self._key_set.add(instance.id)
 
-    def filter(self, **filter_kwargs) -> "VirtualResultStream[T]":
+    def filter(self, **filter_kwargs) -> "ResultStream[T]":
         """
         Registers a filter predicate to be applied lazily during iteration.
         Returns a new stream; the original is not mutated.
         """
         backend = self.persisted_backend or self.memory_backend
-        new_predicate: typing.Callable[[T], bool] = backend.create_filter_predicate(
+        new_predicate: typing.Callable[[T], bool] = backend._create_filter_predicate(
             **filter_kwargs
         )
         return ResultStream._make(
@@ -173,7 +189,7 @@ class ResultStream(typing.Generic[T]):
             persisted_backend=self.persisted_backend,
         )
 
-    def where(self, predicate: typing.Callable[[T], bool]) -> "VirtualResultStream[T]":
+    def where(self, predicate: typing.Callable[[T], bool]) -> "ResultStream[T]":
         """
         Lower-level alternative to filter(): register any callable predicate
         directly without going through a backend.
@@ -188,7 +204,7 @@ class ResultStream(typing.Generic[T]):
             persisted_backend=self.persisted_backend,
         )
 
-    def shard(self, num_shards: int) -> typing.List["VirtualResultStream[T]"]:
+    def shard(self, num_shards: int) -> typing.List["ResultStream[T]"]:
         """
         Partitions the ID list into N sub-streams for parallel processing.
         """
@@ -238,7 +254,11 @@ class ResultStream(typing.Generic[T]):
 
     def has_results(self) -> bool:
         """Returns True if at least one object survives the filter pipeline."""
-        return self.first() is not None
+        try:
+            next(iter(self))
+            return True
+        except StopIteration:
+            return False
 
     def __len__(self) -> int:
         """Returns the number of tracked IDs before filtering."""
@@ -274,27 +294,22 @@ class ResultStream(typing.Generic[T]):
         if record_id is not None:
             try:
                 self.memory_backend.delete(self._schema_name(), record_id)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to evict %s: %s", record_id, e)
                 return
             return
 
         for rid in list(self._keys):
             try:
                 self.memory_backend.delete(self._schema_name(), rid)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to evict %s: %s", rid, e)
                 continue
 
     def __repr__(self) -> str:
-        persisted_count = 0
-        for rid in self._keys:
-            instance = self._memory_get_or_none(rid) or self._persisted_get_or_none(rid)
-            if instance is not None and getattr(instance, "is_persisted", False):
-                persisted_count += 1
-
         return (
-            f"<VirtualResultStream: {self.model_klass.__name__} | "
-            f"Tx: {self.transaction_id} | "
+            f"<ResultStream: {self.model_klass.__name__} | "
+            f"Tx: {self.transaction_id[:8]}... | "
             f"Keys: {len(self._keys)} | "
-            f"Persisted: {persisted_count} | "
             f"Filters: {len(self._predicates)}>"
         )
