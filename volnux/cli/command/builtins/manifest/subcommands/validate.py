@@ -3,7 +3,7 @@ import sys
 import typing
 import jsonschema
 
-from volnux.cli.command.base import BaseCommand, CommandCategory
+from volnux.cli.command.base import SubCommand, CommandCategory
 from volnux.cli.command.builtins.manifest.utils import (
     _load_manifest,
     _load_schema,
@@ -12,7 +12,7 @@ from volnux.cli.command.builtins.manifest.utils import (
 )
 
 
-class ValidateManifestCommand(BaseCommand):
+class ValidateManifestSubCommand(SubCommand):
     """
     Validate a volnux.manifest.json file against the EventHub JSON Schema.
 

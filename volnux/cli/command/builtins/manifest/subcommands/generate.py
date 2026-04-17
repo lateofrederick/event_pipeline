@@ -7,11 +7,11 @@ import typing
 from pathlib import Path
 
 from volnux.event.base import EventBase
-from volnux.cli.command.base import BaseCommand, CommandCategory, CommandError
+from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
 from volnux.cli.command.builtins.manifest.utils import _load_schema, _MANIFEST_FILENAME
 
 
-class GenerateManifestCommand(BaseCommand):
+class GenerateManifestSubCommand(SubCommand):
     """
     Introspect all EventBase subclasses reachable from a Python package and
     generate a volnux.manifest.json scaffold.
@@ -191,8 +191,6 @@ class GenerateManifestCommand(BaseCommand):
             "Fields marked '(TODO)' require manual completion.\n"
         )
         return None
-
-    # ── Introspection helpers ─────────────────────────────────────────────
 
     def _collect_event_classes(
         self, module: typing.Any, source_module: str
