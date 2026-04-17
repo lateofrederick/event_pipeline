@@ -12,4 +12,5 @@ __all__ = [
     "WorkflowCommand",
     "TriggerEngineCommand",
     "TriggerCommand",
+    "ManifestCommand",
 ]
