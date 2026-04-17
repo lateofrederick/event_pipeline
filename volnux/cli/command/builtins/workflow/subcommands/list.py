@@ -1,12 +1,15 @@
 from typing import Optional
 
-from ..base import BaseCommand, CommandCategory, CommandError
+from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
 
 
-class ListWorkflowsCommand(BaseCommand):
+class ListWorkflowsCommand(SubCommand):
     help = "List all available workflows"
     name = "list"
     category = CommandCategory.WORKFLOW_MANAGEMENT
+
+    def add_arguments(self, parser) -> None:
+        return
 
     def handle(self, *args, **options) -> Optional[str]:
         config_module = self.load_project_config()
@@ -21,7 +24,7 @@ class ListWorkflowsCommand(BaseCommand):
 
         engine = self.initialise_workflows(project_dir)
 
-        workflows_registry = engine.get_workflows_registry()
+        workflows_registry = engine.get_workflow_registry()
 
         num_of_workflows = 0
         for workflow in workflows_registry.get_workflow_configs():

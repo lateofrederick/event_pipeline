@@ -436,6 +436,18 @@ class VolnuxConfig:
             self._lamport_clock = max(self._lamport_clock, incoming_entry.timestamp) + 1
             return True
 
+    async def update_from_mesh_async(self, incoming_entry: ConfigEntry) -> bool:
+        """
+        Updates the current configuration entry using data from the mesh network asynchronously.
+
+        :param incoming_entry: The configuration entry containing data to replace or
+            update the current entry.
+        :type incoming_entry: ConfigEntry
+        :return: Indicates whether the update operation was successful.
+        :rtype: bool
+        """
+        return await to_thread(self.update_from_mesh, incoming_entry)
+
     async def get_async(self, key: str, default: Any = _MISSING) -> Any:
         return await to_thread(self.get, key, default)
 

@@ -2,7 +2,7 @@ import asyncio
 import typing
 from contextlib import contextmanager
 
-from volnux.result import EventResult, ResultSet
+from volnux.result import EventResult, ResultSet, ResultStream
 from volnux.result_evaluators import (
     EventEvaluationResult,
     EventEvaluator,

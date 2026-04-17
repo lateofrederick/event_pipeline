@@ -1,5 +1,5 @@
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from concurrent.futures._base import Executor as BaseExecutor
+from concurrent.futures import Executor as BaseExecutor
 
 from .default import DefaultExecutor
 from .grpc import GRPCExecutor

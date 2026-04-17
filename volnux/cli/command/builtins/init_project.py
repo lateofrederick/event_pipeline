@@ -10,9 +10,41 @@ from volnux import __version__ as version
 from ..base import BaseCommand, CommandCategory, CommandError
 
 
-class StartProjectCommand(BaseCommand):
-    help = "Create a new Volnux project structure"
-    name = "startproject"
+class InitProjectCommand(BaseCommand):
+    """
+    Scaffold a new Volnux project in the given directory.
+
+    This class creates a predefined project structure for a Volnux application
+    and initializes essential files, including configuration and workflow
+    initializer files. It allows specifying a custom directory, overwriting an
+    existing directory, and enforces project naming conventions.
+
+    :ivar help: Help message describing the command functionality.
+    :type help: str
+    :ivar name: The name of the command as recognized in the CLI.
+    :type name: str
+    :ivar category: The category under which the command will be organized.
+    :type category: CommandCategory
+
+    Creates the standard project layout:
+
+        <project_folder>/
+            config.py — project configuration
+            init.py — workflow initialiser (defines engine)
+            workflows/
+                __init__.py
+            events/
+                __init__.py
+
+    Usage
+    ─────
+        volnux init my_project
+        volnux init my_project --template etl
+        volnux init my_project --template ai-agent --no-events
+    """
+
+    help = "Scaffold a new Volnux project directory."
+    name = "init"
     category = CommandCategory.PROJECT_MANAGEMENT
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -80,11 +112,9 @@ class StartProjectCommand(BaseCommand):
                 "Use only letters, numbers, hyphens, and underscores."
             )
 
-        # Check if name starts with a letter
         if not name[0].isalpha():
             raise CommandError("Project name must start with a letter")
 
-        # Check length
         if len(name) > 100:
             raise CommandError("Project name is too long (max 100 characters)")
 
@@ -143,7 +173,7 @@ class StartProjectCommand(BaseCommand):
         gitignore_file.write_text(gitignore_content, encoding="utf-8")
 
     def _cleanup_on_failure(self, project_path: Path) -> None:
-        """Remove partially created project directory on failure."""
+        """Remove the partially created project directory on failure."""
         if project_path.exists():
             try:
                 shutil.rmtree(project_path)
@@ -152,7 +182,7 @@ class StartProjectCommand(BaseCommand):
                 self.error(f"Failed to cleanup: {cleanup_error}")
 
     def _display_success_message(self, project_name: str, project_path: Path) -> None:
-        """Display success message and next steps."""
+        """Display a success message and next steps."""
         self.success(
             f"\n✓ Project '{project_name}' created successfully at {project_path}!"
         )

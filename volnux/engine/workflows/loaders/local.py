@@ -4,7 +4,7 @@ import typing
 from pathlib import Path
 
 from volnux import Event
-from volnux.base import EventType
+from volnux.event.base import EventType
 from volnux.import_utils import load_module_from_path
 from .utils import initialize_and_register_workflow
 

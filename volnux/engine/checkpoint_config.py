@@ -1,7 +1,7 @@
 import typing
 from enum import Enum
-from typing import Dict, Any, Optional
-from formax import BaseModel, MiniAnnotated, Attrib
+from typing import Dict, Any, Optional, Union
+from formax import BaseModel, MiniAnnotated, Attrib, InitStrategy
 
 
 class CheckPointFrequency(str, Enum):
@@ -24,6 +24,7 @@ class CheckPointPolicyConfig(BaseModel):
 
     class Config:
         frozen = True
+        init_strategy = InitStrategy.DATACLASS
 
 
 class CheckPointRuntimeConfig(BaseModel):
@@ -38,6 +39,7 @@ class CheckPointRuntimeConfig(BaseModel):
 
     class Config:
         frozen = True
+        init_strategy = InitStrategy.DATACLASS
 
 
 class CheckPointStorageConfig(BaseModel):
@@ -110,3 +112,4 @@ class CheckPointConfig(BaseModel):
 
     class Config:
         frozen = True
+        init_strategy = InitStrategy.DATACLASS

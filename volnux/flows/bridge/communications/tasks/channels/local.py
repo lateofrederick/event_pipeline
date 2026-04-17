@@ -1,6 +1,10 @@
 import asyncio
+from typing import TYPE_CHECKING, Optional
 
-from .base import CommandChannelBase, TaskCommand, TaskMessage
+from .base import CommandChannelBase
+
+if TYPE_CHECKING:
+    from ..base import TaskCommand, TaskMessage
 
 
 class LocalCommandChannel(CommandChannelBase):
@@ -21,32 +25,32 @@ class LocalCommandChannel(CommandChannelBase):
     def __init__(self, task_id: str):
         super().__init__(task_id)
 
-        self._command_queue: asyncio.Queue[TaskCommand] = asyncio.Queue()
-        self._message_queue: asyncio.Queue[TaskMessage] = asyncio.Queue()
+        self._command_queue: asyncio.Queue["TaskCommand"] = asyncio.Queue()
+        self._message_queue: asyncio.Queue["TaskMessage"] = asyncio.Queue()
 
-    async def send_command(self, command: TaskCommand) -> None:
+    async def send_command(self, command: "TaskCommand") -> None:
         """Send command from coordinator to task"""
         await self._command_queue.put(command)
 
     async def receive_command(
-        self, timeout: typing.Optional[float] = None
-    ) -> typing.Optional[TaskCommand]:
-        """Receive command in task"""
+        self, timeout: Optional[float] = None
+    ) -> Optional["TaskCommand"]:
+        """Receive command in a task"""
 
         try:
             return await asyncio.wait_for(self._command_queue.get(), timeout=timeout)
         except asyncio.TimeoutError:
             return None
 
-    async def send_message(self, message: TaskMessage) -> None:
-        """Send message from task to coordinator"""
+    async def send_message(self, message: "TaskMessage") -> None:
+        """Send a message from a task to coordinator"""
 
         await self._message_queue.put(message)
 
     async def receive_message(
-        self, timeout: typing.Optional[float] = None
-    ) -> typing.Optional[TaskMessage]:
-        """Receive message in coordinator"""
+        self, timeout: Optional[float] = None
+    ) -> Optional["TaskMessage"]:
+        """Receive a message in coordinator"""
 
         try:
             return await asyncio.wait_for(self._message_queue.get(), timeout=timeout)

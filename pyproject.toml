@@ -20,6 +20,7 @@ dependencies = [
     "more-itertools>=8.10.0",
     "formax-py",
     "orjson>=3.11.7",
+    "jsonschema>=4.26.0",
     "apscheduler<=3.11.0",
     "typing-extensions==4.12.2",
     "asgiref>=3.11.0",

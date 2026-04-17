@@ -29,10 +29,11 @@ try:
 except ImportError:
     from typing_extensions import TypeAlias
 
-from .base import EventBase, ExecutorInitializerConfig, RetryPolicy
+from .event import EventBase
 
 Event: TypeAlias = EventBase
 
+from .mixins.event import RetryPolicy, ExecutorInitializerConfig
 from .pipeline import BatchPipeline, Pipeline
 from .result_evaluators import ResultEvaluationStrategies
 

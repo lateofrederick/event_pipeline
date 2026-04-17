@@ -1,7 +1,6 @@
 import abc
 import logging
 import typing
-from dataclasses import dataclass, field
 from enum import Enum
 
 from volnux.parser.executor_config import ExecutorInitializerConfig
@@ -15,17 +14,16 @@ from volnux.signal.signals import event_called, event_init
 from volnux.versioning.handler import VersionHandler
 from volnux.versioning import BaseVersioning, NoVersioning, DeprecationInfo, VersionInfo
 
-from .config import VolnuxConfig
-from .constants import EMPTY
-from .exceptions import (
+from volnux.config import VolnuxConfig
+from volnux.constants import EMPTY
+from volnux.exceptions import (
     ImproperlyConfigured,
     MaxRetryError,
     StopProcessingError,
     SwitchTask,
 )
-from .registry import Registry
-from .result import EventResult, ResultSet
-from .utils import get_function_call_args
+from volnux.event.registry import Registry
+from volnux.result import EventResult
 from volnux.mixins.event import (
     RetryMixin,
     RetryPolicy,
@@ -33,7 +31,6 @@ from volnux.mixins.event import (
     ExecutorInitializerConfig,
     EventCheckPointingMixin,
 )
-from volnux.execution.rehydrator.event.snapshot import EventPhase
 from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 
 __all__ = [
@@ -70,7 +67,7 @@ class EventType(Enum):
     :type SYSTEM: EventType
     :ivar META: Metadata-related events.
     :type META: EventType
-    :ivar OTHER: General events not falling into specific predefined categories.
+    :ivar OTHER: General events do not fall into specific predefined categories.
     :type OTHER: EventType
     """
 
@@ -126,130 +123,6 @@ class EventMeta(abc.ABCMeta):
                 logger.warning(str(e))
 
         return cls
-
-
-@dataclass
-class StopConditionProcessor:
-    """
-    Processor for handling stop conditions with improved error handling and flexibility.
-    Attributes:
-        stop_condition: The condition that determines when to stop processing
-        exception: Any exception that occurred during processing
-        message: Optional message for logging or debugging
-        logger: Optional logger instance for structured logging
-    """
-
-    stop_condition: typing.Union[StopCondition, typing.List[StopCondition]]
-    exception: typing.Optional[Exception] = None
-    message: typing.Optional[str] = None
-    logger: typing.Optional[logging.Logger] = None
-
-    def __post_init__(self) -> None:
-        """Validate initialization parameters."""
-        if not self.logger:
-            self.logger = logging.getLogger(__name__)
-
-    def should_stop(self, success: bool = True) -> bool:
-        """
-        Determine if processing should stop based on the current state.
-        Args:
-            success: Whether the operation was successful
-        Returns:
-            bool: True if processing should stop, False otherwise
-        """
-        if self.stop_condition == StopCondition.NEVER:
-            return False
-
-        if isinstance(self.stop_condition, (list, tuple)):
-            return any(
-                self._evaluate_single_condition(cond, success)
-                for cond in self.stop_condition
-            )
-
-        return self._evaluate_single_condition(self.stop_condition, success)
-
-    def _evaluate_single_condition(
-        self, condition: StopCondition, success: bool
-    ) -> bool:
-        """Evaluate a single stop condition."""
-        if condition == StopCondition.NEVER:
-            return False
-        elif condition == StopCondition.ON_SUCCESS:
-            return success and self.exception is None
-        elif condition == StopCondition.ON_ERROR:
-            return not success or self.exception is not None
-        elif condition == StopCondition.ON_ANY:
-            return True
-        else:
-            self.logger.warning(f"Unknown stop condition: {condition}")
-            return False
-
-    def on_success(self) -> bool:
-        """
-        Handle successful operation completion.
-        Returns:
-            bool: True if processing should stop
-        """
-        self.exception = None
-        should_stop = self.should_stop(success=True)
-
-        if should_stop:
-            self._log_stop_decision("success")
-
-        return should_stop
-
-    def on_error(
-        self, exception: Exception, message: typing.Optional[str] = None
-    ) -> bool:
-        """
-        Handle error during operation.
-        Args:
-            exception: The exception that occurred
-            message: Optional additional message
-        Returns:
-            bool: True if processing should stop
-        """
-        self.exception = exception
-        if message:
-            self.message = message
-
-        should_stop = self.should_stop(success=False)
-
-        if should_stop:
-            self._log_stop_decision("error")
-        return should_stop
-
-    def reset(self) -> None:
-        """Reset the processor state for reuse."""
-        self.exception = None
-        self.message = None
-
-    def _log_stop_decision(self, event_type: str) -> None:
-        """Log the stop decision with context."""
-        context = {
-            "event_type": event_type,
-            "stop_condition": self.stop_condition,
-            "has_exception": self.exception is not None,
-            "message": self.message,
-        }
-
-        if self.exception:
-            self.logger.info(
-                f"Stopping on {event_type} due to {self.stop_condition}", extra=context
-            )
-        else:
-            self.logger.debug(
-                f"Stopping on {event_type} due to {self.stop_condition}", extra=context
-            )
-
-    def get_status(self) -> typing.Dict[str, typing.Any]:
-        """Get current processor status for debugging."""
-        return {
-            "stop_condition": self.stop_condition,
-            "has_exception": self.exception is not None,
-            "exception_type": type(self.exception).__name__ if self.exception else None,
-            "message": self.message,
-        }
 
 
 class EventBase(
@@ -396,38 +269,16 @@ class EventBase(
         """
         super().__init__(*args, **kwargs)
 
-        self._execution_context = execution_context
-
-        self._phase: EventPhase = EventPhase.INITIALIZED
-        self.checkpoint_manager = checkpoint_manager
-
-        # Task ID
-        self._task_id = task_id
-        self._sequence_number = sequence_number
-
-        # Configurations
-        self.options = options
-
-        # The previous result of the event, if any.
-        self.previous_result = previous_result
-        self.stop_condition = StopConditionProcessor(
-            stop_condition=stop_condition, logger=logger
+        self._setup_event(
+            execution_context=execution_context,
+            task_id=task_id,
+            checkpoint_manager=checkpoint_manager,
+            previous_result=previous_result,
+            stop_condition=stop_condition,
+            run_bypass_event_checks=run_bypass_event_checks,
+            options=options,
+            sequence_number=sequence_number,
         )
-        self.run_bypass_event_checks = run_bypass_event_checks
-
-        # Retry configuration
-        self._retry_count = 0
-        self.init_retry()
-
-        # The executor used to execute the event.
-        self._execution_status: bool = False
-        self.execution_result: typing.Any = None
-
-        self._init_args = get_function_call_args(self.__class__.__init__, locals())  # type: ignore
-        self._init_args.pop("checkpoint_manager", None)
-        self._call_args = EMPTY
-
-        event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} executor={self.executor.__name__}>"
@@ -449,17 +300,17 @@ class EventBase(
 
     @classmethod
     def get_version_info(cls) -> VersionInfo:
-        """Get version information by delegating to handler."""
+        """Get version information by delegating to the handler."""
         return cls.get_version_handler().get_info()
 
     @classmethod
     def is_deprecated(cls) -> bool:
-        """Check if deprecated by delegating to handler."""
+        """Check if deprecated by delegating to the handler."""
         return cls.get_version_handler().is_deprecated()
 
     @classmethod
     def get_all_versions(cls, name: typing.Optional[str] = None) -> typing.List[str]:
-        """Get all versions from registry."""
+        """Get all versions from the registry."""
         handler = cls.get_version_handler()
         event_name = name or handler.class_name
         return _event_registry.list_versions(event_name, handler.namespace)
@@ -505,12 +356,10 @@ class EventBase(
                 res = self.on_failure(result)
         else:
             res = EventResult(
-                error=not result_success,  # type: ignore
-                content=result,  # type: ignore
-                task_id=self._task_id,  # type: ignore
-                event_name=self.__class__.__name__,  # type: ignore
-                # call_params=self._call_args,  # type: ignore
-                # init_params=self._init_args,
+                error=not result_success,
+                content=result,
+                task_id=self._task_id,
+                event_name=self.__class__.__name__,
             )
         raise SwitchTask(
             current_task_id=self._task_id,
@@ -550,7 +399,7 @@ class EventBase(
 
         The bypass decision is typically based on business rules such as:
         - Event is optional in certain contexts
-        - Alternative processing path exists
+        - an Alternative processing path exists
         - Specific data conditions make this event unnecessary
 
         Returns (Tuple):
@@ -585,7 +434,9 @@ class EventBase(
             Avoid returning file handles, sockets, or other non-serializable objects.
             For complex state, use external_resources with custom serialization.
         """
-        raise NotImplementedError()
+        raise NotImplementedError(
+            "Event processing logic must be implemented by subclasses"
+        )
 
     def event_result(
         self, error: bool, content: typing.Dict[str, typing.Any]
@@ -677,48 +528,6 @@ class EventBase(
         return _event_registry.list_all_classes()  # type:ignore
 
     @classmethod
-    def get_direct_subclasses(cls) -> typing.Set[typing.Type["EventBase"]]:
-        """Get only direct subclasses (one level down)"""
-        return set(cls.__subclasses__())
-
-    @classmethod
     def clear_class_cache(cls) -> None:
         """Clear the cached subclass registry"""
         _event_registry.clear()
-
-    # def __call__(
-    #     self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
-    # ) -> EventResult:
-    #     self._call_args = get_function_call_args(self.__class__.__call__, locals())  # type: ignore
-    #
-    #     if self.run_bypass_event_checks:
-    #         try:
-    #             should_skip, data = self.can_bypass_current_event()
-    #         except Exception as e:
-    #             logger.error(
-    #                 "Error in event setup status checks: %s", str(e), exc_info=e
-    #             )
-    #             raise
-    #
-    #         if should_skip:
-    #             execution_result = {
-    #                 "status": 1,
-    #                 "skip_event_execution": should_skip,
-    #                 "data": data,
-    #             }
-    #             return self.on_success(execution_result)
-    #
-    #     try:
-    #         self._execution_status, execution_result = self.retry(
-    #             self.process, *args, **kwargs
-    #         )
-    #     except MaxRetryError as e:
-    #         logger.error(str(e), exc_info=e.exception)
-    #         return self.on_failure(e)
-    #     except Exception as e:
-    #         if not isinstance(e, SwitchTask):
-    #             logger.error(str(e), exc_info=e)
-    #         return self.on_failure(e)
-    #     if self._execution_status:
-    #         return self.on_success(execution_result)
-    #     return self.on_failure(execution_result)

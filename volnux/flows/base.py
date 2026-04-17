@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import inspect
 from collections import deque
 from typing import (
     Optional,
@@ -7,7 +8,6 @@ from typing import (
     Dict,
     Any,
     Union,
-    List,
     Tuple,
     cast,
     Set,
@@ -16,13 +16,12 @@ from typing import (
 )
 from formax import BaseModel, InitVar, ValidationFlags
 
-from volnux.base import ExecutorInitializerConfig
 from volnux.constants import EMPTY
 from volnux.execution.context import ExecutionContext
-from volnux.executors import BaseExecutor
-from volnux.import_utils import import_string
+from volnux.executors import BaseExecutor, ProcessPoolExecutor
 from volnux.mixins import ObjectIdentityMixin
 from volnux.parser.operator import PipeType
+from volnux.parser.executor_config import ExecutorInitializerConfig
 from volnux.parser.protocols import TaskGroupingProtocol, TaskProtocol, TaskType
 from volnux.signal import SoftSignal
 from volnux.signal.signals import event_execution_end, event_execution_start
@@ -30,13 +29,19 @@ from volnux.utils import build_event_arguments_from_pipeline, get_function_call_
 from .bridge.communications.tasks import (
     create_communication_bridge,
     TaskCommunicationBridge,
+    TaskCommand,
+    CommandType,
 )
+from volnux.executors.utils.registry import get_global_executor_registry
+from volnux.concurrency.async_utils import to_thread
 
 if TYPE_CHECKING:
     from volnux import Event
 
 
 logger = logging.getLogger(__name__)
+
+_GLOBAL_EXECUTOR_REGISTRY = get_global_executor_registry()
 
 
 def attach_signal_emitter(signal: SoftSignal, **signal_kwargs: Dict[str, Any]) -> None:
@@ -111,15 +116,15 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
             task_profile: The task profile that this event is configured for.
         """
         options_retries = (
-            task_profile.options and task_profile.options.retry_attempts or 0
+            task_profile.options.retry_attempts if task_profile.options else 0
         )
         total_retries = options_retries
-        if total_retries > 1:  # type: ignore
+        if total_retries > 1:
             event_retry_policy = event.init_retry()
             if event_retry_policy:
-                event_retry_policy.max_attempts = total_retries  # type: ignore
+                event_retry_policy.max_attempts = total_retries
             else:
-                event.config_retry_policy(max_attempts=total_retries)  # type: ignore
+                event.config_retry_policy(max_attempts=total_retries)
 
     def get_initialized_event(
         self, task_profile: TaskType
@@ -171,9 +176,9 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         return event, event_call_args
 
     @staticmethod
-    async def get_task_executor_from_options(
+    def get_task_executor_from_options(
         task_profile: Union[TaskProtocol, TaskGroupingProtocol],
-    ) -> Optional[Type[BaseExecutor]]:
+    ) -> Optional[Union[Type[BaseExecutor], BaseExecutor]]:
         """
         Get the executor class from the task profile options if available.
         Args:
@@ -184,25 +189,17 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         if task_profile.options:
             executor_str: str = task_profile.options.executor  # type: ignore
             if executor_str is not None:
-                try:
-                    instance = cast(Type[BaseExecutor], import_string(executor_str))
-                    if not issubclass(instance, BaseExecutor):
-                        raise ValueError(f"Unsupported executor type {executor_str}")
-                    return instance
-                except ImportError:
-                    logger.warning("Could not import executor '%s'", executor_str)
-                except ValueError as e:
-                    logger.warning(str(e))
+                return _GLOBAL_EXECUTOR_REGISTRY.get(executor_str)
         return None
 
     @staticmethod
     def parse_executor_initialisation_configuration(
-        executor: Type[BaseExecutor], execution_config: ExecutorInitializerConfig
+        executor: Type[BaseExecutor], execution_config: "ExecutorInitializerConfig"
     ) -> Dict[str, Any]:
         """
         Parse the executor initialization configuration
         Args:
-            executor: The executor to initialise.
+            executor: The executor to initialize.
             execution_config: The execution configuration to parse.
         Returns:
             The parsed executor initialization configuration.
@@ -218,7 +215,7 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
 
     async def get_flow_executor_config(
         self, task_profile: TaskType
-    ) -> ExecutorInitializerConfig:
+    ) -> "ExecutorInitializerConfig":
         """
         Get the init configuration for executor
         Args:
@@ -323,9 +320,67 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         executor_config: ExecutorInitializerConfig,
     ) -> None:
         if isinstance(executor_class, Exception):
-            raise RuntimeError(f"Failed to get executor class: {executor_class}")
+            raise RuntimeError(
+                f"Failed to get executor class: {executor_class.__class__.__name__}: {executor_class}"
+            )
         if isinstance(executor_config, Exception):
-            raise ValueError(f"Invalid executor config: {executor_config}")
+            raise ValueError(
+                f"Invalid executor config: {executor_config.__class__.__name__}: {executor_config}"
+            )
+
+    def _initialize_executor(
+        self,
+        executor_class: Union[Type[BaseExecutor], BaseExecutor],
+        executor_config: ExecutorInitializerConfig,
+    ) -> BaseExecutor:
+        """
+        Initialize an executor instance.
+
+        Args:
+            executor_class: Executor class or instance
+            executor_config: Configuration for initialization
+
+        Returns:
+            Executor instance
+
+        Note:
+            For shared executors (ProcessPoolExecutor), this returns a reference
+            to the workflow-managed instance. For per-flow executors, creates
+            a new instance that should be shut down after use.
+        """
+        executor_instance = executor_class
+
+        if inspect.isclass(executor_instance):
+            config = self.parse_executor_initialisation_configuration(
+                executor_class, executor_config
+            )
+            executor_instance = executor_class(**config)
+
+            # Mark as created by this flow
+            if hasattr(executor_instance, "__dict__"):
+                executor_instance._created_by_flow = True
+
+        return executor_instance
+
+    def _should_shutdown_executor(self, executor: BaseExecutor) -> bool:
+        """
+        Determines if the provided executor should be shut down.
+
+        Checks the type of the executor and whether it has been marked as
+        created by a specific flow to decide if it qualifies for shutdown.
+
+        :param executor: The executor instance being evaluated.
+        :type executor: BaseExecutor
+
+        :return: Returns True if the executor is marked for shutdown,
+            otherwise False.
+        :rtype: bool
+        """
+        if isinstance(executor, ProcessPoolExecutor):
+            return False
+        if hasattr(executor, "_created_by_flow"):
+            return executor._created_by_flow
+        return False
 
     async def run(self) -> asyncio.Future:
         """
@@ -338,10 +393,35 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
         """
         raise NotImplementedError("run() must be implemented by subclasses")
 
+    @staticmethod
+    async def shutdown_executor(executor: BaseExecutor) -> None:
+        if not isinstance(executor, BaseExecutor):
+            logger.warning(f"Executor is not an instance of BaseExecutor: {executor}")
+            return
+
+        try:
+            logger.debug(
+                f"Shutting down executor {executor.__class__.__name__} "
+                "(non-blocking)"
+            )
+            await to_thread(executor.shutdown, wait=True)
+            logger.debug(f"Executor {executor.__class__.__name__} shut down")
+        except Exception as e:
+            logger.warning(
+                f"Error shutting down executor {executor.__class__.__name__}: {e}"
+            )
+
     async def close(self) -> None:
-        # Cleanup communication bridge
+        """Cleanup communication bridge and other resources."""
         if self._comm_bridge:
-            await self._comm_bridge.shutdown()
+            try:
+                await self._comm_bridge.shutdown()
+            except Exception as e:
+                logger.warning(
+                    f"Error shutting down communication bridge: {e}", exc_info=True
+                )
+            finally:
+                self._comm_bridge = None
 
     async def cancel(self, *args: Any, **kwargs: Dict[str, Any]) -> None:
         """
@@ -351,4 +431,40 @@ class BaseFlow(BaseModel, ObjectIdentityMixin):
             for task_profile in self.context.task_profiles:
                 task_id = task_profile.get_id()
                 command = TaskCommand(task_id=task_id, command_type=CommandType.CANCEL)
-                await self._comm_bridge.send_command(task_id, command)
+                try:
+                    await self._comm_bridge.send_command(task_id, command)
+                except Exception as e:
+                    logger.warning(
+                        f"Error cancelling task {task_id}: {e}", exc_info=True
+                    )
+
+    async def get_task_status(self, task_id: str):
+        """Get the current status of a specific task"""
+        if self._comm_bridge:
+            try:
+                return await self._comm_bridge.get_status(task_id)
+            except Exception as e:
+                logger.warning(
+                    f"Error getting status for task {task_id}: {e}", exc_info=True
+                )
+        return None
+
+    async def pause_task(self, task_id: str) -> bool:
+        """Pause a running task"""
+        if self._comm_bridge:
+            command = TaskCommand(task_id=task_id, command_type=CommandType.PAUSE)
+            try:
+                return await self._comm_bridge.send_command(task_id, command)
+            except Exception as e:
+                logger.warning(f"Error pausing task {task_id}: {e}", exc_info=True)
+        return False
+
+    async def resume_task(self, task_id: str) -> bool:
+        """Resume a paused task"""
+        if self._comm_bridge:
+            command = TaskCommand(task_id=task_id, command_type=CommandType.RESUME)
+            try:
+                return await self._comm_bridge.send_command(task_id, command)
+            except Exception as e:
+                logger.warning(f"Error resuming task {task_id}: {e}", exc_info=True)
+        return False

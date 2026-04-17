@@ -314,7 +314,6 @@ class HealthMonitor(Generic[TManager]):
 
         component = self._components[manager_name][task_name]
 
-        # Check restart limits
         if component.restart_count >= self.config.max_restart_attempts:
             logger.error(
                 f"Task '{task_name}' of manager '{manager_name}' has exceeded "
@@ -322,7 +321,6 @@ class HealthMonitor(Generic[TManager]):
             )
             return
 
-        # Calculate backoff delay
         backoff = self._calculate_backoff(component)
 
         if backoff > 0:
@@ -333,7 +331,6 @@ class HealthMonitor(Generic[TManager]):
             )
             await asyncio.sleep(backoff)
 
-        # Check if manager was stopped while we were waiting
         if not manager._running:
             logger.info(
                 f"Manager '{manager_name}' stopped during backoff, " "skipping restart"
@@ -377,11 +374,10 @@ class HealthMonitor(Generic[TManager]):
         Returns:
             Delay in seconds
         """
-        # No delay on first restart
+
         if component.restart_count == 0:
             return 0
 
-        # Reset counter if stable for a while
         if component.last_restart:
             time_since_last = time.time() - component.last_restart
             if time_since_last > self.config.stability_window:
@@ -390,7 +386,6 @@ class HealthMonitor(Generic[TManager]):
                 component.consecutive_failures = 0
                 return 0
 
-        # Exponential backoff with cap
         delay = self.config.restart_backoff * (2**component.restart_count)
         return min(delay, self.config.max_backoff)
 

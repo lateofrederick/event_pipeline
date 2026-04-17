@@ -17,4 +17,5 @@ __all__ = [
     "TriggerBase",
     "TriggerLifecycle",
     "TriggerActivation",
+    "TriggerType",
 ]

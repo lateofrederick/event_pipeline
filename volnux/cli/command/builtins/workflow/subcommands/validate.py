@@ -2,10 +2,10 @@ import argparse
 from typing import Optional
 from pathlib import Path
 
-from ..base import BaseCommand, CommandCategory, CommandError
+from volnux.cli.command.base import SubCommand, CommandCategory, CommandError
 
 
-class ValidateWorkflowCommand(BaseCommand):
+class ValidateWorkflowCommand(SubCommand):
     help = "Validate workflow definitions"
     name = "validate"
     category = CommandCategory.WORKFLOW_MANAGEMENT
@@ -21,7 +21,7 @@ class ValidateWorkflowCommand(BaseCommand):
         project_dir, _ = self.get_project_root_and_config_module()
 
         engine = self.initialise_workflows(project_dir, workflow_name)
-        workflows_registry = engine.get_workflows_registry()
+        workflows_registry = engine.get_workflow_registry()
 
         if workflow_name:
             self.success(f"Validating workflow: {workflow_name}\n")

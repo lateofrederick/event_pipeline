@@ -17,7 +17,7 @@ from concurrent.futures import Future
 
 if TYPE_CHECKING:
     from .channels.base import CommandChannelBase
-    from volnux.base import EventBase
+    from volnux.event import EventBase
     from volnux.execution.context import ExecutionContext
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ class TaskExecutionHandle:
         event_name: str,
         context_state_id: Optional[str] = None,
     ) -> "TaskExecutionHandle":
-        """Create handle from Future with generated execution ID"""
+        """Create a handle from Future with generated execution ID"""
         execution_id = f"exec-{id(future)}"
         return cls(
             task_def_id=task_def_id,
@@ -167,13 +167,13 @@ class TaskCommunicationBridge(ABC):
     (local threads, processes, remote workers, Celery).
     """
 
-    channel_class: Type[CommandChannelBase]
+    channel_class: Type["CommandChannelBase"]
 
     def __init__(self, context: "ExecutionContext"):
         self.context = context
 
         # Channel registry: full_id -> CommandChannelBase
-        self._channels: Dict[str, CommandChannelBase] = {}
+        self._channels: Dict[str, "CommandChannelBase"] = {}
 
         # Execution handle tracking
         self._execution_handles: Dict[str, TaskExecutionHandle] = {}

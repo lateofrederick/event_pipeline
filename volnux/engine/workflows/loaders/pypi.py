@@ -5,7 +5,7 @@ import sys
 import typing
 
 from volnux import Event
-from volnux.base import EventType
+from volnux.event.base import EventType
 from volnux.import_utils import get_package_root_path
 from .utils import get_workflow_config_name
 

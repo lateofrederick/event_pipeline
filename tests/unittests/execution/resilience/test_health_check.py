@@ -32,9 +32,7 @@ class MockHealthyManager:
         return {
             "healthy": True,
             "running": self._running,
-            "tasks": {
-                "worker": {"alive": True}
-            }
+            "tasks": {"worker": {"alive": True}},
         }
 
     def get_managed_tasks(self) -> Dict[str, TaskInfo]:
@@ -42,7 +40,7 @@ class MockHealthyManager:
             "worker": {
                 "alive": True,
                 "task": self._worker_task,
-                "restart_function": "_start_worker"
+                "restart_function": "_start_worker",
             }
         }
 
@@ -69,9 +67,7 @@ class MockUnhealthyManager:
         return {
             "healthy": self.is_healthy(),
             "running": self._running,
-            "tasks": {
-                "worker": {"alive": self._worker_task is not None}
-            }
+            "tasks": {"worker": {"alive": self._worker_task is not None}},
         }
 
     def get_managed_tasks(self) -> Dict[str, TaskInfo]:
@@ -79,7 +75,7 @@ class MockUnhealthyManager:
             "worker": {
                 "alive": self._worker_task is not None,
                 "task": self._worker_task,
-                "restart_function": "_start_worker"
+                "restart_function": "_start_worker",
             }
         }
 
@@ -117,10 +113,7 @@ class MockMultiTaskManager:
         return {
             "healthy": self.is_healthy(),
             "running": self._running,
-            "tasks": {
-                name: {"alive": info["alive"]}
-                for name, info in tasks.items()
-            }
+            "tasks": {name: {"alive": info["alive"]} for name, info in tasks.items()},
         }
 
     def get_managed_tasks(self) -> Dict[str, TaskInfo]:
@@ -128,18 +121,19 @@ class MockMultiTaskManager:
             "worker": {
                 "alive": self._worker_task is not None and not self._worker_task.done(),
                 "task": self._worker_task,
-                "restart_function": "_start_worker"
+                "restart_function": "_start_worker",
             },
             "monitor": {
                 "alive": self._monitor_task is not None,
                 "task": self._monitor_task,
-                "restart_function": "_start_monitor"
+                "restart_function": "_start_monitor",
             },
             "processor": {
-                "alive": self._processor_task is not None and not self._processor_task.done(),
+                "alive": self._processor_task is not None
+                and not self._processor_task.done(),
                 "task": self._processor_task,
-                "restart_function": "_start_processor"
-            }
+                "restart_function": "_start_processor",
+            },
         }
 
     async def restart_task(self, task_name: str) -> None:
@@ -160,11 +154,7 @@ class MockNonRestartableManager:
         return False
 
     async def health_check(self) -> Dict:
-        return {
-            "healthy": False,
-            "running": True,
-            "tasks": {}
-        }
+        return {"healthy": False, "running": True, "tasks": {}}
 
 
 @pytest.fixture
@@ -176,7 +166,7 @@ def health_monitor_config():
         restart_backoff=0.05,
         max_backoff=1.0,
         stability_window=5.0,
-        enable_auto_restart=True
+        enable_auto_restart=True,
     )
 
 
@@ -331,7 +321,9 @@ class TestHealthChecking:
     async def test_health_check_exception_handled(self, health_monitor):
         """Test that exceptions in health check are handled."""
         manager = MockHealthyManager()
-        manager.health_check = AsyncMock(side_effect=RuntimeError("Health check failed"))
+        manager.health_check = AsyncMock(
+            side_effect=RuntimeError("Health check failed")
+        )
 
         health_monitor.register(manager, "test")
 
@@ -576,9 +568,13 @@ class TestStatistics:
     def test_reset_restart_counters_all(self, health_monitor):
         """Test resetting all restart counters."""
         # Create some components
-        health_monitor._components["manager1"]["worker"] = ManagedComponent("manager1", "worker")
+        health_monitor._components["manager1"]["worker"] = ManagedComponent(
+            "manager1", "worker"
+        )
         health_monitor._components["manager1"]["worker"].restart_count = 5
-        health_monitor._components["manager2"]["monitor"] = ManagedComponent("manager2", "monitor")
+        health_monitor._components["manager2"]["monitor"] = ManagedComponent(
+            "manager2", "monitor"
+        )
         health_monitor._components["manager2"]["monitor"].restart_count = 3
 
         health_monitor.reset_restart_counters()
@@ -589,9 +585,13 @@ class TestStatistics:
     def test_reset_restart_counters_specific_manager(self, health_monitor):
         """Test resetting counters for specific manager."""
         # Create components
-        health_monitor._components["manager1"]["worker"] = ManagedComponent("manager1", "worker")
+        health_monitor._components["manager1"]["worker"] = ManagedComponent(
+            "manager1", "worker"
+        )
         health_monitor._components["manager1"]["worker"].restart_count = 5
-        health_monitor._components["manager2"]["monitor"] = ManagedComponent("manager2", "monitor")
+        health_monitor._components["manager2"]["monitor"] = ManagedComponent(
+            "manager2", "monitor"
+        )
         health_monitor._components["manager2"]["monitor"].restart_count = 3
 
         health_monitor.reset_restart_counters("manager1")
@@ -662,9 +662,7 @@ class TestEdgeCases:
             return {
                 "healthy": False,
                 "running": True,
-                "tasks": {
-                    "nonexistent": {"alive": False}
-                }
+                "tasks": {"nonexistent": {"alive": False}},
             }
 
         manager.health_check = bad_health_check
@@ -672,7 +670,7 @@ class TestEdgeCases:
             "nonexistent": {
                 "alive": False,
                 "task": None,
-                "restart_function": "_start_nonexistent"
+                "restart_function": "_start_nonexistent",
             }
         }
 
@@ -754,12 +752,16 @@ class TestIntegration:
         stats = health_monitor.get_stats()
 
         # Healthy manager should not have been restarted
-        assert "healthy" not in stats["managers"] or \
-               len(stats["managers"]["healthy"]["components"]) == 0
+        assert (
+            "healthy" not in stats["managers"]
+            or len(stats["managers"]["healthy"]["components"]) == 0
+        )
 
         # Unhealthy manager should have been restarted
         assert "unhealthy" in stats["managers"]
-        assert stats["managers"]["unhealthy"]["components"]["worker"]["restart_count"] > 0
+        assert (
+            stats["managers"]["unhealthy"]["components"]["worker"]["restart_count"] > 0
+        )
 
         # Multi-task manager should have restarted only dead task
         assert stats["managers"]["multi"]["components"]["monitor"]["restart_count"] > 0

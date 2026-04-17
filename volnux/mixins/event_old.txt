@@ -1,17 +1,28 @@
 import logging
 import inspect
-import multiprocessing as mp
-import time
-import typing
 import asyncio
-from typing import Any, List, Dict, Tuple, Any, Callable, cast, Union, TypedDict, Type
-from concurrent.futures import Executor, ProcessPoolExecutor
+from typing import (
+    List,
+    Dict,
+    Tuple,
+    Any,
+    Callable,
+    cast,
+    Union,
+    TypedDict,
+    Type,
+    Optional,
+    TYPE_CHECKING,
+    Sequence,
+    Awaitable,
+)
 from dataclasses import dataclass, field
 
 from volnux.import_utils import import_string
 from volnux.constants import EMPTY
 from volnux.config import VolnuxConfig
 from volnux.result import EventResult
+from volnux.executors import BaseExecutor
 from ._phase_decorator import phase_step
 from volnux.signal.signals import event_init
 from volnux.concurrency.async_utils import to_thread
@@ -19,8 +30,7 @@ from volnux.parser.options import Options, StopCondition
 from volnux.parser.executor_config import ExecutorInitializerConfig
 from volnux.constants import MAX_BACKOFF, MAX_BACKOFF_FACTOR, MAX_RETRIES
 from volnux.exceptions import MaxRetryError, SuspendTask, SwitchTask
-from volnux.executors.default import DefaultExecutor
-from volnux.executors.tcp import RemoteExecutor
+
 from volnux.utils import get_function_call_args
 from volnux.signal.signals import event_execution_retry, event_execution_retry_done
 from volnux.execution.rehydrator.event.snapshot import EventPhase
@@ -31,8 +41,11 @@ from volnux.execution.rehydrator.event.snapshot import (
 )
 from volnux.execution.rehydrator.event.builder import SnapshotBuilder
 from volnux.execution.rehydrator.event.resources import ResourceProvider
+from volnux.executors.utils.registry import get_global_executor_registry
 
-if typing.TYPE_CHECKING:
+from .protocols.event import BaseEvent as _BaseEvent
+
+if TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
 
 
@@ -40,63 +53,7 @@ logger = logging.getLogger(__name__)
 
 conf = VolnuxConfig.get_instance()
 
-
-class _BaseEvent(typing.Protocol):
-    _retry_count: int
-    _execution_context: "ExecutionContext"
-    retry_policy: "RetryPolicy"
-    _task_id: str
-    _phase: EventPhase
-    exec_result: typing.Any
-    exec_status: bool
-    checkpoint_manager: VolnuxCheckPointManager
-    run_bypass_event_checks: bool
-    _init_args: dict
-    _call_args: dict
-    _external_resources: typing.Dict[str, ResourceState]
-
-    def init_retry(self) -> typing.Union["RetryPolicy", None]: ...
-
-    def register_resource(
-        self,
-        resource_name: str,
-        resource: typing.Any,
-        provider: typing.Union[str, Type[ResourceProvider]],
-    ) -> None: ...
-
-    def restore_resource(
-        self, resource_name: str, resource_config: "ResourceState"
-    ) -> None: ...
-
-    def can_bypass_current_event(self) -> Tuple[bool, Any]: ...
-
-    def is_exhausted(self) -> bool: ...
-
-    def is_retryable(self, exception: Exception) -> bool: ...
-
-    async def _sleep_for_backoff(self) -> float: ...
-
-    async def _retry(
-        self,
-        func: Callable[[typing.Any], typing.Tuple[bool, typing.Any]],
-        /,
-        *args: typing.Tuple[typing.Any],
-        **kwargs: typing.Dict[str, typing.Any],
-    ) -> typing.Tuple[bool, typing.Any]: ...
-
-    async def process(self, *args, **kwargs) -> Tuple[bool, Any]: ...
-
-    def on_success(self, execution_result: typing.Any) -> EventResult: ...
-
-    def on_failure(self, execution_result: typing.Any) -> EventResult: ...
-
-    async def create_snapshot(self) -> EventCheckpointSnapshot: ...
-
-    async def enqueue_checkpoint(self) -> None: ...
-
-    async def _run_step(self, step, *args, **kwargs) -> typing.Any: ...
-
-    async def _process_wrapper(self, *args, **kwargs) -> Union[EventResult, tuple]: ...
+_GLOBAL_EXECUTOR_REGISTRY = get_global_executor_registry()
 
 
 class RetryConfigDict(TypedDict, total=False):
@@ -118,9 +75,7 @@ class RetryPolicy:
     max_backoff: float = field(
         init=True, default=conf.get("MAX_EVENT_BACKOFF", default=MAX_BACKOFF)
     )
-    retry_on_exceptions: typing.List[typing.Type[Exception]] = field(
-        default_factory=list
-    )
+    retry_on_exceptions: List[Type[Exception]] = field(default_factory=list)
 
 
 class RetryMixin:
@@ -137,13 +92,11 @@ class RetryMixin:
     :type retry_policy: Optional[Union[RetryPolicy, Dict[str, Any], None]]
     """
 
-    retry_policy: typing.Union[
-        typing.Optional[RetryPolicy], typing.Dict[str, typing.Any], None
-    ] = None
+    retry_policy: Union[Optional[RetryPolicy], Dict[str, Any], None] = None
 
-    def init_retry(self) -> typing.Union[RetryPolicy, None]:
+    def init_retry(self) -> Union[RetryPolicy, None]:
         if isinstance(self.retry_policy, dict):
-            retry_policy = typing.cast(dict, self.retry_policy)
+            retry_policy = cast(dict, self.retry_policy)
             self.retry_policy = RetryPolicy(**retry_policy)
         return self.retry_policy
 
@@ -152,9 +105,7 @@ class RetryMixin:
         max_attempts: int,
         backoff_factor: float = MAX_BACKOFF_FACTOR,
         max_backoff: float = MAX_BACKOFF,
-        retry_on_exceptions: typing.Union[
-            typing.List[typing.Type[Exception]], typing.Type[Exception], None
-        ] = None,
+        retry_on_exceptions: Union[List[Type[Exception]], Type[Exception], None] = None,
     ) -> None:
         """
         Configures the retry policy for the event.
@@ -173,7 +124,7 @@ class RetryMixin:
             "retry_on_exceptions": [],
         }
         if retry_on_exceptions:
-            retry_exceptions: typing.Sequence[typing.Type[Exception]] = (
+            retry_exceptions: Sequence[Type[Exception]] = (
                 retry_on_exceptions
                 if isinstance(retry_on_exceptions, (tuple, list))
                 else [retry_on_exceptions]
@@ -220,11 +171,11 @@ class RetryMixin:
 
     async def _retry(
         self: _BaseEvent,
-        func: Callable[[typing.Any], typing.Tuple[bool, typing.Any]],
+        func: Callable[[Any], Awaitable[Tuple[bool, Any]]],
         /,
-        *args: typing.Tuple[typing.Any],
-        **kwargs: typing.Dict[str, typing.Any],
-    ) -> typing.Tuple[bool, typing.Any]:
+        *args: Tuple[Any],
+        **kwargs: Dict[str, Any],
+    ) -> Tuple[bool, Any]:
         """
         Retries the execution of a given callable function according to the retry policy defined
         in the instance. The method ensures retries occur only when certain conditions are met,
@@ -245,7 +196,7 @@ class RetryMixin:
         :rtype: typing.Tuple[bool, typing.Any]
         """
         if self.retry_policy is None:
-            return func(*args, **kwargs)
+            return await func(*args, **kwargs)
 
         exception_causing_retry = None
 
@@ -301,13 +252,28 @@ class RetryMixin:
 
 
 class ExecutorInitializerMixin:
-    executor: typing.Type[Executor] = DefaultExecutor
+    """
+    Mixin class providing utility methods for executor initialization and configuration.
 
-    executor_config: typing.Optional[ExecutorInitializerConfig] = None
+    This class is designed to manage executor-related configurations, including retrieving
+    the appropriate executor instance, handling custom executor configurations, and
+    determining the execution context for events. It supports scenarios involving
+    multiprocessing and executor-specific initialization parameters.
+
+    :ivar executor: Identifier for the default executor to be used.
+    :type executor: str
+    :ivar executor_config: Configuration object or dictionary that holds initialization
+        parameters for the executor.
+    :type executor_config: ExecutorInitializerConfig, optional
+    """
+
+    executor: str = "default"
+
+    executor_config: Optional[ExecutorInitializerConfig] = None
 
     @classmethod
-    def get_executor_class(cls) -> typing.Type[Executor]:
-        return cls.executor
+    def get_task_executor(cls) -> Union[Type[BaseExecutor], BaseExecutor]:
+        return _GLOBAL_EXECUTOR_REGISTRY.get(cls.executor)
 
     def get_executor_initializer_config(self) -> ExecutorInitializerConfig:
         if self.executor_config:
@@ -319,16 +285,9 @@ class ExecutorInitializerMixin:
             self.executor_config = ExecutorInitializerConfig()
         return self.executor_config
 
-    def is_multiprocessing_executor(self) -> bool:
-        """Check if using multiprocessing or remote executor"""
-        return (
-            self.get_executor_class() == ProcessPoolExecutor
-            or self.get_executor_class() == RemoteExecutor
-        )
-
     def get_executor_context(
-        self, ctx: typing.Optional[typing.Dict[str, typing.Any]] = None
-    ) -> typing.Dict[str, typing.Any]:
+        self, ctx: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Retrieves the execution context for the event's executor.
 
@@ -339,17 +298,21 @@ class ExecutorInitializerMixin:
 
         The resulting context dictionary is used to configure the executor for the event execution.
 
-        Returns:
-            dict: A dictionary containing the execution context for the event's executor,
-                  including any necessary parameters for initialization and multiprocessing context.
+        :param ctx: Optional dictionary of additional context to be merged with the
+            computed execution context.
+        :type ctx: dict, optional
 
+        :return: A dictionary containing the execution context for the event's executor,
+            including any necessary parameters for initialization and multiprocessing context.
+        :rtype: dict
         """
-        executor = self.get_executor_class()
+        executor = self.get_task_executor()
+        if not inspect.isclass(executor):
+            return None
         context = dict()
-        if self.is_multiprocessing_executor():
-            context["mp_context"] = mp.get_context("spawn")
-        elif hasattr(executor, "get_context"):
-            context["mp_context"] = executor.get_context("spawn")  # type: ignore
+
+        if hasattr(executor, "get_context"):
+            context["mp_context"] = executor.get_context("spawn")
         params = get_function_call_args(
             executor.__init__, self.get_executor_initializer_config()
         )
@@ -367,12 +330,11 @@ class StopConditionProcessor:
         stop_condition: The condition that determines when to stop processing
         exception: Any exception that occurred during processing
         message: Optional message for logging or debugging
-        logger: Optional logger instance for structured logging
     """
 
-    stop_condition: typing.Union[StopCondition, typing.List[StopCondition]]
-    exception: typing.Optional[Exception] = None
-    message: typing.Optional[str] = None
+    stop_condition: Union[StopCondition, List[StopCondition]]
+    exception: Optional[Exception] = None
+    message: Optional[str] = None
 
     def should_stop(self, success: bool = True) -> bool:
         """
@@ -423,9 +385,7 @@ class StopConditionProcessor:
 
         return should_stop
 
-    def on_error(
-        self, exception: Exception, message: typing.Optional[str] = None
-    ) -> bool:
+    def on_error(self, exception: Exception, message: Optional[str] = None) -> bool:
         """
         Handle error during operation.
         Args:
@@ -467,7 +427,7 @@ class StopConditionProcessor:
                 f"Stopping on {event_type} due to {self.stop_condition}", extra=context
             )
 
-    def get_status(self) -> typing.Dict[str, typing.Any]:
+    def get_status(self) -> Dict[str, Any]:
         """Get the current processor status for debugging."""
         return {
             "stop_condition": self.stop_condition,
@@ -484,16 +444,45 @@ class EventCheckPointingMixin:
         self: _BaseEvent,
         execution_context: "ExecutionContext",
         task_id: str,
-        *args: typing.Tuple[typing.Any],
-        checkpoint_manager: typing.Optional[VolnuxCheckPointManager] = None,
-        previous_result: typing.Union[typing.List[EventResult], EMPTY] = EMPTY,
+        *args: Tuple[Any],
+        checkpoint_manager: Optional[VolnuxCheckPointManager] = None,
+        previous_result: Union[List[EventResult], EMPTY] = EMPTY,
         stop_condition: StopCondition = StopCondition.NEVER,
         run_bypass_event_checks: bool = False,
-        options: typing.Optional["Options"] = None,
-        sequence_number: typing.Optional[int] = None,
+        options: Optional["Options"] = None,
+        sequence_number: Optional[int] = None,
     ):
-        """Initialize resource tracking."""
-        self._external_resources: typing.Dict[str, ResourceState] = {}
+        """
+        Initialize resource tracking and set up the event's required configurations. This method
+        prepares the event for its execution by setting various attributes such as task-related
+        details, previous results, stop conditions, and optional configurations.
+
+        :param execution_context: The execution context within which the event operates.
+        :type execution_context: ExecutionContext
+        :param task_id: Unique identifier for the task associated with this event.
+        :type task_id: str
+        :param args: Additional positional arguments passed to the event setup.
+        :type args: Tuple[Any]
+        :param checkpoint_manager: Optional checkpoint manager for managing event states. If not
+            provided, no checkpointing will be performed.
+        :type checkpoint_manager: Optional[VolnuxCheckPointManager]
+        :param previous_result: A list of previous event results or EMPTY if no prior results
+            exist.
+        :type previous_result: Union[List[EventResult], EMPTY]
+        :param stop_condition: Condition under which event execution is terminated. Defaults
+            to `StopCondition.NEVER`.
+        :type stop_condition: StopCondition
+        :param run_bypass_event_checks: Flag indicating if event checks should be bypassed.
+            Defaults to False.
+        :type run_bypass_event_checks: bool
+        :param options: Optional configuration or settings for the event.
+        :type options: Optional[Options]
+        :param sequence_number: Optional sequence number indicating the order of the event.
+        :type sequence_number: Optional[int]
+        :return: None
+        """
+
+        self._external_resources: Dict[str, ResourceState] = {}
 
         self._execution_context = execution_context
 
@@ -528,6 +517,25 @@ class EventCheckPointingMixin:
 
     @phase_step(EventPhase.PRE_PROCESS)
     def _pre_process(self: _BaseEvent, *args, **kwargs):
+        """
+        Handles the pre-processing phase of an event within the event lifecycle. This method
+        is executed with the intention of determining whether the event execution should proceed
+        or be bypassed, based on custom conditions.
+
+        The behavior of this method can be controlled by the `run_bypass_event_checks` attribute
+        of the event instance. If this attribute is set to `True`, it attempts to validate event
+        bypass prerequisites by calling the `can_bypass_current_event` method. If these checks
+        indicate that the event can be skipped, the event execution completes successfully without
+        proceeding further, and the bypass conditions are logged.
+
+        :param args: Positional arguments passed to the pre-processing handler.
+        :type args: tuple
+        :param kwargs: Keyword arguments passed to the pre-processing handler.
+        :type kwargs: dict
+        :return: If event bypass checks indicate skipping the event, returns the success
+            result containing a dictionary with the bypass status, data, and status flag.
+        :rtype: dict, optional
+        """
         if self.run_bypass_event_checks:
             try:
                 should_skip, data = self.can_bypass_current_event()
@@ -626,7 +634,7 @@ class EventCheckPointingMixin:
 
         if inspect.iscoroutinefunction(step):
             return await step(*args, **kwargs)
-        return step(*args, **kwargs)
+        return await to_thread(step, *args, **kwargs)
 
     async def _process_wrapper(
         self: _BaseEvent, *args, **kwargs
@@ -674,7 +682,7 @@ class EventCheckPointingMixin:
             raise ValueError("First element of process result must be a boolean")
 
         if is_event_result:
-            result = cast(EventResult, result)
+            # result = cast(EventResult, result)
             return result.success, result
 
         return result
@@ -682,8 +690,8 @@ class EventCheckPointingMixin:
     def register_resource(
         self,
         resource_name: str,
-        resource: typing.Any,
-        provider: typing.Union[str, type[ResourceProvider]],
+        resource: Any,
+        provider: Union[str, Type[ResourceProvider]],
     ) -> None:
         """
         Register an external resource for checkpointing.
@@ -916,8 +924,10 @@ class EventCheckPointingMixin:
         if self.checkpoint_manager is None:
             logger.warning("Checkpoint manager is not available. Skipping enqueue.")
             # Enforce checkpointing if configured
-            # if conf.get("CHECKPOINT_REQUIRED", default=False):
-            #     raise RuntimeError("Checkpointing is required but manager is unavailable")
+            if conf.get("CHECKPOINT_REQUIRED", default=False):
+                raise RuntimeError(
+                    "Checkpointing is required but manager is unavailable"
+                )
             return
 
         try:
@@ -930,32 +940,32 @@ class EventCheckPointingMixin:
                 exc_info=e,
             )
             # Re-raise if checkpointing is critical
-            # if conf.get("CHECKPOINT_REQUIRED", default=False):
-            #     raise
+            if conf.get("CHECKPOINT_REQUIRED", default=False):
+                raise
 
     async def create_snapshot(self: _BaseEvent) -> EventCheckpointSnapshot:
         return await SnapshotBuilder().build(self)
 
-    @classmethod
-    def resume_task(cls, task_id, checkpoint_manager, execution_context):
-        # 1. Pull data from Redis
-        data = checkpoint_manager.load(task_id)
-        if not data:
-            return None
-
-        event_cls = _event_registry.get(data["class_path"])
-
-        instance = event_cls(
-            execution_context=execution_context, task_id=task_id, **data["init_args"]
-        )
-
-        instance._phase = EventPhase(data["phase"])
-        instance._exec_result = data["exec_result"]
-        instance._execution_status = data["exec_status"]
-
-        # 5. User-side resource restoration
-        for res_name, res_config in data["user_resources"].items():
-            # Trigger the user's defined restoration logic
-            instance.restore_resource(res_name, res_config)
-
-        return instance
+    # @classmethod
+    # def resume_task(cls, task_id, checkpoint_manager, execution_context):
+    #     # 1. Pull data from Redis
+    #     data = checkpoint_manager.load(task_id)
+    #     if not data:
+    #         return None
+    #
+    #     event_cls = _event_registry.get(data["class_path"])
+    #
+    #     instance = event_cls(
+    #         execution_context=execution_context, task_id=task_id, **data["init_args"]
+    #     )
+    #
+    #     instance._phase = EventPhase(data["phase"])
+    #     instance._exec_result = data["exec_result"]
+    #     instance._execution_status = data["exec_status"]
+    #
+    #     # 5. User-side resource restoration
+    #     for res_name, res_config in data["user_resources"].items():
+    #         # Trigger the user's defined restoration logic
+    #         instance.restore_resource(res_name, res_config)
+    #
+    #     return instance

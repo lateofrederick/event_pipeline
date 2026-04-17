@@ -6,7 +6,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 import volnux.config as config_module
-from volnux.config import ConfigEntry, ENV_MESH_NODE_ID, ENV_MESH_PUBLIC_KEY, ENV_MESH_PRIVATE_KEY
+from volnux.config import (
+    ConfigEntry,
+    ENV_MESH_NODE_ID,
+    ENV_MESH_PUBLIC_KEY,
+    ENV_MESH_PRIVATE_KEY,
+)
 from volnux.crypto.signer import Signer
 
 

@@ -64,6 +64,17 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
     """
     Mixin to enable backend persistence for classes.
 
+    Provides an interface for classes to integrate backend storage by utilizing
+    a key-value store. This allows objects to be persistently stored, retrieved,
+    and updated via a backend configured in the application settings. This mixin
+    also supports flexible backend initialization and schema management, ensuring
+    seamless integration with diverse storage systems.
+
+    :ivar _backend_store: Class-level backend store instance used for backend operations.
+    :type _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]]
+    :ivar _backend_config: Configuration settings for the backend.
+    :type _backend_config: ClassVar[Optional[Dict[str, Any]]]
+
     The backend is configured via CONFIG.KEY_VALUE_STORE_CONFIG.
 
     Example:

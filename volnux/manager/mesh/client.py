@@ -184,7 +184,7 @@ class MeshClient:
         self.manager: Optional[ManagerService] = None
         self._is_running = False
 
-        # Cluster health Check
+        # Cluster health check
         self.heartbeat_interval: float = heartbeat_interval
         self._watcher_task: Optional[asyncio.Task] = None
 
@@ -470,7 +470,7 @@ class MeshClient:
     def _handle_inbound_config_gossip(self, payload: Dict) -> None:
         """
         Callback registered on ManagerService for CONFIG_UPDATE arrivals.
-        Schedules de-duplication + relay as a fire-and-forget task so the
+        Schedules deduplication + relay as a fire-and-forget task so the
         ManagerService callback stays non-blocking.
         """
         gossip_id = payload.get("gossip_id")
