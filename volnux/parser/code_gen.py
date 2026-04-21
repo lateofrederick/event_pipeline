@@ -254,6 +254,20 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_map(self, node: ast.MapNode):
         pass
 
+    def visit_unaryop(self, node: ast.UnaryOpNode):
+        pass
+
+    def visit_access_environment_variable(
+        self, node: ast.EnvironmentVariableAccessNode
+    ):
+        pass
+
+    def visit_list(self, node: ast.ListNode):
+        pass
+
+    def visit_map(self, node: ast.MapNode):
+        pass
+
     def generate(self) -> typing.Optional[TaskProtocol]:
         if self._current_task is None:
             return None

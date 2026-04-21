@@ -122,6 +122,7 @@ def p_conditional(p):
         p[0] = ConditionalNode(task=p[1], branches=p[3])
 
 
+
 def p_branch_list(p):
     """
     branch_list : branch
@@ -603,6 +604,7 @@ def p_arithmetic_factor(p):
         p[0] = factor
     else:
         p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
+
 
 
 def p_error(p):
