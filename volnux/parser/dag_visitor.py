@@ -1,7 +1,7 @@
 from typing import Set, List, Dict, Optional
 from ply.yacc import YaccError
 
-from .ast import ASTNode, BinOpNode, ConditionalNode, ExpressionGroupingNode, TaskNode
+from .ast import ASTNode, BinOpNode, ConditionalNode, PipelineGroupingNode, TaskNode
 
 
 class DAGValidationError(YaccError):
@@ -72,7 +72,7 @@ class CycleDetectionVisitor:
                 right_task = self.build_graph(node.right, left_task)
                 return right_task
 
-        elif isinstance(node, ExpressionGroupingNode):
+        elif isinstance(node, PipelineGroupingNode):
             last_task = parent
             for expr in node.expressions:
                 last_task = self.build_graph(expr, last_task)

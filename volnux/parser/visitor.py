@@ -3,22 +3,28 @@ from abc import ABC, abstractmethod
 
 if typing.TYPE_CHECKING:
     from .ast import (
-        AssignmentNode,
         BinOpNode,
         UnaryOpNode,
-        BlockNode,
         ConditionalNode,
         DescriptorNode,
-        ExpressionGroupingNode,
+        PipelineGroupingNode,
         LiteralNode,
         ProgramNode,
         TaskNode,
         DirectiveNode,
         VariableAccessNode,
-        MetaEventNode,
+        MetaTaskNode,
         EnvironmentVariableAccessNode,
         ListNode,
         MapNode,
+        VariableDeclNode,
+        NullCoalesceExprNode,
+        ComparisonExprNode,
+        BranchNode,
+        IndexExprNode,
+        RetryNode,
+        AttributeNode,
+        TernaryExprNode,
     )
 
 
@@ -143,10 +149,6 @@ class ASTVisitorInterface(ABC):
         pass
 
     @abstractmethod
-    def visit_assignment(self, node: "AssignmentNode"):
-        pass
-
-    @abstractmethod
     def visit_binop(self, node: "BinOpNode"):
         pass
 
@@ -158,16 +160,13 @@ class ASTVisitorInterface(ABC):
     def visit_literal(self, node: "LiteralNode"):
         pass
 
-    @abstractmethod
-    def visit_block(self, node: "BlockNode"):
-        pass
 
     @abstractmethod
     def visit_conditional(self, node: "ConditionalNode"):
         pass
 
     @abstractmethod
-    def visit_expression_grouping(self, node: "ExpressionGroupingNode"):
+    def visit_pipeline_grouping(self, node: "PipelineGroupingNode"):
         pass
 
     @abstractmethod
@@ -183,7 +182,7 @@ class ASTVisitorInterface(ABC):
         pass
 
     @abstractmethod
-    def visit_meta_event(self, node: "MetaEventNode"):
+    def visit_meta_task(self, node: "MetaTaskNode"):
         pass
 
     @abstractmethod
@@ -192,4 +191,36 @@ class ASTVisitorInterface(ABC):
 
     @abstractmethod
     def visit_map(self, node: "MapNode"):
+        pass
+
+    @abstractmethod
+    def visit_variable_declaration(self, node: "VariableDeclNode"):
+        pass
+
+    @abstractmethod
+    def visit_null_coalesce(self, node: "NullCoalesceExprNode"):
+        pass
+
+    @abstractmethod
+    def visit_comparison_expr(self, node: "ComparisonExprNode"):
+        pass
+
+    @abstractmethod
+    def visit_branch(self, node: "BranchNode"):
+        pass
+
+    @abstractmethod
+    def visit_index_expr(self, node: "IndexExprNode"):
+        pass
+
+    @abstractmethod
+    def visit_retry(self, node: "RetryNode"):
+        pass
+
+    @abstractmethod
+    def visit_attribute(self, node: "AttributeNode"):
+        pass
+
+    @abstractmethod
+    def visit_ternary_expr(self, node: "TernaryExprNode"):
         pass

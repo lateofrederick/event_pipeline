@@ -1,17 +1,13 @@
 __all__ = ["pointy_parser"]
-import logging
-import typing
+import logging, typing
 from ply.yacc import YaccError, yacc
 
 from . import lexer
 from .ast import (
-    AssignmentNode,
     BinOpNode,
-    BlockNode,
-    BlockType,
     ConditionalNode,
     DescriptorNode,
-    ExpressionGroupingNode,
+    PipelineGroupingNode,
     LiteralNode,
     LiteralType,
     ProgramNode,
@@ -20,13 +16,17 @@ from .ast import (
     VariableAccessNode,
     EnvironmentVariableAccessNode,
     DirectiveNode,
-    MetaEventNode,
+    MetaTaskNode,
     ListNode,
     MapNode,
     UnaryOpNode,
     TernaryExprNode,
     ComparisonExprNode,
     NullCoalesceExprNode,
+    AttributeNode,
+    BranchNode,
+    IndexExprNode,
+    RetryNode,
 )
 from .parser_mode import ParserMode
 from .dag_visitor import CycleDetectionVisitor, DAGValidationError, format_cycle_error
@@ -87,7 +87,8 @@ def p_program(p):
 def p_statement_list(p):
     """
     statement_list : statement
-                        | statement_list statement
+                   | statement_list statement
+                   | empty
     """
     if len(p) == 2:
         p[0] = [p[1]]
@@ -98,42 +99,204 @@ def p_statement_list(p):
 def p_statement(p):
     """
     statement : variable_declaration
-                 | expression
-                 | directive
+              | chain_declaration
+              | directive
     """
     p[0] = p[1]
 
 
-def p_expression(p):
+def p_chain_declaration(p):
     """
-    expression :  expression POINTER expression
-                | expression PPOINTER expression
-                | expression PARALLEL expression
-                | descriptor POINTER expression
-                | descriptor PPOINTER expression
-                | factor RETRY task
-                | task RETRY factor
-                | expression_groupings RETRY factor
-                | factor RETRY expression_groupings
+    chain_declaration : chain
     """
-    p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
+    p[0] = p[1]
+
+
+def p_conditional(p):
+    """
+    conditional : meta LPAREN branch_list RPAREN
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = ConditionalNode(task=p[1], branches=p[3])
+
+
+
+def p_branch_list(p):
+    """
+    branch_list : branch
+                | branch_list SEPARATOR branch
+    """
+    if len(p) == 2:
+        p[0] = [p[1]]
+    elif len(p) == 4:
+        if isinstance(p[1], list):
+            p[0] = p[1] + [p[3]]
+        else:
+            p[0] = [p[1], p[3]]
+    else:
+        p[0] = []  # No branches
+
+
+def p_branch(p):
+    """
+    branch : descriptor POINTER chain
+           | descriptor PPOINTER chain
+    """
+    p[0] = BranchNode(condition=p[1], operator=p[2], task=p[3])
+
+
+def p_chain(p):
+    """
+    chain : retry
+          | chain POINTER retry
+          | chain PPOINTER retry
+          | chain PARALLEL retry
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
+
+def p_meta(p):
+    """
+    meta : task
+         | meta_task
+         | grouped
+         | conditional
+         | LPAREN chain RPAREN
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = p[2]
+
+def p_meta(p):
+    """
+    meta : task
+         | meta_task
+         | grouped
+         | conditional
+         | LPAREN chain RPAREN
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = p[2]
+
+
+def p_retry(p):
+    """
+    retry : meta
+          | task RETRY INT
+    """
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        retry_count = p[3]
+        if retry_count < 2:
+            line = p.lineno(3) if hasattr(p, "lineno") else "unknown line"
+            column = p.lexpos(3) if hasattr(p, "lexpos") else "unknown column"
+            raise YaccError(
+                f"Task cannot be retried less than 2 times. "
+                f"Line: {line}, Column: {column}, Offending Token: {p[3]}"
+            )
+        p[0] = RetryNode(job=p[1], attempts=LiteralNode(retry_count, type=LiteralType.NUMBER))
+
+
+def p_task(p):
+    """
+    task : IDENTIFIER attribute_list
+         | IDENTIFIER DOUBLE_COLON IDENTIFIER attribute_list
+    """
+    if len(p) == 3:
+        p[0] = TaskNode(task=p[1], options=p[2])
+    else:
+        p[0] = TaskNode(task=p[3], namespace=p[1], options=p[4])
+
+
+def p_attribute_list(p):
+    """
+    attribute_list : LBRACKET attribute_list_items RBRACKET
+                   | empty
+    """
+    if len(p) == 2:
+        p[0] = []
+    else:
+        p[0] = p[2]
+
+
+def p_attribute_list_items(p):
+    """
+    attribute_list_items : attribute
+                         | attribute_list_items SEPARATOR attribute
+    """
+    if len(p) == 2:
+        p[0] = [p[1]]
+    else:
+        p[0] = p[1] + [p[3]]
+
+
+def p_attribute(p):
+    """
+    attribute : IDENTIFIER ASSIGN expression
+    """
+    p[0] = AttributeNode(attr=p[1], value=p[3])
+
+
+def p_meta_task(p):
+    """
+    meta_task : mode LANGLE IDENTIFIER RANGLE attribute_list
+              | mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE attribute_list
+
+    """
+    mode = p[1]
+
+    if len(p) == 6:
+        template_event = p[3]
+        options = p[5]
+
+        p[0] = MetaTaskNode(mode=mode, template_task=template_event, options=options)
+    elif len(p) == 8:
+        namespace = p[3]
+        template_event = p[5]
+        options = p[7]
+
+        p[0] = MetaTaskNode(
+            mode=mode,
+            template_task=template_event,
+            template_event_namespace=namespace,
+            options=options,
+        )
+
+
+def p_mode(p):
+    """
+    mode : MAP
+         | FILTER
+         | REDUCE
+         | FOREACH
+         | FLATMAP
+         | FANOUT
+    """
+    p[0] = p[1]
+
+
+def p_grouped(p):
+    """
+    grouped : LCURLY_BRACKET chain RCURLY_BRACKET
+            | LCURLY_BRACKET chain RCURLY_BRACKET attribute_list
+    """
+    if len(p) == 4:
+        p[0] = PipelineGroupingNode([p[2]])
+    else:
+        p[0] = PipelineGroupingNode([p[2]], options=p[4])
 
 
 def p_expression_ternary(p):
-    """ternary_expression : comparison_expression QUESTION expression COLON expression %prec TERNARY"""
+    """ternary_expression : arithmetic_expr QUESTION expression COLON expression %prec TERNARY"""
     p[0] = TernaryExprNode(condition=p[1], true_expr=p[3], false_expr=p[5])
-
-
-def p_expression_comparison(p):
-    """
-    comparison_expression : expression EQ expression
-                  | expression NE expression
-                  | expression LANGLE expression
-                  | expression RANGLE expression
-                  | expression LE expression
-                  | expression GE expression
-    """
-    p[0] = ComparisonExprNode(left=p[1], operator=p[2], right=p[3])
 
 
 def p_expression_null_coalesce(p):
@@ -141,69 +304,8 @@ def p_expression_null_coalesce(p):
     p[0] = NullCoalesceExprNode(left=p[1], right=p[3])
 
 
-def p_expression_term(p):
-    """
-    expression : term
-    """
-    p[0] = p[1]
-
-
-def p_task(p):
-    """
-    term : task
-        | expression_groupings
-        | value
-        | variable_reference
-    """
-    p[0] = p[1]
-
-
-def p_task_meta_event(p):
-    """
-    task : meta_event
-         | meta_event LBRACKET assigment_expression_group RBRACKET
-    """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        meta_event = p[1]
-        meta_event.options = p[3]
-        p[0] = meta_event
-
-
-def p_meta_event(p):
-    """
-    meta_event : meta_mode LANGLE IDENTIFIER RANGLE
-                | meta_mode LANGLE IDENTIFIER DOUBLE_COLON IDENTIFIER RANGLE
-    """
-    mode = p[1]
-
-    if len(p) == 5:
-        template_event = p[3]
-
-        p[0] = MetaEventNode(mode=mode, template_event=template_event)
-    else:
-        namespace = p[3]
-        template_event = p[5]
-        p[0] = MetaEventNode(
-            mode=mode, template_event=template_event, template_event_namespace=namespace
-        )
-
-
-def p_meta_mode(p):
-    """
-    meta_mode : MAP
-              | FILTER
-              | REDUCE
-              | FOREACH
-              | FLATMAP
-              | FANOUT
-    """
-    p[0] = p[1]
-
-
 def p_directive(p):
-    """directive : VAR_DECL COLON scalar_value"""
+    """directive : VAR_DECL COLON expression"""
     if p[1] == "mode":
         # validate cfg and dag text
         if p[3] in ParserMode.DAG.modes:
@@ -214,7 +316,7 @@ def p_directive(p):
 
 def p_variable_declaration(p):
     """
-    variable_declaration : VAR_DECL ASSIGN value
+    variable_declaration : VAR_DECL ASSIGN expression
     """
     var_name = p[1]
     var_value = p[3]
@@ -224,15 +326,14 @@ def p_variable_declaration(p):
     p[0] = VariableDeclNode(var_name, var_value)
 
 
-def p_value(p):
+def p_expression(p):
     """
-    value :  list
-            | map
-            | arithmetic_expr
-            | null_value
-            | comparison_expression
-            | ternary_expression
-            | null_coalesce_expression
+    expression : list
+               | map
+               | arithmetic_expr
+               | null_value
+               | ternary_expression
+               | null_coalesce_expression
     """
     p[0] = p[1]
 
@@ -261,7 +362,7 @@ def p_map_entries(p):
 
 def p_map_entry(p):
     """
-    map_entry : STRING_LITERAL COLON value
+    map_entry : STRING_LITERAL COLON expression
     """
     p[0] = {p[1]: p[3]}
 
@@ -275,8 +376,8 @@ def p_list(p):
 
 def p_list_elements(p):
     """
-    list_elements : value
-                  | list_elements SEPARATOR value
+    list_elements : expression
+                  | list_elements SEPARATOR expression
                   | empty
     """
     is_empty = p[1] is None
@@ -296,16 +397,6 @@ def p_empty(p):
     pass
 
 
-def p_scalar_value(p):
-    """
-    scalar_value : INT
-                | FLOAT
-                | BOOLEAN
-                | STRING_LITERAL
-    """
-    p[0] = LiteralNode(p[1], type=LiteralType.determine_literal_type(p[1]))
-
-
 def p_null_value(p):
     """
     null_value : NULL
@@ -317,12 +408,23 @@ def p_variable_reference(p):
     """
     variable_reference : VAR_ACCESS
                         | VAR_ACCESS DOT IDENTIFIER
+                        | VAR_ACCESS LBRACKET expression RBRACKET
     """
     if len(p) == 4:
         accessor = p[1]
         if accessor != pointy_lexer.reserved["env"]:
             raise YaccError(f"Unknown variable accessor '{accessor}'")
         p[0] = EnvironmentVariableAccessNode(name=p[3])
+    elif len(p) == 5:
+        var_name = p[1]
+        index_expr = p[3]
+
+        try:
+            value = variables[var_name]
+        except KeyError:
+            raise YaccError(f"Undefined variable '${var_name}'")
+
+        p[0] = IndexExprNode(collection=value, index=index_expr)
     else:
         var_name = p[1]
 
@@ -347,112 +449,6 @@ def p_descriptor(p):
             f"Descriptors cannot be either greater 9 or less than 0. "
             f"Line: {line}, Column: {column}, Offending token: {p[1]}"
         )
-
-
-def p_factor(p):
-    """
-    factor : INT
-            | FLOAT
-            | variable_reference
-    """
-    factor = p[1]
-
-    if isinstance(factor, VariableAccessNode):
-        factor = factor.resolve()
-        if not isinstance(factor, (int, float)):
-            raise YaccError("Factor cannot be nonnumerical type")
-
-    if p[1] < 2:
-        line = p.lineno(1) if hasattr(p, "lineno") else "unknown line"
-        column = p.lexpos(1) if hasattr(p, "lexpos") else "unknown column"
-        raise YaccError(
-            f"Task cannot be retried less than 2 times. "
-            f"Line: {line}, Column: {column}, Offending Token: {p[1]}"
-        )
-
-    p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
-
-
-def p_scoped_task(p):
-    """
-    task : task_name
-        | IDENTIFIER DOUBLE_COLON task_name
-    """
-    if len(p) == 2:
-        p[0] = p[1]
-    else:
-        task_instance = typing.cast(TaskNode, p[3])
-        p[0] = TaskNode(
-            task=task_instance.task, options=task_instance.options, namespace=p[1]
-        )
-
-
-def p_task_name(p):
-    """
-    task_name : IDENTIFIER
-        | IDENTIFIER LBRACKET assigment_expression_group RBRACKET
-    """
-    if len(p) == 2:
-        p[0] = TaskNode(task=p[1])
-    else:
-        p[0] = TaskNode(task=p[1], options=p[3])
-
-
-def p_conditional_group(p):
-    """
-    conditional_group : expression SEPARATOR expression
-                | conditional_group SEPARATOR expression
-    """
-    statements = [p[3]]
-    if isinstance(p[1], BlockNode):
-        statements.extend(p[1].statements)
-    else:
-        statements.append(p[1])
-    p[0] = BlockNode(statements, type=BlockType.CONDITIONAL)
-
-
-def p_task_conditional_statement(p):
-    """
-    task :  task LPAREN conditional_group RPAREN
-    """
-    p[0] = ConditionalNode(p[1], p[3])
-
-
-def p_assignment_expression(p):
-    """
-    assignment_expression : IDENTIFIER ASSIGN value
-    """
-    p[0] = AssignmentNode(p[1], p[3])
-
-
-def p_assignment_expression_group(p):
-    """
-    assigment_expression_group : assignment_expression
-                                | assignment_expression SEPARATOR assignment_expression
-                                | assigment_expression_group SEPARATOR assignment_expression
-    """
-    if len(p) == 2:
-        p[0] = BlockNode([p[1]], type=BlockType.ASSIGNMENT)
-    else:
-        statements = [p[3]]
-
-        if isinstance(p[1], BlockNode):
-            statements.extend(p[1].statements)
-        else:
-            statements.append(p[1])
-
-        p[0] = BlockNode(statements, type=BlockType.ASSIGNMENT)
-
-
-def p_expression_groupings(p):
-    """
-    expression_groupings : LCURLY_BRACKET expression RCURLY_BRACKET
-                            | LCURLY_BRACKET expression RCURLY_BRACKET LBRACKET assigment_expression_group RBRACKET
-    """
-    if len(p) == 4:
-        p[0] = ExpressionGroupingNode([p[2]])
-    else:
-        p[0] = ExpressionGroupingNode([p[2]], options=p[5])
 
 
 def p_arithmetic_expr(p):
@@ -586,7 +582,7 @@ def p_unary_expression(p):
 
 def p_primary_expression(p):
     """
-    primary_expression : LPAREN arithmetic_expr RPAREN
+    primary_expression : LPAREN expression RPAREN
                        | arithmetic_factor
     """
     if len(p) == 4:
@@ -599,11 +595,16 @@ def p_arithmetic_factor(p):
     """
     arithmetic_factor : INT
                       | FLOAT
+                      | BOOLEAN
                       | STRING_LITERAL
                       | variable_reference
     """
     factor = p[1]
-    p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
+    if isinstance(factor, VariableAccessNode) or isinstance(factor, EnvironmentVariableAccessNode) or isinstance(factor, IndexExprNode):
+        p[0] = factor
+    else:
+        p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
+
 
 
 def p_error(p):
