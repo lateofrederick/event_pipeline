@@ -379,4 +379,4 @@ class IndexExprNode(ExpressionNode):
     index: LiteralNode
 
     def accept(self, visitor: "ASTVisitor"):
-        return visitor.visit_index_expr(visitor)
+        return visitor.visit_index_expr(self)

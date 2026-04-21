@@ -24,6 +24,7 @@ if typing.TYPE_CHECKING:
         IndexExprNode,
         RetryNode,
         AttributeNode,
+        TernaryExprNode,
     )
 
 
@@ -219,3 +220,8 @@ class ASTVisitorInterface(ABC):
     @abstractmethod
     def visit_attribute(self, node: "AttributeNode"):
         pass
+
+    @abstractmethod
+    def visit_ternary_expr(self, node: "TernaryExprNode"):
+        pass
+
