@@ -1,7 +1,7 @@
 import typing
 
 from volnux import Event
-from volnux.base import EventType
+from volnux.event.base import EventType
 
 
 class LoadFromEventHUB(Event):

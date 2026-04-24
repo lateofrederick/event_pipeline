@@ -1,8 +1,10 @@
 import abc
 import logging
 import typing
+import asyncio
 from enum import Enum
 
+from volnux.execution.rehydrator.event.snapshot import EventPhase
 from volnux.parser.executor_config import ExecutorInitializerConfig
 from volnux.parser.options import Options, StopCondition
 from volnux.result_evaluators import (
@@ -10,7 +12,7 @@ from volnux.result_evaluators import (
     ExecutionResultEvaluationStrategyBase,
     ResultEvaluationStrategies,
 )
-from volnux.signal.signals import event_called, event_init
+from volnux.signal.signals import event_called
 from volnux.versioning.handler import VersionHandler
 from volnux.versioning import BaseVersioning, NoVersioning, DeprecationInfo, VersionInfo
 
@@ -30,6 +32,7 @@ from volnux.mixins.event import (
     ExecutorInitializerMixin,
     ExecutorInitializerConfig,
     EventCheckPointingMixin,
+    EventCommandMixin,
 )
 from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 
@@ -76,6 +79,78 @@ class EventType(Enum):
     OTHER = "other"
 
 
+class EventCategory(str, Enum):
+    """
+    Semantic classification for :class:`EventBase` subclasses.
+
+    Set ``category`` on your event class to make it discoverable in the
+    registry, CLI tooling, and generated documentation::
+
+        class MyEvent(EventBase):
+            category = EventCategory.DATABASE
+
+    Choose the category that best describes the *domain* of the event, not
+    its execution role (that is :class:`EventType`).
+
+    Members
+    -------
+    EXTRACT
+        Pulling data from an external source (files, APIs, databases, streams).
+    TRANSFORM
+        Reshaping, enriching, or converting data.
+    LOAD
+        Writing processed data to a destination (warehouse, database, storage).
+    INGEST
+        Streaming or continuous data ingestion (Kafka, CDC, webhooks, etc.).
+        Prefer ``EXTRACT`` for one-shot batch reads.
+    DATABASE
+        Relational / NoSQL database operations not covered by ETL categories.
+    HTTP
+        Outbound HTTP / REST / GraphQL calls.
+    MESSAGING
+        Pub/sub and queue consumers (Redis Streams, RabbitMQ, SQS, etc.).
+    FILE
+        Local or remote file-system operations (read, write, upload, download).
+    CACHE
+        Cache reads, writes, and invalidation events.
+    VALIDATE
+        Data validation, schema checks, and quality-gate steps.
+    ANALYZE
+        Statistical analysis, reporting, and aggregations.
+    MONITOR
+        Health checks, metrics collection, and alerting.
+    NOTIFICATION
+        Sending emails, SMS, push notifications, Slack messages, etc.
+    CLEANUP
+        Temporary resource removal, archiving, and data-retention enforcement.
+    AI
+        Machine-learning inference, model training, and embedding generation.
+    AGENT
+        Agentic orchestration, tool-calling, and multi-step LLM workflows.
+    OTHER
+        Any event that does not fit a specific category above.
+    """
+
+    EXTRACT = "EXTRACT"
+    TRANSFORM = "TRANSFORM"
+    LOAD = "LOAD"
+    INGEST = "INGEST"
+    DATABASE = "DATABASE"
+    HTTP = "HTTP"
+    MESSAGING = "MESSAGING"
+    FILE = "FILE"
+    CACHE = "CACHE"
+    VALIDATE = "VALIDATE"
+    ANALYZE = "ANALYZE"
+    MONITOR = "MONITOR"
+    AUTOMATION = "AUTOMATION"
+    NOTIFICATION = "NOTIFICATION"
+    CLEANUP = "CLEANUP"
+    AI = "AI"
+    AGENT = "AGENT"
+    OTHER = "OTHER"
+
+
 class EventMeta(abc.ABCMeta):
     """
     Metaclass that registers event classes at creation time.
@@ -100,6 +175,22 @@ class EventMeta(abc.ABCMeta):
 
                 event_name = versioning.scheme.get_event_name(cls)
 
+                raw_categories = getattr(
+                    cls, "categories", frozenset({EventCategory.OTHER})
+                )
+
+                # Normalise: allow a bare EventCategory (common mistake) or a frozenset.
+                if isinstance(raw_categories, EventCategory):
+                    raw_categories = frozenset({raw_categories})
+
+                if not isinstance(raw_categories, frozenset) or not all(
+                    isinstance(c, EventCategory) for c in raw_categories
+                ):
+                    raise ImproperlyConfigured(
+                        f"'{name}.categories' must be a frozenset of EventCategory members. "
+                        f"Got: {raw_categories!r}"
+                    )
+
                 _event_registry.register(
                     event_class,
                     name=event_name,
@@ -110,6 +201,7 @@ class EventMeta(abc.ABCMeta):
                     deprecation_info=version_info.get("deprecation_info"),
                     scheme_handler=versioning.scheme,
                     event_type=getattr(cls, "event_type", EventType.OTHER),
+                    categories=raw_categories,
                 )
 
                 # Log registration
@@ -126,7 +218,11 @@ class EventMeta(abc.ABCMeta):
 
 
 class EventBase(
-    RetryMixin, ExecutorInitializerMixin, EventCheckPointingMixin, metaclass=EventMeta
+    RetryMixin,
+    ExecutorInitializerMixin,
+    EventCheckPointingMixin,
+    EventCommandMixin,
+    metaclass=EventMeta,
 ):
     """
     Abstract base class for event in the pipeline system.
@@ -196,6 +292,10 @@ class EventBase(
 
     # The event types
     event_type: EventType = EventType.OTHER
+
+    # Semantic domain categories — one event may belong to multiple.
+    # Always a frozenset; use frozenset({EventCategory.X, ...}) in subclasses.
+    categories: typing.FrozenSet[EventCategory] = frozenset({EventCategory.OTHER})
 
     # how we want the execution results of this event to be evaluated by the pipeline
     result_evaluation_strategy: ExecutionResultEvaluationStrategyBase = (
@@ -319,7 +419,7 @@ class EventBase(
     def get_latest_version(
         cls, name: typing.Optional[str] = None
     ) -> typing.Optional[str]:
-        """Get the latest version from registry."""
+        """Get the latest version from the registry."""
         handler = cls.get_version_handler()
         event_name = name or handler.class_name
         return _event_registry.get_latest_version(event_name, handler.namespace)
@@ -438,6 +538,24 @@ class EventBase(
             "Event processing logic must be implemented by subclasses"
         )
 
+    async def cleanup(self, *args, **kwargs) -> None:
+        """
+        Asynchronously performs cleanup operations.
+
+        This method is designed to handle and perform various cleanup tasks,
+        ensuring that resources are properly released and any necessary
+        finalization operations are completed. It accepts arbitrary
+        positional and keyword arguments for flexibility in handling
+        specific cleanup requirements.
+
+        :param args: Positional arguments that might be needed for
+            the cleanup process.
+        :param kwargs: Keyword arguments that might be necessary to
+            fine-tune the cleanup behavior.
+        :return: None
+        """
+        pass
+
     def event_result(
         self, error: bool, content: typing.Dict[str, typing.Any]
     ) -> EventResult:
@@ -531,3 +649,42 @@ class EventBase(
     def clear_class_cache(cls) -> None:
         """Clear the cached subclass registry"""
         _event_registry.clear()
+
+    async def __call__(self, *args, **kwargs) -> EventResult:
+        """
+        Asynchronously invokes the callable instance, executing the steps_runner method with the
+        provided arguments. Additionally, if a command channel is present, it starts a command
+        listener task that listens for commands during execution. The listener task is properly
+        cleaned up upon completion or cancellation.
+
+        :param args: Positional arguments to be passed to the steps_runner method.
+        :param kwargs: Keyword arguments to be passed to the steps_runner method.
+        :return: The result of the steps_runner method execution.
+        :rtype: EventResult
+        """
+        self._main_worker_task = asyncio.current_task()
+        self._command_listener_task: typing.Optional[asyncio.Task] = None
+
+        if self._command_channel:
+            self._command_listener_task = asyncio.create_task(
+                self._command_listener(),
+                name=f"{self.__class__.__name__}_command_listener",
+            )
+
+        try:
+            result = await self.steps_runner(*args, **kwargs)
+        finally:
+            if self._command_listener_task:
+                self._command_listener_task.cancel()
+                try:
+                    await self._command_listener_task
+                except asyncio.CancelledError:
+                    pass
+
+        if self._phase != EventPhase.COMPLETED:
+            try:
+                await self._completed(*args, **kwargs)
+            except Exception as e:
+                logger.exception(e)
+
+        return result

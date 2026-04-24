@@ -1,7 +1,7 @@
 from typing import List
 
 from .base import EventFilterBase
-from ..triggers.base import Event
+from ..event import Event
 
 
 class TypeFilter(EventFilterBase):

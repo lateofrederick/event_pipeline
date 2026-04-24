@@ -15,6 +15,20 @@ if typing.TYPE_CHECKING:
 
 
 class LoadFromLocal(Event):
+    """
+    Represents a specialized event class responsible for loading and processing workflow
+    configurations from local directories.
+
+    This class implements functionality to discover, validate, and load workflow definitions
+    from a local directory containing a valid workflow module. The primary purpose is to
+    assist in the management and initialization of workflows that are locally stored.
+
+    :ivar name: Identifies the name of the event. Defaults to "local".
+    :type name: str
+    :ivar event_type: Specifies the type of event. Defaults to EventType.SYSTEM.
+    :type event_type: EventType
+    """
+
     name = "local"
 
     event_type = EventType.SYSTEM
@@ -22,7 +36,7 @@ class LoadFromLocal(Event):
     def _load_local_workflow(
         self, workflow_file: Path, registry: "WorkflowRegistry"
     ) -> typing.Tuple[bool, typing.Any]:
-        """Load a workflow configuration from local directory."""
+        """Load a workflow configuration from a local directory."""
         from ..workflow import WorkflowConfig
 
         loading_status = False

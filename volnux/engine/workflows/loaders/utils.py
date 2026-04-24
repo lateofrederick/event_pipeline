@@ -1,9 +1,9 @@
-import typing
+from typing import Optional, TYPE_CHECKING, Type
 from pathlib import Path
 
 from volnux.exceptions import PointyNotExecutable
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from ..workflow import WorkflowConfig
     from ..registry import WorkflowRegistry
 
@@ -19,7 +19,7 @@ def get_workflow_config_name(workflow_name: str) -> str:
 
 
 def initialize_and_register_workflow(
-    workflow_class: typing.Type["WorkflowConfig"],
+    workflow_class: Type["WorkflowConfig"],
     workflow_dir: Path,
     registry: "WorkflowRegistry",
 ) -> "WorkflowConfig":

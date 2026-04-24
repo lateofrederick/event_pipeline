@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import inspect
 from typing import (
@@ -35,6 +36,7 @@ from volnux.mixins.protocols.event import BaseEvent as _BaseEvent
 
 if TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
+    from volnux.flows.bridge.communications.tasks.base import CommandChannelBase
 
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,7 @@ class EventCheckPointingMixin:
         run_bypass_event_checks: bool = False,
         options: Optional["Options"] = None,
         sequence_number: Optional[int] = None,
+        command_channel: Optional["CommandChannelBase"] = None,
     ):
         """
         Initialize resource tracking and set up the event's required configurations. This method
@@ -232,6 +235,13 @@ class EventCheckPointingMixin:
 
         self._phase: EventPhase = EventPhase.INITIALIZED
         self.checkpoint_manager = checkpoint_manager
+
+        # communication
+        self._pause_gate = asyncio.Event()
+        self._pause_gate.set()  # Default to 'Running'
+        self._preempted: bool = False
+        self._main_worker_task: Optional[asyncio.Task] = None
+        self._command_channel: Optional["CommandChannelBase"] = command_channel
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
 
@@ -302,7 +312,7 @@ class EventCheckPointingMixin:
         return result
 
     @phase_step(EventPhase.COMPLETED)
-    def _completed(self, *args, **kwargs):
+    async def _completed(self: _BaseEvent, *args, **kwargs):
         """Cleanup resources after completion."""
         for resource_name, resource_config in self._external_resources.items():
             provider_path = resource_config.get("provider_path")
@@ -313,10 +323,18 @@ class EventCheckPointingMixin:
                         # Get the restored resource
                         resource = getattr(self, f"_{resource_name}", None)
                         if resource:
-                            provider_class.cleanup(resource)
+                            if not inspect.iscoroutinefunction(provider_class.cleanup):
+                                await to_thread(provider_class.cleanup, resource)
+                            else:
+                                await provider_class.cleanup(resource)
                             logger.debug(f"Cleaned up resource '{resource_name}'")
                 except Exception as e:
                     logger.warning(f"Failed to cleanup resource '{resource_name}': {e}")
+
+        try:
+            await self.cleanup(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}", exc_info=e)
 
         return None
 
@@ -335,30 +353,9 @@ class EventCheckPointingMixin:
             self._completed,
         ]
 
-    async def _run_step(self, step, *args, **kwargs):
-        """
-        Executes a single step of a process, supporting both synchronous and asynchronous steps.
-        Provides detailed logging for debugging purposes, including the step name and associated
-        task identifier.
-
-        :param step: Step function to be executed. Can be a coroutine or a regular
-            synchronous function.
-        :type step: Callable
-        :param args: Positional arguments to pass to the step function.
-        :param kwargs: Keyword arguments to pass to the step function.
-        :return: The result of the executed step function.
-        :rtype: Any
-        """
-        step_name = step.__name__
-        logger.debug("Running step %s for task_id=%s", step_name, self._task_id)
-
-        if inspect.iscoroutinefunction(step):
-            return await step(*args, **kwargs)
-        return await to_thread(step, *args, **kwargs)
-
     async def _process_wrapper(
         self: _BaseEvent, *args, **kwargs
-    ) -> Union[EventResult, tuple]:
+    ) -> Union[EventResult, Tuple[bool, Any]]:
         """
         Execute the process method of the event with provided arguments and handle
         results returned by the process method. Ensures that the result adheres
@@ -402,7 +399,6 @@ class EventCheckPointingMixin:
             raise ValueError("First element of process result must be a boolean")
 
         if is_event_result:
-            # result = cast(EventResult, result)
             return result.success, result
 
         return result
@@ -429,24 +425,22 @@ class EventCheckPointingMixin:
                 - ResourceProvider class directly
 
         Raises:
-            TypeError: If provider is not a ResourceProvider subclass
-            ValueError: If provider doesn't implement required methods
+            TypeError: If the provider is not a ResourceProvider subclass
+            ValueError: If the provider doesn't implement required methods
 
         Example:
             ```python
-            from volnux.execution.rehydrator.builtin_providers import FileHandleProvider
 
-            file_handle = open("data.txt", "r")
-
-            # Using class directly
-            self.register_resource("data_file", file_handle, FileHandleProvider)
-
-            # Or using import string
-            self.register_resource(
-                "data_file",
-                file_handle,
-                "volnux.execution.rehydrator.builtin_providers.FileHandleProvider"
-            )
+            >>> from volnux.execution.rehydrator.builtin_providers import FileHandleProvider
+            >>> file_handle = open("data.txt", "r")
+            >>> # Using class directly
+            >>> self.register_resource("data_file", file_handle, FileHandleProvider)
+            >>> # Or using import string
+            >>> self.register_resource(
+            ...    "data_file",
+            ...    file_handle,
+            ...    "volnux.execution.rehydrator.builtin_providers.FileHandleProvider"
+            ...)
             ```
         """
         try:
@@ -476,7 +470,7 @@ class EventCheckPointingMixin:
                     f"Provider {provider_class.__name__} must implement restore_state() method"
                 )
 
-            # Save resource state using provider
+            # Save resource state using a provider
             resource_data = provider_class.save_state(resource)
 
             # Validate that saved data is a dict
@@ -554,89 +548,6 @@ class EventCheckPointingMixin:
                 f"Failed to restore resource '{resource_name}': {e}", exc_info=True
             )
 
-    async def __call__(self: _BaseEvent, *args, **kwargs) -> EventResult:
-        """
-        Executes a sequence of steps in a checkpointed and resumable manner. The method manages
-        task execution phases, handles preemption scenarios, and ensures continuation from
-        checkpoints when necessary. Each step in the sequence is executed in order unless the
-        current phase indicates it has already been completed.
-
-        :param args: Positional arguments to be passed to the steps.
-        :type args: tuple
-        :param kwargs: Keyword arguments to be passed to the steps.
-        :type kwargs: dict
-        :return: The result of the final step in the sequence.
-        :rtype: EventResult
-        :raises SuspendTask: Raised if the execution is preempted due to external conditions.
-        :raises Exception: Propagates any errors encountered during the execution of a step.
-        """
-        self._call_args = get_function_call_args(self.__class__.__call__, locals())
-        # self._args, self._kwargs = args, kwargs
-
-        logger.debug(
-            "Starting checkpointed execution for task_id=%s at phase=%s",
-            self._task_id,
-            getattr(self._phase, "name", None),
-        )
-
-        result = None
-
-        for step in self._get_steps():
-            step_phase = getattr(step, "_phase", None)
-
-            if (
-                self._phase is not None
-                and step_phase is not None
-                and step_phase <= self._phase
-            ):
-                logger.debug(
-                    "Skipping step %s for task_id=%s because phase %s is already complete",
-                    step.__name__,
-                    self._task_id,
-                    step_phase.name,
-                )
-                continue
-
-            if self._execution_context.should_preempt(self._task_id):
-                logger.info(
-                    "Preempting task_id=%s before step %s at phase=%s",
-                    self._task_id,
-                    step.__name__,
-                    getattr(self._phase, "name", None),
-                )
-                await self.enqueue_checkpoint()
-                raise SuspendTask(self)
-
-            logger.debug(
-                "Running step %s for task_id=%s",
-                step.__name__,
-                self._task_id,
-            )
-
-            try:
-                result = await self._run_step(step, *args, **kwargs)
-            except Exception:
-                logger.exception(
-                    "Step %s failed for task_id=%s; checkpoint preserved at phase=%s",
-                    step.__name__,
-                    self._task_id,
-                    getattr(self._phase, "name", None),
-                )
-                raise
-
-            await self.enqueue_checkpoint()
-
-            logger.debug(
-                "Checkpoint saved for task_id=%s after step %s; phase=%s",
-                self._task_id,
-                step.__name__,
-                self._phase.name,
-            )
-
-        # self.checkpoint_manager.delete_checkpoint(self._task_id)
-        logger.info("Execution completed for task_id=%s", self._task_id)
-        return result
-
     def get_phase(self) -> EventPhase:
         return self._phase
 
@@ -668,7 +579,7 @@ class EventCheckPointingMixin:
 
     # @classmethod
     # def resume_task(cls, task_id, checkpoint_manager, execution_context):
-    #     # 1. Pull data from Redis
+    #
     #     data = checkpoint_manager.load(task_id)
     #     if not data:
     #         return None
@@ -683,7 +594,7 @@ class EventCheckPointingMixin:
     #     instance._exec_result = data["exec_result"]
     #     instance._execution_status = data["exec_status"]
     #
-    #     # 5. User-side resource restoration
+    #
     #     for res_name, res_config in data["user_resources"].items():
     #         # Trigger the user's defined restoration logic
     #         instance.restore_resource(res_name, res_config)

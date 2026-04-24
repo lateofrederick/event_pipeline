@@ -1,25 +1,55 @@
-import logging
 import asyncio
-from datetime import datetime
-from typing import List, Optional
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
-try:
-    from croniter import croniter
-except ImportError:
-    raise RuntimeError("croniter not installed. Run: pip install croniter")
+from celery import Celery
+from celery.schedules import crontab
 
-from .base import TriggerBase, TriggerLifecycle, TriggerType
-
+from .base import TriggerBase, TriggerType
 
 logger = logging.getLogger(__name__)
 
 
-class ScheduleTrigger(TriggerBase):
+class SchedulerTrigger(TriggerBase):
     """
-    Trigger that activates on a schedule.
+    Trigger that activates on a Celery cron schedule.
 
-    Activation mechanism: asyncio timer or cron-like scheduler.
-    No event bus required!
+    Activation mechanism
+    --------------------
+    On ``start()``, registers a named Celery task and injects a corresponding
+    entry into ``celery_app.conf.beat_schedule``. Celery Beat fires the task
+    according to the supplied ``crontab``; the task bridges back into async
+    by running ``activate()`` on a fresh event loop inside the worker process.
+
+    On ``stop()``, the beat entry is removed and the task is deregistered from
+    the Celery task registry so no further executions are scheduled or dispatched.
+
+    Crontab fields
+    --------------
+    Accepts either a pre-built ``celery.schedules.crontab`` instance via
+    ``schedule`` or individual cron field strings (``minute``, ``hour``, etc.).
+    Providing both raises ``ValueError``.
+
+    Examples
+    --------
+    Using individual fields::
+
+        trigger = SchedulerTrigger(
+            workflow_name="generate_report",
+            celery_app=app,
+            hour="9",
+            minute="30",
+            day_of_week="mon-fri",
+        )
+
+    Using a pre-built crontab::
+
+        trigger = SchedulerTrigger(
+            workflow_name="generate_report",
+            celery_app=app,
+            schedule=crontab(hour="9", minute="30", day_of_week="mon-fri"),
+        )
     """
 
     trigger_type = TriggerType.SCHEDULE
@@ -27,96 +57,184 @@ class ScheduleTrigger(TriggerBase):
     def __init__(
         self,
         workflow_name: str,
-        schedule: str,  # cron expression or interval
-        schedule_type: str = "interval",  # "interval" or "cron"
-        **kwargs,
+        celery_app: Celery,
+        *,
+        schedule: Optional[crontab] = None,
+        minute: str = "*",
+        hour: str = "*",
+        day_of_week: str = "*",
+        day_of_month: str = "*",
+        month_of_year: str = "*",
+        workflow_params: Optional[Dict[str, Any]] = None,
+        enabled: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(workflow_name, **kwargs)
-        self.schedule = schedule
-        self.schedule_type = schedule_type
-        self._task: Optional[asyncio.Task] = None
+        _using_schedule = schedule is not None
+        _using_fields = any(
+            v != "*" for v in (minute, hour, day_of_week, day_of_month, month_of_year)
+        )
 
-    async def start(self):
-        """Start the scheduler."""
-        logger.info(f"ScheduleTrigger {self.trigger_id} starting: {self.schedule}")
+        if _using_schedule and _using_fields:
+            raise ValueError(
+                "Provide either a 'schedule' crontab instance or individual cron "
+                "field arguments (minute, hour, …), not both."
+            )
 
-        if self.schedule_type == "interval":
-            self._task = asyncio.create_task(self._interval_loop())
-        elif self.schedule_type == "cron":
-            self._task = asyncio.create_task(self._cron_loop())
+        super().__init__(
+            workflow_name,
+            workflow_params=workflow_params,
+            enabled=enabled,
+            metadata=metadata,
+        )
+
+        self.celery_app = celery_app
+        self._crontab: crontab = schedule or crontab(
+            minute=minute,
+            hour=hour,
+            day_of_week=day_of_week,
+            day_of_month=day_of_month,
+            month_of_year=month_of_year,
+        )
+
+        # Stable, unique names derived from trigger_id (set after state.save()).
+        # Both the Celery task name and the beat-schedule key use the same value
+        # so they are trivially correlated in logs and monitoring.
+        self._task_name: Optional[str] = None
+
+    def _make_task_name(self) -> str:
+        """Return the Celery task name for this trigger instance."""
+        return f"volnux.schedule_trigger.{self.trigger_id}"
+
+    def _register_celery_task(self) -> None:
+        """
+        Dynamically create and register a Celery task that fires ``activate()``.
+
+        The task is bound to ``self`` via closure so each ``ScheduleTrigger``
+        instance gets its own isolated task. A fresh event loop is used per
+        invocation because Celery worker processes do not share the engine's
+        async event loop.
+        """
+        trigger = self  # explicit closure capture; avoids accidental rebinding
+        task_name = self._task_name
+
+        @self.celery_app.task(name=task_name)
+        def _fire_trigger() -> None:
+            logger.debug("Celery task '%s' executing schedule trigger", task_name)
+            fired_at = datetime.now(timezone.utc).isoformat()
+            try:
+                asyncio.run(
+                    trigger.activate(
+                        scheduled_at=fired_at,
+                        crontab=str(trigger._crontab),
+                    )
+                )
+            except Exception as exc:
+                # Error is already recorded inside activate(); re-raise so
+                # Celery can apply its own retry / failure machinery.
+                logger.error(
+                    "ScheduleTrigger '%s' raised during Celery task execution: %s",
+                    trigger.trigger_id,
+                    exc,
+                )
+                raise
+
+    def _deregister_celery_task(self) -> None:
+        """Remove the task from Celery's registry if it is present."""
+        if self._task_name and self._task_name in self.celery_app.tasks:
+            del self.celery_app.tasks[self._task_name]
+            logger.debug(
+                "ScheduleTrigger '%s': deregistered Celery task '%s'",
+                self.trigger_id,
+                self._task_name,
+            )
+
+    async def start(self) -> None:
+        """
+        Register the Celery task and inject the beat-schedule entry.
+
+        Calling ``start()`` on an already-active trigger is idempotent: a
+        warning is logged and the method returns without modifying existing
+        state, preventing duplicate beat entries.
+        """
+        task_name = self._make_task_name()
+
+        if task_name in self.celery_app.conf.beat_schedule:
+            logger.warning(
+                "ScheduleTrigger '%s': beat entry '%s' already exists; "
+                "skipping start to avoid duplicate registration.",
+                self.trigger_id,
+                task_name,
+            )
+            return
+
+        self._task_name = task_name
+        self._register_celery_task()
+
+        self.celery_app.conf.beat_schedule[self._task_name] = {
+            "task": self._task_name,
+            "schedule": self._crontab,
+            # Pass nothing via Celery args; all context lives in the closure.
+            "args": (),
+            "kwargs": {},
+            "options": {
+                # Prevent stale tasks from piling up if a worker is slow.
+                "expires": self._crontab_period_seconds(),
+            },
+        }
+
+        logger.info(
+            "ScheduleTrigger '%s' started — task: '%s', crontab: '%s'",
+            self.trigger_id,
+            self._task_name,
+            self._crontab,
+        )
+
+    async def stop(self) -> None:
+        """
+        Remove the beat-schedule entry and deregister the Celery task.
+
+        Safe to call on a trigger that was never started or was already stopped.
+        """
+        if self._task_name is None:
+            logger.debug(
+                "ScheduleTrigger '%s': stop() called before start(); nothing to do.",
+                self.trigger_id,
+            )
+            return
+
+        removed = self.celery_app.conf.beat_schedule.pop(self._task_name, None)
+        if removed:
+            logger.info(
+                "ScheduleTrigger '%s': removed beat entry '%s'.",
+                self.trigger_id,
+                self._task_name,
+            )
         else:
-            raise ValueError(f"Unknown schedule type: {self.schedule_type}")
+            logger.warning(
+                "ScheduleTrigger '%s': beat entry '%s' was not found during stop().",
+                self.trigger_id,
+                self._task_name,
+            )
 
-        self.lifecycle = TriggerLifecycle.ACTIVE
+        self._deregister_celery_task()
+        self._task_name = None
 
-    async def stop(self):
-        """Stop the scheduler."""
-        logger.info(f"ScheduleTrigger {self.trigger_id} stopping")
+    def _crontab_period_seconds(self) -> int:
+        """
+        Return a conservative upper-bound expiry for the task in seconds.
 
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-        self.lifecycle = TriggerLifecycle.STOPPED
-
-    async def _interval_loop(self):
-        """Simple interval-based scheduling."""
-        interval_seconds = self._parse_interval(self.schedule)
-
-        while True:
-            try:
-                await asyncio.sleep(interval_seconds)
-
-                if self.enabled:
-                    await self.activate(
-                        scheduled_time=datetime.now().isoformat(),
-                        schedule_type="interval",
-                        interval=self.schedule,
-                    )
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Schedule trigger error: {e}")
-                self.error_count += 1
-
-    async def _cron_loop(self):
-        """Cron-style scheduling."""
-        cron = croniter(self.schedule, datetime.now())
-
-        while True:
-            try:
-                # Get next scheduled time
-                next_run = cron.get_next(datetime)
-                now = datetime.now()
-
-                # Sleep until next run
-                wait_seconds = (next_run - now).total_seconds()
-                if wait_seconds > 0:
-                    await asyncio.sleep(wait_seconds)
-
-                if self.enabled:
-                    await self.activate(
-                        scheduled_time=next_run.isoformat(),
-                        schedule_type="cron",
-                        cron_expression=self.schedule,
-                    )
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Cron trigger error: {e}")
-                self.error_count += 1
-
-    def _parse_interval(self, schedule: str) -> float:
-        """Parse interval string like '5m', '1h', '30s'."""
-        unit = schedule[-1]
-        value = float(schedule[:-1])
-
-        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-
-        if unit not in multipliers:
-            raise ValueError(f"Invalid interval unit: {unit}")
-
-        return value * multipliers[unit]
+        Used to set ``expires`` on dispatched tasks so stale executions from
+        a paused worker do not fire in a burst when the worker recovers.
+        A full minute (60 s) is used as the floor to cover per-minute crontabs.
+        """
+        # crontab does not expose its period directly, so we derive an upper
+        # bound from the human-readable string that Celery itself builds.
+        period_map = {
+            "day_of_week": 7 * 24 * 3600,
+            "day_of_month": 31 * 24 * 3600,
+            "hour": 3600,
+        }
+        for field, seconds in period_map.items():
+            if getattr(self._crontab, field, "*") not in ("*", None):
+                return seconds
+        return 60  # per-minute floor

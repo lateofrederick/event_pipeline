@@ -32,6 +32,7 @@ from typing import (
     Literal,
     Optional,
 )
+from datetime import datetime, timezone
 
 from .state import TriggerStateRecord
 from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotfound
@@ -156,7 +157,7 @@ class TriggerEngine:
         if drain_timeout <= 0:
             raise ValueError("drain_timeout must be a positive number")
 
-        self.workflow_executor = workflow_executor
+        self.workflow_executor = workflow_executor  # type: ignore[assignment]
         self.consumer_concurrency = consumer_concurrency
         self.triggers: Dict[str, TriggerBase] = {}
         self._running = False
@@ -333,11 +334,12 @@ class TriggerEngine:
 
         for trigger in self.triggers.values():
             try:
-                await trigger.start()
+                await trigger.run()
                 logger.info(f"Started trigger: {trigger.trigger_id}")
             except Exception as e:
                 logger.error(f"Failed to start trigger {trigger.trigger_id}: {e}")
-                trigger.lifecycle = TriggerLifecycle.ERROR
+                trigger.state.lifecycle = TriggerLifecycle.ERROR
+                await trigger.state.save_async()
 
     async def stop(self):
         """
@@ -469,7 +471,7 @@ class TriggerEngine:
             while True:
                 await asyncio.sleep(self._state_sync_interval)
                 try:
-                    dirty_records = await TriggerStateRecord.filter_async(dirty=True)
+                    dirty_records = await TriggerStateRecord.get_dirty()
                     for record in dirty_records:
                         await self._apply_state_change(record)
                 except Exception as exc:
@@ -485,11 +487,11 @@ class TriggerEngine:
         indicated by ``record.lifecycle``, then clears the dirty flag and
         persists the updated record.
         """
-        trigger = self.triggers.get(record.trigger_id)
+        trigger = self.triggers.get(record.id)
         if trigger is None:
             logger.warning(
                 "State-sync: trigger '%s' not found in engine registry; skipping.",
-                record.trigger_id,
+                record.id,
             )
             record.dirty = False
             await record.save_async()
@@ -498,50 +500,28 @@ class TriggerEngine:
         lifecycle = record.lifecycle
 
         if lifecycle == TriggerLifecycle.PAUSED:
-            logger.info("State-sync: pausing trigger '%s'.", record.trigger_id)
+            logger.info("State-sync: pausing trigger '%s'.", record.id)
             await trigger.pause()
 
-        elif lifecycle == TriggerLifecycle.RUNNING:
-            logger.info("State-sync: resuming trigger '%s'.", record.trigger_id)
+        elif lifecycle == TriggerLifecycle.ACTIVE:
+            logger.info("State-sync: resuming trigger '%s'.", record.id)
             await trigger.resume()
 
         elif lifecycle == TriggerLifecycle.STOPPED:
-            logger.info("State-sync: stopping trigger '%s'.", record.trigger_id)
+            logger.info("State-sync: stopping trigger '%s'.", record.id)
             await trigger.stop()
 
         else:
             logger.debug(
                 "State-sync: no action required for lifecycle '%s' on trigger '%s'.",
                 lifecycle,
-                record.trigger_id,
+                record.id,
             )
 
         # Clear the dirty flag and persist.
         record.dirty = False
         record.updated_at = datetime.now(timezone.utc).isoformat()
         await record.save_async()
-
-    async def _persist_trigger_state(self, trigger, dirty: bool = False):
-        """
-        Construct a TriggerStateRecord from the trigger's live attributes and
-        upsert it into the backend store.
-
-        ``last_fired`` is passed as a datetime (or None); the @preformat hook on
-        TriggerStateRecord handles the datetime → str conversion automatically.
-        """
-        record = TriggerStateRecord(
-            trigger_id=trigger.trigger_id,
-            workflow_name=trigger.workflow_name,
-            lifecycle=trigger.lifecycle,
-            enabled=trigger.enabled,
-            fire_count=trigger.fire_count,
-            error_count=trigger.error_count,
-            last_fired=trigger.last_fired,  # datetime or None — preformat converts it
-            dirty=dirty,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-        )
-        await record.save_async()
-        logger.debug("Persisted state for trigger '%s'.", trigger.trigger_id)
 
     async def _handle_activation(self, activation: TriggerActivation):
         """
@@ -563,11 +543,13 @@ class TriggerEngine:
                 f"Task queue is full; dropping activation for trigger '{trigger.trigger_id}' "
                 f"(workflow: '{trigger.workflow_name}')."
             )
-            trigger.error_count += 1
+            trigger.state.error_count += 1
+            await trigger.state.save_async()
         except Exception as e:
             # If putting on the queue fails (rare for asyncio.Queue)
             logger.error(f"Failed to enqueue workflow for {trigger.trigger_id}: {e}")
-            trigger.error_count += 1
+            trigger.state.error_count += 1
+            await trigger.state.save_async()
 
     async def _workflow_consumer_worker(self, worker_id: int):
         """
@@ -601,25 +583,3 @@ class TriggerEngine:
                 logger.error(
                     f"Worker {worker_id} execution failure for {workflow_name}: {e}"
                 )
-
-
-async def start(self):
-    """
-    Start the trigger engine.
-
-    Initialises the state-store schema, persists the initial state for every
-    registered trigger, then launches the background sync loop.
-    """
-    logger.info("TriggerEngine starting …")
-
-    # Initialise the backing table (CREATE TABLE IF NOT EXISTS).
-    await TriggerStateRecord.initialise()
-
-    # Persist the current in-memory state for every trigger.
-    for trigger in self._triggers.values():
-        await self._persist_trigger_state(trigger, dirty=False)
-
-    # Launch the background polling loop.
-    self._sync_task = asyncio.create_task(self._state_sync_loop())
-
-    logger.info("TriggerEngine started. %d trigger(s) registered.", len(self._triggers))

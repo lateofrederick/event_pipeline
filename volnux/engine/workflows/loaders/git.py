@@ -38,7 +38,7 @@ class LoadFromGit(Event):
             logger.error(f"  ✗ No workflow.py found in {workflow_dir}")
             return False, None
 
-        # Add parent directory to sys.path temporarily
+        # Add the parent directory to sys.path temporarily
         parent_dir = workflow_dir.parent
         if str(parent_dir) not in sys.path:
             sys.path.insert(0, str(parent_dir))
@@ -102,12 +102,12 @@ class LoadFromGit(Event):
 
         logger.info(f"Installing workflow from Git: {location}")
 
-        # Create cache directory using hash of git URL
+        # Create a cache directory using hash of git URL
         url_hash = hashlib.md5(location.encode()).hexdigest()[:8]
         repo_cache = cache_dir / f"git_{url_hash}"
 
         try:
-            # Clone or update repository
+            # Clone or update a repository
             if repo_cache.exists():
                 print(f"  Updating existing clone...")
                 subprocess.check_call(["git", "pull"], cwd=repo_cache)
@@ -117,7 +117,7 @@ class LoadFromGit(Event):
                     ["git", "clone", "-b", branch, location, str(repo_cache)]
                 )
 
-            # Find workflow directory
+            # Find the workflow directory
             workflow_dir = repo_cache / workflow_name
             if not workflow_dir.exists():
                 logger.error(f"  ✗ Workflow '{workflow_name}' not found in repository")

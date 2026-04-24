@@ -214,13 +214,13 @@ class Registry:
             The event class or None if not found
 
         Examples:
-            # Get latest version
+            # Get the latest version
             get_by_name("DataProcessEvent")
 
-            # Get specific version
+            # Get a specific version
             get_by_name("DataProcessEvent", version="2.1.0")
 
-            # Get compatible version (any 2.x.x)
+            # Get a compatible version (any 2.x.x)
             get_by_name("DataProcessEvent", version="^2.0.0")
         """
         entry = self.get_entry(klass_name, namespace, version)
@@ -277,7 +277,7 @@ class Registry:
         if versions_qs.is_empty():
             return None
 
-        all_entries = typing.cast(typing.Set[RegistryEntry], versions_qs)
+        all_entries = versions_qs
         latest_entry = max(all_entries, key=lambda e: e.version_obj)
 
         return latest_entry
@@ -310,14 +310,14 @@ class Registry:
 
         compatible_versions = [
             entry
-            for entry in typing.cast(typing.Set[RegistryEntry], all_versions_qs)
+            for entry in all_versions_qs
             if entry.is_compatible_with(version_constraint)
         ]
 
         if not compatible_versions:
             return None
 
-        # Return highest compatible version
+        # Return the highest compatible version
         best_match = max(compatible_versions, key=lambda e: e.version_obj)
         return best_match
 
@@ -468,7 +468,7 @@ class Registry:
 
     def list_classes_names(self) -> typing.List[str]:
         """List all registered class names (unique, regardless of version)."""
-        all_entries = typing.cast(typing.Set[RegistryEntry], self._handler_registry)
+        all_entries = self._handler_registry
 
         # Get unique handler names
         names = set(entry.handler_name for entry in all_entries)
@@ -476,14 +476,11 @@ class Registry:
 
     def list_all_classes(self) -> typing.FrozenSet[typing.Type[typing.Any]]:
         """List all classes in the registry (all versions)."""
-        return frozenset(
-            entry.handler
-            for entry in typing.cast(typing.Set[RegistryEntry], self._handler_registry)
-        )
+        return frozenset(entry.handler for entry in self._handler_registry)
 
     def list_modules(self) -> typing.List[str]:
         """List all modules that have registered classes."""
-        all_entries = typing.cast(typing.Set[RegistryEntry], self._handler_registry)
+        all_entries = self._handler_registry
 
         # Get unique module paths
         modules = set(entry.module_path for entry in all_entries)
@@ -504,7 +501,7 @@ class Registry:
             version: Optional version (checks latest if None)
         """
         if version:
-            # Check specific version
+            # Check a specific version
             entry_qs = self._handler_registry.filter(
                 name=klass_name, namespace=namespace, version=version
             )

@@ -11,6 +11,7 @@ Classes:
     EventCommandMixin: A mixin providing functionality to handle event commands.
     ExecutorInitializerMixin: A mixin that assists in the initialization of
         executors in a modular and reusable manner.
+    ExecutorInitializerConfig: Configuration settings for executor initialization.
     EventCheckPointingMixin: A mixin offering event checkpointing capabilities.
     RetryPolicy: Represents a policy for defining retry strategies.
     RetryMixin: A mixin that integrates retry logic into classes.

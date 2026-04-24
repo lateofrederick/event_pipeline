@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from ..triggers.base import Event
+from ..event import Event
 
 
 class EventFilterBase(ABC):

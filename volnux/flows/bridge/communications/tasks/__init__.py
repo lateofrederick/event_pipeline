@@ -77,4 +77,6 @@ __all__ = [
     "create_communication_bridge",
     "TaskCommand",
     "CommandType",
+    "MessageType",
+    "TaskMessage",
 ]

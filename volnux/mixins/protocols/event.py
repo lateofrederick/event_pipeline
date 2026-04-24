@@ -1,3 +1,4 @@
+import asyncio
 from typing import (
     Any,
     Awaitable,
@@ -8,6 +9,7 @@ from typing import (
     Tuple,
     Type,
     Union,
+    Optional,
     TYPE_CHECKING,
 )
 
@@ -21,8 +23,9 @@ if TYPE_CHECKING:
         EventCheckpointSnapshot,
         ResourceState,
     )
-
     from volnux.execution.rehydrator.event.resources import ResourceProvider
+    from volnux.flows.bridge.communications.tasks import TaskCommand
+    from volnux.flows.bridge.communications.tasks.base import CommandChannelBase
 
 
 class BaseEvent(Protocol):
@@ -67,12 +70,15 @@ class BaseEvent(Protocol):
     # Resource management
     run_bypass_event_checks: bool
     _init_args: dict
-    _call_args: dict
+    _call_args: Union[dict, Any]
     _external_resources: Dict[str, "ResourceState"]
 
     # communication
-    _paused: bool
-    _command_channel: Any
+    _pause_gate: asyncio.Event
+    _preempted: bool = False
+    _main_worker_task: Optional[asyncio.Task]
+    _command_listener_task: Optional[asyncio.Task]
+    _command_channel: "CommandChannelBase"
 
     def init_retry(self) -> Union["RetryPolicy", None]:
         """
@@ -136,26 +142,124 @@ class BaseEvent(Protocol):
 
     async def _retry(
         self,
-        func: Callable[[Any], Awaitable[Tuple[bool, Any]]],
+        func: Callable[[Tuple[Any, ...], Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
         /,
-        *args: Tuple[Any],
+        *args: Tuple[Any, ...],
         **kwargs: Dict[str, Any],
     ) -> Tuple[bool, Any]: ...
 
-    async def process(self, *args, **kwargs) -> Tuple[bool, Any]: ...
+    async def process(self, *args, **kwargs) -> Tuple[bool, Any]:
+        """
+        Asynchronous method to process given arguments and return a tuple containing a boolean
+        status and additional data. The specific logic of processing is determined by the
+        implementation of this method.
+
+        :param args: Positional arguments required for processing. Usage depends on the specific
+                     implementation.
+        :param kwargs: Keyword arguments required for processing. Usage depends on the specific
+                       implementation.
+        :return: A tuple where the first element is a boolean indicating whether the processing
+                 was successful, and the second element contains additional data from the
+                 process.
+        :rtype: Tuple[bool, Any]
+        """
+        ...
+
+    async def cleanup(self, *args, **kwargs) -> None:
+        """
+        Cleans up resources or performs necessary teardown actions.
+
+        This method is meant to be implemented for releasing resources,
+        closing connections, or any other cleanup tasks required within
+        the system. It should handle any necessary logic to gracefully
+        finalize operations.
+
+        :param args: Positional arguments passed to the cleanup method.
+        :type args: tuple
+        :param kwargs: Keyword arguments passed to the cleanup method.
+        :type kwargs: dict
+        :return: This method does not return any value.
+        :rtype: None
+        """
+        ...
 
     def on_success(self, execution_result: Any) -> "EventResult": ...
 
     def on_failure(self, execution_result: Any) -> "EventResult": ...
 
+    # Checkpoint Management
     async def create_snapshot(self) -> "EventCheckpointSnapshot": ...
 
     async def enqueue_checkpoint(self) -> None: ...
 
-    async def _run_step(self, step, *args, **kwargs) -> Any: ...
-
     async def _process_wrapper(
-        self, *args, **kwargs
-    ) -> Union["EventResult", tuple]: ...
+        self, *args: Any, **kwargs: Any
+    ) -> Union["EventResult", Tuple[bool, Any]]: ...
 
     def _get_steps(self) -> List[Callable[..., Any]]: ...
+
+    # Task Communication
+    async def _send_update(
+        self,
+        msg_type: "MessageType",
+        state: "TaskState",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None: ...
+
+    async def _handle_command(self, command: "TaskCommand") -> None:
+        """
+        Handles the given command by processing the task specified.
+
+        :param command: The task command to be processed.
+        :type command: TaskCommand
+        :return: None
+        :rtype: None
+        """
+        ...
+
+    async def _command_listener(self) -> None:
+        """
+        Listens for incoming commands and processes them asynchronously.
+
+        :return: None
+        :rtype: None
+        """
+        ...
+
+    async def _run_step(self, step, *args, **kwargs) -> Any:
+        """
+        Executes a single step in an asynchronous context, allowing for additional
+        arguments to be passed dynamically. This method is intended to handle
+        execution logic for configurable steps while supporting asynchronous
+        operations.
+
+        :param step: The step to be executed.
+        :type step: Any
+        :param args: Additional positional arguments required for the step execution.
+        :type args: tuple
+        :param kwargs: Additional keyword arguments required for the step execution.
+        :type kwargs: dict
+        :return: The result after executing the step.
+        :rtype: Any
+        """
+        ...
+
+    async def steps_runner(self, *args, **kwargs) -> "EventResult":
+        """
+        Executes a sequence of steps asynchronously and returns the result.
+
+        The method is designed to handle a list of steps or tasks executed in a
+        specific order, allowing for dynamic handling of arguments provided at
+        runtime. It ensures the final result is an instance of `EventResult`.
+
+        :param args: Positional arguments passed to the step runner dynamically.
+                     These arguments can vary depending on the implementation of
+                     the steps.
+        :param kwargs: Keyword arguments passed to the step runner dynamically.
+                       These arguments are used for additional flexibility in
+                       configuring or controlling the steps being executed.
+        :return: An instance of `EventResult`, which contains the outcome of the
+                 executed steps sequence.
+        :rtype: EventResult
+        """
+        ...

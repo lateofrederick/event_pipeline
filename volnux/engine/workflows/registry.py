@@ -6,145 +6,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from collections import ChainMap
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from volnux import Event
-from volnux.event.base import EventType, get_event_registry
+from volnux.event.base import get_event_registry
 from volnux import __version__ as version
-from volnux.mixins.event import RetryPolicy
 from volnux.exceptions import ImproperlyConfigured
-from volnux.parser.options import Options
 from volnux.event.registry import RegistryNotReady
 from volnux.result import EventResult
-from volnux.utils import get_function_call_args
+from .source import WorkflowSource, RegistrySource
 
-__all__ = ["get_system_events", "WorkflowSource", "get_workflow_registry"]
+__all__ = ["get_workflow_registry"]
 
 logger = logging.getLogger(__name__)
 
 
 if typing.TYPE_CHECKING:
     from .workflow import WorkflowConfig
-
-
-def get_system_events() -> List[typing.Type[Event]]:
-    system_events = []
-
-    for event in get_event_registry().list_all_classes():
-        event = typing.cast(typing.Type["Event"], event)
-        if event.event_type == EventType.SYSTEM:
-            system_events.append(event)
-    return system_events
-
-
-class RegistrySource(Enum):
-    """Source types for workflow registries."""
-
-    LOCAL = "local"
-    PYPI = "pypi"
-    GIT = "git"
-
-    def loader(self) -> typing.Optional[typing.Type[Event]]:
-        for event in get_system_events():
-            name = getattr(event, "name", None)
-            if name and name == self.value:
-                return event
-        return None
-
-
-@dataclass
-class SourceCredentials:
-    """Credentials for registry authentication."""
-
-    username: Optional[str] = None
-    password: Optional[str] = None
-    token: Optional[str] = None
-    email: Optional[str] = None
-
-    def is_valid(self) -> bool:
-        """Check if credentials are valid."""
-        return bool(self.token or (self.username and self.password))
-
-
-@dataclass
-class WorkflowSource:
-    """Configuration for remote workflow sources."""
-
-    name: str
-    source_type: RegistrySource
-    location: Union[str, Path]  # URL, package name, or path
-    version: Optional[str] = None
-    credentials: Optional[SourceCredentials] = None
-    timeout: int = 30000
-    retries: int = 3
-    priority: int = 1
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self):
-        if isinstance(self.source_type, str):
-            self.source_type = RegistrySource(self.source_type)
-
-    def load_workflow_config(
-        self, registry: "WorkflowRegistry", options: Optional[Dict[str, Any]] = None
-    ) -> EventResult:
-        """
-        Load workflow configuration for registry.
-        Args:
-            registry (WorkflowRegistry): Workflow registry.
-            options (Dict[str, Any]): Workflow extra options.
-        Returns:
-            EventResult: Loader result.
-        """
-        if options is None:
-            options = {}
-
-        loader_class = self.source_type.loader()
-        if loader_class is None:
-            raise ImproperlyConfigured(
-                f"No valid loader found for source type {self.name}"
-            )
-
-        # setup retry policy
-        if self.retries > 0:
-            retry_policy = RetryPolicy(
-                max_attempts=self.retries,
-                retry_on_exceptions=[Exception],
-            )
-
-            setattr(loader_class, "retry_policy", retry_policy)
-
-        loader = loader_class(
-            None,
-            self.name,
-            options=Options.from_dict(options),
-        )
-        kwargs = {
-            "location": self.location,
-            "credentials": self.credentials,
-            "timeout": self.timeout,
-            "retries": self.retries,
-            "workflow_dir": self.location,
-            "registry": registry,
-            "version": self.version,
-            **self.metadata,
-        }
-
-        actual_kwargs = get_function_call_args(loader.process, kwargs)
-        try:
-            return loader(**actual_kwargs)
-        except Exception as e:
-            logger.debug(
-                f"Failed to load workflow source '{self.name}': %s",
-                e,
-            )
-
-            return EventResult(
-                error=True,
-                event_name=self.name,
-                content=f"Failed to load workflow source '{self.name}': {str(e)}",
-                task_id=self.name,
-            )
 
 
 class WorkflowRegistry:
@@ -301,13 +179,13 @@ class WorkflowRegistry:
             self._loading = False
 
     @staticmethod
-    def process_workflow_source(
+    async def process_workflow_source(
         workflow_source: WorkflowSource, registry, params: Dict[str, Any]
     ) -> EventResult:
         """
         Process a workflow source.
         """
-        return workflow_source.load_workflow_config(registry, params)
+        return await workflow_source.load_workflow_config(registry, params)
 
     def get_events(self):
         if not self.is_ready():

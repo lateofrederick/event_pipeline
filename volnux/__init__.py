@@ -41,6 +41,7 @@ from .result_evaluators import ResultEvaluationStrategies
 from .signal.handlers import *
 
 __all__ = [
+    "__version__",
     "EventBase",
     "Event",
     "RetryPolicy",

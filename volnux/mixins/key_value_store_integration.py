@@ -323,6 +323,10 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             logger.error(f"Failed to reload {self.__class__.__name__}:{self.id}: {e}")
             raise
 
+    async def reload_async(self) -> None:
+        """Reload this object's data from the backend store."""
+        await to_thread(self.reload)
+
     def refresh(self) -> None:
         """Alias for reload(). Refresh data from the backend."""
         self.reload()
