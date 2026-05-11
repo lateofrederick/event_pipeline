@@ -52,7 +52,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         """Ensure the Redis connection is active.
 
         Raises:
-            ConnectionError: If connection cannot be established.
+            ConnectionError: If a connection cannot be established.
         """
         if not self.connector.is_connected():
             logger.warning("Redis connection lost, attempting to reconnect...")

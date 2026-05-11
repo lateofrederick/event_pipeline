@@ -14,6 +14,23 @@ class GenericSender:
     pass
 
 
+def get_signal(
+    signal_name: str, module_path: str = "volnux.signal.signals"
+) -> typing.Optional["SoftSignal"]:
+    """
+    Retrieve a registered soft signal by its fully qualified name.
+
+    Args:
+        signal_name (str): signal name, e.g. "pipeline_pre_init" or "pipeline_post_init".
+        module_path (str, optional): The module path where the signal is expected to be found. Defaults to "volnux.signal.signals".
+
+    Returns:
+        typing.Optional[SoftSignal]: The registered signal if found, otherwise None.
+    """
+
+    return SoftSignal._registered_signal.get(f"{module_path}.{signal_name}")
+
+
 class SoftSignal(ObjectIdentityMixin):
     _registered_signal: typing.ClassVar[
         typing.Dict[str, typing.Dict[str, typing.Any]]
@@ -287,6 +304,14 @@ event_execution_aborted = SoftSignal(
 )
 event_execution_failed = SoftSignal(
     "event_execution_failed",
+    provide_args=["task_profiles", "execution_context", "state"],
+)
+event_execution_paused = SoftSignal(
+    "event_execution_paused",
+    provide_args=["task_profiles", "execution_context", "state"],
+)
+event_execution_resumed = SoftSignal(
+    "event_execution_resumed",
     provide_args=["task_profiles", "execution_context", "state"],
 )
 

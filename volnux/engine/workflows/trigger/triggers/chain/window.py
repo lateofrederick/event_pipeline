@@ -498,8 +498,6 @@ class WindowedTrigger(TriggerBase):
                 return
         await self._close_window(timed_out=False)
 
-
-
     async def _disarm_all(self) -> None:
         """Stop all aggregators and the sink, swallowing errors."""
         targets = [*self._aggregators, self._sink]

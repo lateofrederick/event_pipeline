@@ -24,7 +24,6 @@ WindowedTrigger
         └── _open_window()
 """
 
-
 from .event import EventTrigger
 from .condition import ConditionalTrigger
 from .manual import ManualTrigger

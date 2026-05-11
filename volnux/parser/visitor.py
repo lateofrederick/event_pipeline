@@ -160,7 +160,6 @@ class ASTVisitorInterface(ABC):
     def visit_literal(self, node: "LiteralNode"):
         pass
 
-
     @abstractmethod
     def visit_conditional(self, node: "ConditionalNode"):
         pass

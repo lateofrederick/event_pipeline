@@ -1,10 +1,17 @@
-import typing
+from datetime import datetime, timezone
+from dataclasses import dataclass, field, InitVar
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
+    from volnux.event import EventBase
     from volnux.result import EventResult
+    from volnux.mixins.protocols.event import BaseEvent
+    from volnux.mixins.event.external import ExternalCommunicationType
 
 
 class ImproperlyConfigured(Exception):
+    """Raised when the system is improperly configured."""
+
     pass
 
 
@@ -15,15 +22,15 @@ class SerializationError(Exception):
 
 
 class PipelineError(Exception):
-    def __init__(
-        self, message: str, code: typing.Any = None, params: typing.Any = None
-    ) -> None:
+    """Base class for all pipeline errors."""
+
+    def __init__(self, message: str, code: Any = None, params: Any = None) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.params = params
 
-    def to_dict(self) -> typing.Dict[str, typing.Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "error_class": self.__class__.__name__,
             "message": self.message,
@@ -33,47 +40,63 @@ class PipelineError(Exception):
 
 
 class TaskError(PipelineError):
+    """Raised when a task fails."""
+
     pass
 
 
 class EventDoesNotExist(PipelineError, ValueError):
+    """Raised when an event does not exist."""
+
     pass
 
 
 class StateError(PipelineError, ValueError):
+    """Raised when an event state is invalid."""
+
     pass
 
 
 class EventDone(PipelineError):
+    """Raised when an event is already done."""
+
     pass
 
 
 class EventNotConfigured(ImproperlyConfigured):
+    """Raised when an event is not configured."""
+
     pass
 
 
 class BadPipelineError(ImproperlyConfigured, PipelineError):
+    """Raised when a pipeline is improperly configured."""
+
     def __init__(
         self,
-        *args: typing.Any,
-        exception: typing.Optional[Exception] = None,
-        **kwargs: typing.Dict[str, typing.Any],
+        *args: Any,
+        exception: Optional[Exception] = None,
+        **kwargs: Dict[str, Any],
     ) -> None:
         super().__init__(*args, **kwargs)  # type: ignore
         self.exception = exception
 
 
 class MultiValueError(PipelineError, KeyError):
+    """Raised when multiple values are found for a given key."""
+
     pass
 
 
 class StopProcessingError(PipelineError, RuntimeError):
+    """Raised when processing should be stopped due to a specific condition."""
+
     def __init__(
         self,
-        *args: typing.Any,
-        exception: typing.Optional[Exception] = None,
-        stop_condition: typing.Optional[typing.Any] = None,
-        **kwargs: typing.Dict[str, typing.Any],
+        *args: Any,
+        exception: Optional[Exception] = None,
+        stop_condition: Optional[Any] = None,
+        **kwargs: Dict[str, Any],
     ) -> None:
         self.exception = exception
         self.stop_condition = stop_condition
@@ -86,24 +109,19 @@ class MaxRetryError(Exception):
     """
 
     def __init__(
-        self, attempt: int, exception: Exception, reason: typing.Optional[str] = None
+        self, attempt: int, exception: Exception, reason: Optional[str] = None
     ) -> None:
         self.reason = reason
         self.attempt = attempt
         self.exception = exception
-        message = "Max retries exceeded: %s (Caused by %r)" % (
-            self.attempt,
-            self.reason,
-        )
+        message = f"Max retries exceeded: {attempt} (Caused by {reason!r})"
         super().__init__(message)
 
 
 class ValidationError(PipelineError, ValueError):
     """ValidationError raised when validation fails."""
 
-    def __init__(
-        self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
-    ) -> None:
+    def __init__(self, *args: Any, **kwargs: Dict[str, Any]) -> None:
         super().__init__(*args, **kwargs)  # type: ignore
 
 
@@ -140,9 +158,84 @@ class SwitchTask(Exception):
 
 
 class SuspendTask(Exception):
-    def __init__(self, task_instance: "EventBase"):
+    """
+    Represents an exception that is raised when a task is suspended
+    to allow for the execution of higher-priority tasks.
+
+    This exception is intended to be used in systems where task
+    prioritization is critical. It carries information about the
+    specific task instance that has been suspended.
+
+    :ivar task_instance: The task instance associated with the suspension.
+    :type task_instance: BaseEvent
+    """
+
+    def __init__(
+        self,
+        task_instance: "BaseEvent",
+        message: str = "Task suspended for higher priority execution",
+    ):
         self.task_instance = task_instance
-        super().__init__("Task suspended for higher priority execution")
+        super().__init__(message)
+
+
+@dataclass
+class ExternalCommunicationSuspensionRequest(SuspendTask):
+    """
+    Represents a request to suspend a task waiting for external communication
+    such as human-in-the-loop (HITL) or other async events.
+
+    This class extends the `SuspendTask` class and is used to encapsulate details of a suspension request for
+    an external communication task. It includes attributes that define the request details,
+    payload, options, timeout duration, and metadata regarding when the request was created.
+
+    :ivar request_id: Unique identifier for the suspension request.
+    :type request_id: str
+    :ivar request_type: Type of the request (e.g., "HITL suspension").
+    :type request_type: ExternalCommunicationType
+    :ivar title: Title of the suspension request.
+    :type title: str
+    :ivar description: A detailed description explaining the purpose of the suspension request.
+    :type description: str
+    :ivar payload: A dictionary containing additional data relevant to the suspension request.
+    :type payload: Dict[str, Any]
+    :ivar options: Optional list of string-based options relevant to the request.
+    :type options: Optional[List[str]]
+    :ivar timeout_hours: Optional duration in hours indicating how long the suspension request should stay active.
+    :type timeout_hours: Optional[int]
+    :ivar task: The task instance associated with the suspension request.
+    :type task: EventBase
+    :ivar event_type: Optional string indicating the type of event to listen for.
+    :type event_type: Optional[str]
+    :ivar event_filter: Dictionary containing filters for the event listener.
+    :type event_filter: Dict[str, Any]
+    :ivar message: Message to be displayed when the suspension request is raised.
+    :type message: str
+    :ivar created_at: ISO 8601 formatted string representing the timestamp of when the request was created.
+    :type created_at: str
+    """
+
+    request_id: str
+    request_type: "ExternalCommunicationType"
+    task_id: str
+    title: str
+    description: str
+    payload: Dict[str, Any]
+    title: str
+    description: str
+    payload: Dict[str, Any]
+    options: Optional[List[str]]
+    timeout_hours: Optional[int]
+    task: InitVar["BaseEvent"]
+    event_type: Optional[str] = None
+    event_filter: Dict[str, Any] = field(default_factory=dict)
+    message: str = "Task suspended for higher priority execution"
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def __post_init__(self, task: "BaseEvent") -> None:
+        super().__init__(task, message=self.message)
 
 
 class TaskSwitchingError(PipelineError):
@@ -169,20 +262,50 @@ class PointyNotExecutable(Exception):
     """Exception raised when a pointy script is not executable."""
 
 
-## Meta Event Errors
+# Meta Event Errors
 class NestedMetaEventError(Exception):
-    """Raised when nested meta events are detected"""
+    """Raised when nested meta-events are detected"""
 
     pass
 
 
 class MetaEventConfigurationError(Exception):
-    """Raised when meta event is misconfigured"""
+    """Raised when a meta-event is misconfigured"""
 
     pass
 
 
 class MetaEventExecutionError(Exception):
-    """Raised when meta event execution fails"""
+    """Raised when meta-event execution fails"""
 
     pass
+
+
+# AI Agent
+class ToolPermissionError(PermissionError):
+    """
+    Raised when an agent calls an undeclared tool or hands off to an
+    undeclared target. This is a governance violation — not a runtime
+    error — and is emitted as a security event via soft signal.
+    """
+
+
+class MaxReasoningStepsExceeded(RuntimeError):
+    """
+    Raised when the agent exceeds ``max_reasoning_steps`` without a
+    terminal action. Prevents runaway API consumption.
+    """
+
+
+class LLMProviderError(RuntimeError):
+    """
+    Raised when the LLM provider is unavailable, returns an error, or
+    produces a structurally invalid response.
+    """
+
+
+class HallucinationDetected(RuntimeError):
+    """
+    Raised when domain-specific validation rejects the LLM response.
+    Subclasses override ``detect_hallucination()`` with domain rules.
+    """

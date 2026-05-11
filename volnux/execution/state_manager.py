@@ -9,7 +9,12 @@ from multiprocessing import Manager
 from threading import Lock as ThreadLock
 
 from volnux.concurrency.async_utils import to_thread
-from volnux.exceptions import PipelineError, StopProcessingError, SwitchTask
+from volnux.exceptions import (
+    PipelineError,
+    StopProcessingError,
+    SwitchTask,
+    ExternalCommunicationSuspensionRequest,
+)
 from volnux.result import EventResult, ResultSet
 
 logger = logging.getLogger(__name__)
@@ -20,6 +25,7 @@ class ExecutionStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
     ABORTED = "aborted"
     FAILED = "failed"
 
@@ -63,6 +69,18 @@ class ExecutionState:
         """Check for SwitchTask in errors"""
         for err in self.errors:
             if isinstance(err, Exception) and err.__class__ == SwitchTask:
+                return err
+        return None
+
+    def get_external_communication_suspension_request(
+        self,
+    ) -> typing.Optional[Exception]:
+        """Check for ExternalCommunicationSuspensionRequest in errors"""
+        for err in self.errors:
+            if (
+                isinstance(err, Exception)
+                and err.__class__ == ExternalCommunicationSuspensionRequest
+            ):
                 return err
         return None
 
@@ -372,7 +390,7 @@ class StateManager:
                 self.__class__._instance = None
 
     def __del__(self) -> None:
-        """Cleanup when manager is destroyed"""
+        """Cleanup when the manager is destroyed"""
         try:
             if hasattr(self, "_manager"):
                 if self._manager:

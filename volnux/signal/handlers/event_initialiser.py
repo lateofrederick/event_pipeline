@@ -1,4 +1,5 @@
 import typing
+import warnings
 from typing import Callable, List, Dict, Any
 
 from volnux import EventBase
@@ -8,7 +9,7 @@ from volnux.signal.signals import event_init
 ValidatorFunc = Callable[[Any, str, EventBase], None]
 
 
-class ExtraEventInitKwargs(typing.TypedDict, total=False):
+class EventInitKwargs(typing.TypedDict, total=False):
     type: typing.Type[typing.Any]
     required: bool
     default: typing.Any
@@ -27,15 +28,23 @@ def inject_event_initialisation_extra_params(
     default values, default factories, and custom validators, then injects
     the parameters as instance attributes.
     """
-    PROTECTED_NAMES = {"process", "executor", "executor_config", "context", "start"}
+    PROTECTED_NAMES = EventBase.__dict__.keys()
     event_class = type(event)
 
     if not hasattr(event_class, "INIT_PARAMS_SCHEMA"):
         return
 
-    schema: Dict[str, ExtraEventInitKwargs] = event_class.EXTRA_INIT_PARAMS_SCHEMA
+    schema: Dict[str, EventInitKwargs] = event_class.INIT_PARAMS_SCHEMA
 
     for param_name, config in schema.items():
+
+        if param_name in PROTECTED_NAMES:
+            warnings.warn(
+                f"Attempting to override Event with parameter '{param_name}' no allowed",
+                UserWarning,
+            )
+            continue
+
         is_required = config.get("required", False)
         default_value = config.get("default")
         default_factory = config.get("default_factory")

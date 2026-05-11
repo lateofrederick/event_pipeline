@@ -148,6 +148,20 @@ class BaseEvent(Protocol):
         **kwargs: Dict[str, Any],
     ) -> Tuple[bool, Any]: ...
 
+    # Event Hooks
+    async def communicate(
+        self,
+        /,
+        *args: Tuple[Any, ...],
+        **kwargs: Dict[str, Any],
+    ) -> None:
+        """
+
+        :param args:
+        :return:
+        """
+        ...
+
     async def process(self, *args, **kwargs) -> Tuple[bool, Any]:
         """
         Asynchronous method to process given arguments and return a tuple containing a boolean

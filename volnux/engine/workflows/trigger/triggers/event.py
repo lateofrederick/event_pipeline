@@ -78,7 +78,7 @@ class EventTrigger(TriggerBase):
             self._subscribed_types.append(event_type)
 
     async def stop(self) -> None:
-        """Unsubscribe from all currently-subscribed event types."""
+        """Unsubscribe from all currently subscribed event types."""
         logger.info("EventTrigger %s unsubscribing", self.trigger_id)
 
         for event_type in list(self._subscribed_types):

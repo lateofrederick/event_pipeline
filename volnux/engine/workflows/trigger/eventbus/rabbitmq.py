@@ -83,9 +83,6 @@ class RabbitMQEventBus(EventBusAdapterBase):
         self._channel = None
         self._exchange = None
 
-    # ------------------------------------------------------------------ #
-    # Pub / Sub
-    # ------------------------------------------------------------------ #
     async def publish(self, event: Event, topic: Optional[str] = None) -> None:
         self._require_connected()
         topic = self._resolve_topic(event, topic)
@@ -148,9 +145,6 @@ class RabbitMQEventBus(EventBusAdapterBase):
             logger.exception("Error cancelling RabbitMQ consumer for %s", topic)
         logger.info("Unsubscribed from RabbitMQ topic: %s", topic)
 
-    # ------------------------------------------------------------------ #
-    # Internals
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _subscription_key(topic: str, callback: EventCallback) -> str:
         return f"{topic}:{id(callback)}"

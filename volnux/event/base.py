@@ -33,6 +33,7 @@ from volnux.mixins.event import (
     ExecutorInitializerConfig,
     EventCheckPointingMixin,
     EventCommandMixin,
+    ExternalCommunicationMixin,
 )
 from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 
@@ -54,7 +55,7 @@ _event_registry = Registry()
 
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
-    from volnux.signal.handlers.event_initialiser import ExtraEventInitKwargs
+    from volnux.signal.handlers.event_initialiser import EventInitKwargs
 
 
 def get_event_registry():
@@ -81,54 +82,54 @@ class EventType(Enum):
 
 class EventCategory(str, Enum):
     """
-    Semantic classification for :class:`EventBase` subclasses.
+        Semantic classification for :class:`EventBase` subclasses.
 
-    Set ``category`` on your event class to make it discoverable in the
-    registry, CLI tooling, and generated documentation::
+        Set ``category`` on your event class to make it discoverable in the
+        registry, CLI tooling, and generated documentation::
 
-        class MyEvent(EventBase):
-            category = EventCategory.DATABASE
+            class MyEvent(EventBase):
+                category = EventCategory.DATABASE
 
-    Choose the category that best describes the *domain* of the event, not
-    its execution role (that is :class:`EventType`).
+        Choose the category that best describes the *domain* of the event, not
+        its execution role (that is :class:`EventType`).
 
-    Members
-    -------
-    EXTRACT
-        Pulling data from an external source (files, APIs, databases, streams).
-    TRANSFORM
-        Reshaping, enriching, or converting data.
-    LOAD
-        Writing processed data to a destination (warehouse, database, storage).
-    INGEST
-        Streaming or continuous data ingestion (Kafka, CDC, webhooks, etc.).
-        Prefer ``EXTRACT`` for one-shot batch reads.
-    DATABASE
-        Relational / NoSQL database operations not covered by ETL categories.
-    HTTP
-        Outbound HTTP / REST / GraphQL calls.
-    MESSAGING
-        Pub/sub and queue consumers (Redis Streams, RabbitMQ, SQS, etc.).
-    FILE
-        Local or remote file-system operations (read, write, upload, download).
-    CACHE
-        Cache reads, writes, and invalidation events.
-    VALIDATE
-        Data validation, schema checks, and quality-gate steps.
-    ANALYZE
-        Statistical analysis, reporting, and aggregations.
-    MONITOR
-        Health checks, metrics collection, and alerting.
-    NOTIFICATION
-        Sending emails, SMS, push notifications, Slack messages, etc.
-    CLEANUP
-        Temporary resource removal, archiving, and data-retention enforcement.
-    AI
-        Machine-learning inference, model training, and embedding generation.
-    AGENT
-        Agentic orchestration, tool-calling, and multi-step LLM workflows.
-    OTHER
-        Any event that does not fit a specific category above.
+        Members
+        -------
+        EXTRACT
+            Pulling data from an external source (files, APIs, databases, streams).
+        TRANSFORM
+            Reshaping, enriching, or converting data.
+        LOAD
+            Writing processed data to a destination (warehouse, database, storage).
+        INGEST
+            Streaming or continuous data ingestion (Kafka, CDC, webhooks, etc.).
+            Prefer ``EXTRACT`` for one-shot batch reads.
+                ETL categories do not cover DATABASE
+    Relational / NoSQL database operations.
+        HTTP
+            Outbound HTTP / REST / GraphQL calls.
+        MESSAGING
+            Pub/sub and queue consumers (Redis Streams, RabbitMQ, SQS, etc.).
+        FILE
+            Local or remote file-system operations (read, write, upload, download).
+        CACHE
+            Cache reads, writes, and invalidation events.
+        VALIDATE
+            Data validation, schema checks, and quality-gate steps.
+        ANALYZE
+            Statistical analysis, reporting, and aggregations.
+        MONITOR
+            Health checks, metrics collection, and alerting.
+        NOTIFICATION
+            Sending emails, SMS, push notifications, Slack messages, etc.
+        CLEANUP
+            Temporary resource removal, archiving, and data-retention enforcement.
+        AI
+            Machine-learning inference, model training, and embedding generation.
+        AGENT
+            Agentic orchestration, tool-calling, and multi-step LLM workflows.
+        OTHER
+            Any event that does not fit a specific category above.
     """
 
     EXTRACT = "EXTRACT"
@@ -222,6 +223,7 @@ class EventBase(
     ExecutorInitializerMixin,
     EventCheckPointingMixin,
     EventCommandMixin,
+    ExternalCommunicationMixin,
     metaclass=EventMeta,
 ):
     """
@@ -272,9 +274,9 @@ class EventBase(
     :type event_type: EventType
     :ivar result_evaluation_strategy: Strategy to evaluate execution results.
     :type result_evaluation_strategy: ExecutionResultEvaluationStrategyBase
-    :ivar EXTRA_INIT_PARAMS_SCHEMA: Schema for defining extra event initialization
+    :ivar INIT_PARAMS_SCHEMA: Schema for defining extra event initialization
         arguments.
-    :type EXTRA_INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"]
+    :type INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"]
     """
 
     # Version configuration
@@ -305,7 +307,7 @@ class EventBase(
     # The schema for adding extra event initialization arguments without modify the __init__
     # It uses event signal 'event_init' to hook an initializer function.
     # That will handle the setting and validation of the extra event init args
-    EXTRA_INIT_PARAMS_SCHEMA: typing.Dict[str, "ExtraEventInitKwargs"] = {}
+    INIT_PARAMS_SCHEMA: typing.Dict[str, "EventInitKwargs"] = {}
 
     def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
         # prevent the overriding of __init__
@@ -671,6 +673,8 @@ class EventBase(
                 name=f"{self.__class__.__name__}_command_listener",
             )
 
+        result = None
+
         try:
             result = await self.steps_runner(*args, **kwargs)
         finally:
@@ -686,5 +690,8 @@ class EventBase(
                 await self._completed(*args, **kwargs)
             except Exception as e:
                 logger.exception(e)
+
+        if result is None:
+            raise ValueError("Event cannot return no result")
 
         return result

@@ -27,6 +27,7 @@ class TriggerType(Enum):
     WORKFLOW_CHAIN = "workflow_chain"
     MANUAL = "manual"
     WEBHOOK = "webhook"
+    MANAGER = "manager"
 
 
 @dataclass

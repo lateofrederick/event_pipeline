@@ -31,10 +31,11 @@ class CallArgsTemplate(typing.TypedDict, total=False):
 
 class EventPhase(IntEnum):
     INITIALIZED = 0
-    PRE_PROCESS = 1
-    PROCESSING = 2
-    POST_PROCESS = 3
-    COMPLETED = 4
+    COMMUNICATING = 1
+    PRE_PROCESS = 2
+    PROCESSING = 3
+    POST_PROCESS = 4
+    COMPLETED = 5
 
 
 class ResourceState(typing.TypedDict, total=False):

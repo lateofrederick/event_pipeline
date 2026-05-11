@@ -9,10 +9,11 @@ duplication of code.
 
 Classes:
     EventCommandMixin: A mixin providing functionality to handle event commands.
-    ExecutorInitializerMixin: A mixin that assists in the initialization of
+    ExecutorInitializerMixin: A mixin that helps in the initialization of
         executors in a modular and reusable manner.
     ExecutorInitializerConfig: Configuration settings for executor initialization.
     EventCheckPointingMixin: A mixin offering event checkpointing capabilities.
+    ExternalCommunicationMixin: A mixin for handling external communication.
     RetryPolicy: Represents a policy for defining retry strategies.
     RetryMixin: A mixin that integrates retry logic into classes.
     RetryConfigDict: Type definition or configuration for retry-related settings.
@@ -21,4 +22,5 @@ Classes:
 from .command import EventCommandMixin
 from .executor import ExecutorInitializerMixin, ExecutorInitializerConfig
 from .checkpointer import EventCheckPointingMixin
+from .external import ExternalCommunicationMixin
 from .retry import RetryPolicy, RetryMixin, RetryConfigDict

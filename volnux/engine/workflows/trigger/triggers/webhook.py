@@ -104,10 +104,6 @@ class WebhookTrigger(TriggerBase):
         self.token_header = token_header.lower()
         self.web_app = web_app
 
-    # ------------------------------------------------------------------ #
-    # Lifecycle — called by TriggerBase.run() / end()
-    # ------------------------------------------------------------------ #
-
     async def start(self) -> None:
         """
         Register the webhook endpoint (if a self-registering subclass is used).
@@ -129,10 +125,6 @@ class WebhookTrigger(TriggerBase):
         await self._unregister_endpoint()
         logger.info("WebhookTrigger '%s' stopped", self.trigger_id)
 
-    # ------------------------------------------------------------------ #
-    # Extension hooks (override in subclasses for self-registration)
-    # ------------------------------------------------------------------ #
-
     async def _register_endpoint(self) -> None:
         """
         Override to register a route with a web framework at ``start()`` time.
@@ -146,10 +138,6 @@ class WebhookTrigger(TriggerBase):
 
         The default implementation is a deliberate no-op.
         """
-
-    # ------------------------------------------------------------------ #
-    # Public entry point
-    # ------------------------------------------------------------------ #
 
     async def handle_webhook(
         self,
@@ -185,10 +173,6 @@ class WebhookTrigger(TriggerBase):
             webhook_headers=normalised_headers,
             received_at=datetime.now(timezone.utc).isoformat(),
         )
-
-    # ------------------------------------------------------------------ #
-    # Signature verification
-    # ------------------------------------------------------------------ #
 
     def _verify_signature(
         self, body: bytes, normalised_headers: Dict[str, str]

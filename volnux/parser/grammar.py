@@ -122,7 +122,6 @@ def p_conditional(p):
         p[0] = ConditionalNode(task=p[1], branches=p[3])
 
 
-
 def p_branch_list(p):
     """
     branch_list : branch
@@ -159,6 +158,7 @@ def p_chain(p):
     else:
         p[0] = BinOpNode(left=p[1], op=p[2], right=p[3])
 
+
 def p_meta(p):
     """
     meta : task
@@ -171,6 +171,7 @@ def p_meta(p):
         p[0] = p[1]
     else:
         p[0] = p[2]
+
 
 def p_meta(p):
     """
@@ -202,7 +203,9 @@ def p_retry(p):
                 f"Task cannot be retried less than 2 times. "
                 f"Line: {line}, Column: {column}, Offending Token: {p[3]}"
             )
-        p[0] = RetryNode(job=p[1], attempts=LiteralNode(retry_count, type=LiteralType.NUMBER))
+        p[0] = RetryNode(
+            job=p[1], attempts=LiteralNode(retry_count, type=LiteralType.NUMBER)
+        )
 
 
 def p_task(p):
@@ -600,11 +603,14 @@ def p_arithmetic_factor(p):
                       | variable_reference
     """
     factor = p[1]
-    if isinstance(factor, VariableAccessNode) or isinstance(factor, EnvironmentVariableAccessNode) or isinstance(factor, IndexExprNode):
+    if (
+        isinstance(factor, VariableAccessNode)
+        or isinstance(factor, EnvironmentVariableAccessNode)
+        or isinstance(factor, IndexExprNode)
+    ):
         p[0] = factor
     else:
         p[0] = LiteralNode(factor, type=LiteralType.determine_literal_type(factor))
-
 
 
 def p_error(p):

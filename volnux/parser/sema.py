@@ -19,6 +19,7 @@ Walks a parsed ProgramNode AST and emits SemanticDiagnostic objects for:
 Parser-level constraints (retry >= 2, descriptor 0-9) are intentionally left
 in the parser and are NOT duplicated here.
 """
+
 import typing
 
 from .ast import (
@@ -235,7 +236,11 @@ class Sema(ASTVisitorInterface):
 
                     # retry_attempts must be >= 0
                     if name == "retry_attempts":
-                        if isinstance(val, int) and not isinstance(val, bool) and val < 0:
+                        if (
+                            isinstance(val, int)
+                            and not isinstance(val, bool)
+                            and val < 0
+                        ):
                             self._err(
                                 f"Option 'retry_attempts' on '{context}': "
                                 f"value {val} must be >= 0",
@@ -276,10 +281,7 @@ class Sema(ASTVisitorInterface):
 
                     # stop_condition: must be a valid enum member
                     elif name == "stop_condition":
-                        if (
-                            isinstance(val, str)
-                            and val not in _VALID_STOP_CONDITIONS
-                        ):
+                        if isinstance(val, str) and val not in _VALID_STOP_CONDITIONS:
                             self._warn(
                                 f"Option 'stop_condition' on '{context}': "
                                 f"'{val}' is not a valid condition. "
@@ -341,7 +343,7 @@ class Sema(ASTVisitorInterface):
                 if value.type not in (LiteralType.STRING, LiteralType.IMPORT_STRING):
                     self._err(
                         f"Directive '@mode' must be a string literal "
-                        f"(e.g. \"DAG\" or \"CFG\"), got {value.type.value}",
+                        f'(e.g. "DAG" or "CFG"), got {value.type.value}',
                         node,
                     )
                 elif value.value not in _VALID_PARSER_MODES:
@@ -353,7 +355,7 @@ class Sema(ASTVisitorInterface):
             elif value is not None:
                 self._warn(
                     f"Directive '@mode' should be a string literal "
-                    f"(e.g. \"DAG\" or \"CFG\")",
+                    f'(e.g. "DAG" or "CFG")',
                     node,
                 )
 
@@ -441,9 +443,7 @@ class Sema(ASTVisitorInterface):
 
         if not node.branches:
             task_label = (
-                node.task.task
-                if isinstance(node.task, TaskNode)
-                else repr(node.task)
+                node.task.task if isinstance(node.task, TaskNode) else repr(node.task)
             )
             self._err(
                 f"Conditional on '{task_label}' has no branches; "
@@ -454,9 +454,7 @@ class Sema(ASTVisitorInterface):
 
         seen_descriptors: typing.Dict[int, bool] = {}
         task_label = (
-            node.task.task
-            if isinstance(node.task, TaskNode)
-            else repr(node.task)
+            node.task.task if isinstance(node.task, TaskNode) else repr(node.task)
         )
 
         for branch in node.branches:
@@ -791,4 +789,3 @@ class Sema(ASTVisitorInterface):
                 f"one branch is always unreachable",
                 node,
             )
-

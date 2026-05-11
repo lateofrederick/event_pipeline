@@ -569,7 +569,6 @@ class TriggerEngine:
             try:
                 item = await self.task_queue.get()
                 try:
-
                     workflow_name, params = item
 
                     logger.info(f"Worker {worker_id} executing '{workflow_name}'")

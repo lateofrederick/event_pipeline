@@ -141,10 +141,10 @@ class EventCommandMixin:
         Handle incoming commands from the coordinator.
 
         Supported commands:
-        - PAUSE: Clears the pause gate to halt task execution at next checkpoint
+        - PAUSE: Clears the pause gate to halt task execution at the next checkpoint
         - RESUME: Sets the pause gate to allow task execution to continue
         - CANCEL: Cancels the main worker task
-        - UPDATE_PRIORITY: Marks task as preempted and cancels for re-queuing
+        - UPDATE_PRIORITY: Marks a task as preempted and cancels for re-queuing
         - CHECKPOINT: Triggers an immediate checkpoint save
         - QUERY_STATUS: Reports current task state to coordinator
 

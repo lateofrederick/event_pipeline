@@ -4,11 +4,20 @@ import time
 import typing
 from typing import Any, Optional, Tuple
 
-from volnux.exceptions import SwitchTask
+from volnux.exceptions import (
+    SwitchTask,
+    ExternalCommunicationSuspensionRequest,
+    StopProcessingError,
+    SuspendTask,
+)
 from volnux.execution.context import ExecutionContext
 from volnux.execution.result import ResultProcessor
 from volnux.execution.state_manager import ExecutionStatus
 from volnux.flows import setup_execution_flow
+from volnux.mixins.event.communication.datastructures import (
+    ExternalCommunicationQueueEntry,
+    ExternalCommunicationResponse,
+)
 
 if typing.TYPE_CHECKING:
     from volnux.flows.base import BaseFlow
@@ -89,6 +98,9 @@ class ExecutionCoordinator:
         flow = self._setup_execution_flow()
         self._flow = flow
 
+        results = None
+        errors = None
+
         try:
             await self.execution_context.update_status_async(ExecutionStatus.RUNNING)
             logger.info("Starting task execution")
@@ -119,44 +131,45 @@ class ExecutionCoordinator:
             )
             self.execution_context.metrics.end_time = time.time()
 
-            # check if stop processing request was raised
+            # check if requests were raised
             execution_state = await self.execution_context.state_async
+
             stop_processing_requested = execution_state.get_stop_processing_request()
             if stop_processing_requested:
-                logger.info(
-                    f"Execution stopped due to stop condition: {stop_processing_requested}"
+                raise stop_processing_requested
+
+            external_com_request = (
+                execution_state.get_external_communication_suspension_request()
+            )
+            if external_com_request:
+                raise external_com_request
+
+            switch_request = typing.cast(
+                SwitchTask, execution_state.get_switch_request()
+            )
+
+            if switch_request is not None:
+                results.add(switch_request.result)
+
+                current_task_profile = (
+                    self.execution_context.get_decision_task_profile()
                 )
-                await self.execution_context.cancel_async()
 
-            if stop_processing_requested is None:
-                # check for switch task request
-                switch_request = execution_state.get_switch_request()
-
-                if typing.TYPE_CHECKING:
-                    switch_request = typing.cast(SwitchTask, switch_request)
-
-                if switch_request is not None:
-                    results.add(switch_request.result)
-
-                    current_task_profile = (
-                        self.execution_context.get_decision_task_profile()
-                    )
-
-                    if current_task_profile is not None:
-                        if not current_task_profile.get_descriptor(
-                            switch_request.next_task_descriptor
-                        ):
-                            logger.error(
-                                f"Task profile has no configured descriptor {switch_request.next_task_descriptor}"
-                            )
-                            await self.execution_context.cancel_async()
-                            switch_request.descriptor_configured = False
-                        else:
-                            switch_request.descriptor_configured = True
-                    else:
-                        logger.warning(
-                            "No decision task profile found for switch task handling"
+                if current_task_profile is not None:
+                    if not current_task_profile.get_descriptor(
+                        switch_request.next_task_descriptor
+                    ):
+                        logger.error(
+                            f"Task profile has no configured descriptor {switch_request.next_task_descriptor}"
                         )
+                        await self.execution_context.cancel_async()
+                        switch_request.descriptor_configured = False
+                    else:
+                        switch_request.descriptor_configured = True
+                else:
+                    logger.warning(
+                        "No decision task profile found for switch task handling"
+                    )
 
             return results, errors
 
@@ -174,6 +187,54 @@ class ExecutionCoordinator:
             await self.execution_context.failed_async()
             raise ExecutionError(f"Task execution failed: {e}") from e
 
+        except StopProcessingError as e:
+            logger.info(f"Execution stopped due to stop condition: {e}")
+            await self.execution_context.cancel_async()
+
+        except ExternalCommunicationSuspensionRequest as hitl_req:
+            # Do not re-queue the task. Instead, enqueue it in the HITL queue
+            # and release execution resources entirely. The bootloader will
+            # restart execution when the human responses.
+
+            logger.info(
+                "Coordinator: workflow '%s' task '%s' suspended for human input "
+                "(request_id=%s, title='%s')",
+                self.execution_context.workflow_name,
+                hitl_req.task_id,
+                hitl_req.request_id,
+                hitl_req.title,
+            )
+
+            # Build queue entry
+            entry = ExternalCommunicationQueueEntry(
+                request_id=hitl_req.request_id,
+                workflow_name=self.execution_context.workflow_name,
+                workflow_id=self.execution_context.workflow_id,
+                task_id=hitl_req.task_id,
+                checkpoint_key=await self._get_latest_checkpoint_key(hitl_req.task_id),
+                request_title=hitl_req.title,
+                request_payload=hitl_req.payload,
+                options=hitl_req.options,
+                timeout_at=self._compute_timeout(hitl_req.timeout_hours),
+            )
+
+            await entry.save_async(
+                ttl=hitl_req.timeout_hours * 3600 if hitl_req.timeout_hours else None
+            )
+
+            # # Notify human via configured adapter
+            # await self._human_interface_adapter.notify(
+            #     request=hitl_req,
+            # )
+            #
+            # # Mark workflow as suspended — releases execution resources
+            # await self._mark_workflow_suspended(
+            #     workflow_id=workflow_id,
+            #     reason="waiting_for_human",
+            #     entry_id=entry.entry_id,
+            # )
+            await self.execution_context.paused_async()
+
         except Exception as e:
             logger.error(f"Unexpected execution error: {e}", exc_info=True)
             await self.execution_context.failed_async()
@@ -181,6 +242,8 @@ class ExecutionCoordinator:
         finally:
             if self._flow:
                 await self._flow.close()
+
+        return results, errors
 
     async def execute_async(self) -> Tuple[Any, Any]:
         """

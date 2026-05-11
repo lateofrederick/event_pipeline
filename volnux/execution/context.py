@@ -26,6 +26,7 @@ from volnux.signal.signals import (
     event_execution_aborted,
     event_execution_cancelled,
     event_execution_failed,
+    event_execution_paused,
 )
 from volnux.task import PipelineTask, PipelineTaskGrouping
 from volnux.concurrency.async_utils import to_thread
@@ -130,6 +131,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     # Workflow identifier for grouping contexts
     workflow_id: str = None
+    workflow_name: str = None
 
     # Checkpoint data for idempotency
     _task_checkpoint: typing.Optional[typing.Dict[str, typing.Any]] = None
@@ -188,6 +190,8 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             task_profiles=task_profiles,
             pipeline=self.pipeline,
             parent_context=self,
+            workflow_id=self.workflow_id,
+            workflow_name=self.workflow_name,
         )
         self.child_contexts.append(child)  # Link Down
         return child
@@ -357,6 +361,19 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             task_profiles=self.get_task_profiles().copy(),
             execution_context=self,
             state=ExecutionStatus.FAILED,
+        )
+
+    async def paused_async(self) -> None:
+        await self.get_state_manager().update_status_async(
+            self.state_id, ExecutionStatus.PAUSED
+        )
+
+        # Emit event
+        await event_execution_paused.emit_async(
+            sender=self.__class__,
+            task_profiles=self.get_task_profiles().copy(),
+            execution_context=self,
+            state=ExecutionStatus.PAUSED,
         )
 
     def get_state_snapshot(self) -> "ExecutionState":

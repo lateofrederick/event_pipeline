@@ -147,8 +147,6 @@ class ResultProcessor:
                     ),
                     task_id=params.get("task_id"),
                     event_name=event_name,
-                    init_params=params.get("init_args"),
-                    call_params=params.get("call_args"),
                 )
 
                 results.add(result)

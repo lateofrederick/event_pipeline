@@ -1,6 +1,7 @@
 """
 Diagnostic types for Pointy semantic analysis.
 """
+
 from __future__ import annotations
 
 import typing
@@ -68,4 +69,3 @@ class SemanticResult:
             f"SemanticResult(errors={len(self.errors)}, "
             f"warnings={len(self.warnings)})"
         )
-

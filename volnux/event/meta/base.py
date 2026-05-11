@@ -8,7 +8,7 @@ from collections import deque
 from volnux.typing import TypeAlias
 from volnux.task import PipelineTask
 from volnux.parser.options import Options
-from volnux.base import EventBase, EventType
+from ..base import EventBase, EventType
 from volnux.constants import EMPTY
 from volnux.result import EventResult, ResultSet
 from volnux.signal.handlers.event_initialiser import ExtraEventInitKwargs
@@ -152,7 +152,7 @@ class ControlFlowEvent(EventBase):
 
     event_type = EventType.META
 
-    EXTRA_INIT_PARAMS_SCHEMA: typing.Dict[str, ExtraEventInitKwargs] = {
+    INIT_PARAMS_SCHEMA: typing.Dict[str, ExtraEventInitKwargs] = {
         "template_class": {
             "type": EventBase,
             "required": True,

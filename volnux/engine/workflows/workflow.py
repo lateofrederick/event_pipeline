@@ -77,7 +77,7 @@ class TriggerRegistry:
             raise ValueError(f"Trigger type {trigger.trigger_type.value} already added")
 
         trigger.set_activation_callback(trigger_activation_callback)
-        trigger.lifecycle = TriggerLifecycle.INITIALIZED
+        trigger.state.lifecycle = TriggerLifecycle.INITIALIZED
         self._triggers.add(trigger)
         logger.info(
             f"Registered trigger {trigger.trigger_id} for workflow {trigger.workflow_name}"

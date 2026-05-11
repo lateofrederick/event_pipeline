@@ -245,6 +245,22 @@ class EventCheckPointingMixin:
 
         event_init.emit(sender=self.__class__, event=self, init_kwargs=self._init_args)
 
+    @phase_step(EventPhase.COMMUNICATING)
+    async def _communicate(self: _BaseEvent, *args, **kwargs) -> None:
+        """
+        Execute the communicate() hook and merge its return value
+        into the kwargs passed to subsequent steps.
+
+        If communicate() suspends via request_human_input() or
+        wait_for_event(), this phase is checkpointed. On resumption,
+        _communicate runs again from the top of communicate() — which
+        is correct because communicate() has no complex internal state.
+        It is purely I/O: it requests something and waits. On the second
+        run it finds the response already in previous_result and returns
+        immediately without re-requesting.
+        """
+        await self._run_step(self.communicate, *args, **kwargs)
+
     @phase_step(EventPhase.PRE_PROCESS)
     def _pre_process(self: _BaseEvent, *args, **kwargs):
         """
@@ -348,6 +364,7 @@ class EventCheckPointingMixin:
         return [
             self._setup_event,
             self._pre_process,
+            self._communicate,
             self._process,
             self._post_process,
             self._completed,

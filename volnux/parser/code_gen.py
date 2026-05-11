@@ -148,23 +148,23 @@ class ExecutableASTGenerator(ASTVisitorInterface):
             )
         return instance
 
-    def visit_group_block(self, node: ast.BlockNode):
-        raise NotImplementedError("Not Supported yet")
+    # def visit_group_block(self, node: ast.BlockNode):
+    #     raise NotImplementedError("Not Supported yet")
 
     def visit_literal(self, node: ast.LiteralNode) -> typing.Union[int, str, float]:
         return node.value
 
-    def visit_assignment(self, node: ast.AssignmentNode):
-        return {node.target: self._visit_node(node.value)}
+    # def visit_assignment(self, node: ast.AssignmentNode):
+    #     return {node.target: self._visit_node(node.value)}
 
-    def visit_assignment_block(
-        self, node: ast.BlockNode
-    ) -> typing.Dict[str, typing.Any]:
-        assign = {}
-        statements = typing.cast(typing.List[ast.AssignmentNode], node.statements)
-        for statement in statements:
-            assign.update(self.visit_assignment(statement))
-        return assign
+    # def visit_assignment_block(
+    #     self, node: ast.BlockNode
+    # ) -> typing.Dict[str, typing.Any]:
+    #     assign = {}
+    #     statements = typing.cast(typing.List[ast.AssignmentNode], node.statements)
+    #     for statement in statements:
+    #         assign.update(self.visit_assignment(statement))
+    #     return assign
 
     def visit_expression_grouping(
         self, node: ast.PipelineGroupingNode
