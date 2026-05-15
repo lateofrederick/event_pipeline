@@ -1,6 +1,8 @@
 import typing
 from enum import IntEnum
 from datetime import datetime, timezone
+from typing import Dict, Any
+
 from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
 
 from volnux.constants import MAX_RETRIES
@@ -26,7 +28,8 @@ class InitArgsTemplate(typing.TypedDict, total=False):
 
 
 class CallArgsTemplate(typing.TypedDict, total=False):
-    pass
+    args: typing.List[typing.Any]  # Positional arguments (already serialized)
+    kwargs: typing.Dict[str, typing.Any]  # Keyword arguments (already serialized)
 
 
 class EventPhase(IntEnum):
@@ -70,7 +73,7 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
 
     ## `process` method return value
     # Execution state captured at the end of the PROCESSING phase
-    exec_status: typing.Optional[bool]
+    exec_status: bool = False
 
     # The result of process() or the error raised
     # This might be a Dict, List, or a Serialized Exception Dict
@@ -84,5 +87,17 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     class Config:
         validation = ValidationFlags.NONE
 
+    @classmethod
     def get_schema_name(cls) -> str:
         return "volnux:event:checkpoint"
+
+    @classmethod
+    def get_backend_config(cls) -> Dict[str, Any]:
+        return {
+            "ENGINE": "volnux.backends.stores.redis_store.RedisStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "host": "localhost",
+                "port": 6379,
+                "db": 0,
+            },
+        }

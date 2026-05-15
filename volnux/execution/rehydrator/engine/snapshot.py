@@ -64,6 +64,7 @@ class TaskSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     class Config:
         validation = ValidationFlags.NONE
 
+    @classmethod
     def get_schema_name(cls) -> str:
         return "volnux:snapshot:task"
 
@@ -104,7 +105,7 @@ class TraversalSnapshot:
 
     # Engine state markers
     tasks_processed: int  # How many tasks completed before snapshot?
-    # is_multitask_context: bool  # Was this a parallel execution group?
+    # is_multitask_context: bool # Was this a parallel execution group?
 
     async def restore(self) -> WorkflowEngine:
         pass
@@ -154,6 +155,7 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     class Config:
         validation = ValidationFlags.NONE
 
+    @classmethod
     def get_schema_name(cls) -> str:
         return "volnux:snapshot:context"
 

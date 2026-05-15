@@ -52,6 +52,7 @@ class SnapshotBuilder:
         )
 
         instance.change_object_id(context.id)
+        await instance.save_async(force_insert=True)
         return instance
 
     def build_pipeline_task(self, task_profile: "TaskType") -> TaskSnapshot:

@@ -1,6 +1,4 @@
 """
-mini_execution_context.py
-─────────────────────────
 Adaptive mini-context for remote task execution via Socket and Celery executors.
 
 Designed to avoid sending the full ExecutionContext over the wire. Switches

@@ -1,5 +1,6 @@
 import logging
 import typing
+import re
 from contextlib import contextmanager
 from functools import wraps
 from typing import (
@@ -12,12 +13,21 @@ from typing import (
     Type,
     TypeVar,
     cast,
+    Set,
+    Tuple,
+    Union,
+    get_args,
     TYPE_CHECKING,
 )
 
+from formax import Attrib
+from formax.typing import get_type_hints
+
 from volnux.backends.store import KeyValueStoreBackendBase
+from volnux.backends.formax_fk import OnDelete
 from volnux.exceptions import (
     ObjectExistError,
+    ObjectProtectedError,
     ObjectDoesNotExist,
     ImproperlyConfigured,
     SerializationError,
@@ -35,11 +45,112 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound="ObjectIdentityMixin")
 
 
-def backend_operation(auto_save: bool = False):
+def _resolve_foreign_keys_for_class(cls: Type) -> None:
+    """
+    Scan a class for ForeignKey fields and register backreferences.
+
+    Detects fields tagged with _volnux_fk metadata on their Attrib
+    and calls register_backreference on the target model.
+
+    Args:
+        cls: The class to scan (a KeyValueStoreIntegrationMixin subclass).
+    """
+
+    try:
+        hints = get_type_hints(cls, include_extras=True)
+    except Exception:
+        return
+
+    for field_name, hint in hints.items():
+        args = get_args(hint)
+        if len(args) != 2:
+            continue
+        attrib = args[0]
+        if isinstance(attrib, Attrib):
+            fk_meta = attrib.metadata
+            if not fk_meta:
+                break
+
+            reverse_name = fk_meta.get("reverse_name")
+            if not reverse_name:
+                # Auto-generate: class_name + "_" + field_name
+                source_name = re.sub(r"(?<!^)(?=[A-Z])", "_", cls.__name__).lower()
+                reverse_name = f"{source_name}_{field_name}"
+
+            fk_meta["target_model"].register_backreference(
+                field_name=field_name,
+                field_attrib=attrib,
+                referencing_model=cls,
+                reverse_name=reverse_name,
+            )
+            break
+
+
+class _ReverseRelationDescriptor:
+    """
+    Descriptor that provides reverse relation access.
+
+    Enables patterns like:
+        user.workflows # All workflows created by this user
+        user.audit_entries # All audit entries by this user
+    """
+
+    def __init__(
+        self,
+        referencing_model: Union[Type["KeyValueStoreIntegrationMixin"], str],
+        foreign_key_field: str,
+    ):
+        self.referencing_model = referencing_model
+        self.foreign_key_field = foreign_key_field
+        self._cache: Dict[str, "KeyValueStoreIntegrationMixin"] = {}
+
+    def get_model(self) -> Type["KeyValueStoreIntegrationMixin"]:
+        if isinstance(self.referencing_model, str):
+            self.referencing_model = cast(
+                Type["KeyValueStoreIntegrationMixin"],
+                import_string(self.referencing_model),
+            )
+        return self.referencing_model
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+
+        if str(instance.id) in self._cache:
+            return self._cache[str(instance.id)]
+
+        model_class = self.get_model()
+
+        # Build the filter: {foreign_key_field: instance}
+        # The foreign key field stores {"object_id": instance.id, ...}
+        # We need to filter on object_id within the JSONB field
+        filter_key = f"{self.foreign_key_field}__object_id"
+
+        model_instance = model_class.filter(**{filter_key: str(instance.id)})
+        self._cache[str(instance.id)] = model_instance  # type: ignore[assignment]
+        return model_instance
+
+    def __set__(self, instance, value):
+        raise AttributeError("Reverse relations are read-only")
+
+    def __delete__(self, instance):
+        raise AttributeError("Reverse relations cannot be deleted")
+
+    def __repr__(self) -> str:
+        return (
+            f"<ReverseRelation: {self.referencing_model}" f".{self.foreign_key_field}>"
+        )
+
+
+def backend_operation(
+    auto_save: bool = False, force_insert: bool = False, ttl: Optional[int] = None
+):
     """Decorator for methods that perform backend operations.
 
     Args:
         auto_save: If True, automatically save the object after the operation.
+        force_insert: If True, always attempt insert (raises error if exists).
+        ttl: Time-to-live in seconds for the operation result. None for no expiration.
 
     Example:
         >>> @backend_operation(auto_save=True)
@@ -52,7 +163,7 @@ def backend_operation(auto_save: bool = False):
         def wrapper(self: "KeyValueStoreIntegrationMixin", *args, **kwargs):
             result = method(self, *args, **kwargs)
             if auto_save:
-                self.save()
+                self.save(force_insert=force_insert, ttl=ttl)
             return result
 
         return wrapper
@@ -96,6 +207,66 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
     _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]] = None
     _backend_config: ClassVar[Optional[Dict[str, Any]]] = None
 
+    # Backreference registry
+    # Maps field_name -> set of (model_class, reverse_name, Attrib, has_native_fk) tuples
+    # Example: {"created_by": {(Workflow, "workflows", attrib, False), (AuditEntry, "audit_entries", attrib, True)}}
+    _backreferences: ClassVar[Dict[str, Set[Tuple[Type, str, Attrib, bool]]]] = {}
+
+    def __init_subclass__(cls, **kwargs):
+        """Register ForeignKey backreferences when a subclass is defined.
+
+        At this point, both the source class and the target model are
+        fully defined. We scan annotations for ForeignKey fields and
+        register backreferences on the target models.
+        """
+        super().__init_subclass__(**kwargs)
+        _resolve_foreign_keys_for_class(cls)
+
+    @classmethod
+    def register_backreference(
+        cls,
+        field_name: str,
+        field_attrib: Attrib,
+        referencing_model: Type["KeyValueStoreIntegrationMixin"],
+        reverse_name: Optional[str] = None,
+        has_native_fk: bool = False,
+    ) -> None:
+        """Register that another model references this model via a field.
+
+        This enables reverse relation accessors. Called automatically by
+        ForeignKeyField when a model class is defined.
+
+        Args:
+            field_name: The field name on the referencing model.
+            field_attrib: The attribute descriptor for the foreign key field.
+            referencing_model: The model class that references this model.
+            reverse_name: Name for the reverse accessor. If None, defaults
+                         to the referencing model's class name in snake_case
+                         with 's' appended.
+            has_native_fk: Whether the referencing model has a native foreign key field.
+        """
+        if reverse_name is None:
+            name = re.sub(r"(?<!^)(?=[A-Z])", "_", referencing_model.__name__).lower()
+            reverse_name = f"{name}s"
+
+        if field_name not in cls._backreferences:
+            cls._backreferences[field_name] = set()
+
+        cls._backreferences[field_name].add(
+            (referencing_model, reverse_name, field_attrib, has_native_fk)
+        )
+
+        # Create the reverse accessor on this model
+        if not hasattr(cls, reverse_name):
+            setattr(
+                cls,
+                reverse_name,
+                _ReverseRelationDescriptor(
+                    referencing_model=referencing_model,
+                    foreign_key_field=field_name,
+                ),
+            )
+
     def __post_init__(
         self,
         autosave: bool = False,
@@ -124,6 +295,44 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 self.save()
             except Exception as e:
                 logger.warning(f"Failed to auto-save new object: {e}")
+
+    def _on_delete_hook(self) -> None:
+        """Process all backreferences before deletion."""
+        for field_name, references in self._backreferences.items():
+            for reference_tuple in references:
+                referencing_model, reverse_name, field_attrib, has_native_fk = cast(
+                    Tuple[Type["KeyValueStoreIntegrationMixin"], str, Attrib, bool],
+                    reference_tuple,
+                )
+
+                action: OnDelete = field_attrib.metadata.get(
+                    "on_delete", OnDelete.PROTECT
+                )
+
+                if has_native_fk:
+                    # Database handles CASCADE, SET NULL, SET DEFAULT automatically
+                    # We only need to handle PROTECT (which is NO ACTION in SQL)
+                    if action == OnDelete.PROTECT:
+                        raise ObjectProtectedError(
+                            f"Cannot delete {self.__class__.__name__}({self.id}): "
+                            f"{referencing_model.__name__} objects via '{field_name}'. "
+                            f"Protected by native foreign key constraint."
+                        )
+
+                    # For other on_delete values, the database handles it
+                    continue
+
+                try:
+                    action.operation_handler(
+                        self.id,
+                        self.__class__.__name__,
+                        referencing_model,
+                        field_name,
+                        field_attrib,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to process backreference: {e}")
+                    raise
 
     @classmethod
     def get_migration_dir(cls) -> typing.Optional[str]:
@@ -296,6 +505,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         """
         try:
             backend = self.get_backend()
+            self._on_delete_hook()
             backend.delete(self.get_schema_name(), self.id)
             logger.debug(f"Deleted {self.__class__.__name__}:{self.id}")
         except Exception as e:

@@ -230,7 +230,7 @@ class VolnuxCheckPointManager:
             task_name: Name of the task to restart
 
         Raises:
-            ValueError: If task_name is not recognized
+            ValueError: If task_name is not recognized,
             RuntimeError: If restart fails
         """
         if task_name == "worker":

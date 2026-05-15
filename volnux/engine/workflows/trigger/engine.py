@@ -188,7 +188,7 @@ class TriggerEngine:
         or updating the existing workflow executor with a new instance that adheres to
         the required interface.
 
-        :param workflow_executor: The workflow executor instance responsible for
+        :param workflow_executor: The workflow executor instance is responsible for
             managing workflow configurations.
         :type workflow_executor: BaseWorkflowConfigExecutor
         :return: None

@@ -135,6 +135,12 @@ class ObjectDoesNotExist(ValueError):
     """ObjectDoesNotExist raised when an object does not exist."""
 
 
+class ObjectProtectedError(ValueError):
+    """ObjectProtectedError raised when an object cannot be deleted or modified."""
+
+    pass
+
+
 class SwitchTask(Exception):
     """SwitchTask raised to indicate a task switch is required."""
 

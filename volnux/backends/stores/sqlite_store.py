@@ -86,7 +86,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         else:
             self._schema_cache.clear()
 
-    # Schema Management
+
 
     def schema_exists(self, schema_name: str) -> bool:
         """Check if a schema (table) exists in the database.
@@ -242,6 +242,44 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         except sqlite3.Error as e:
             logger.error(f"Error listing schemas: {e}")
             raise SqlOperationError(f"Error listing schemas: {e}")
+
+    def create_native_fk_constraint(
+        self,
+        source_backend: "KeyValueStoreBackendBase",
+        source_schema: str,
+        source_field: str,
+        target_schema: str,
+        target_field: str,
+        on_delete: "OnDelete",
+        nullable: bool,
+    ) -> None:
+        """Create a foreign key constraint between two tables."""
+        from ..formax_fk import OnDelete
+
+        on_delete_sql = {
+            OnDelete.CASCADE: "CASCADE",
+            OnDelete.SET_NULL: "SET NULL",
+            OnDelete.SET_DEFAULT: "SET DEFAULT",
+            OnDelete.PROTECT: "NO ACTION",  # Database will raise error
+            OnDelete.DO_NOTHING: "NO ACTION",
+        }.get(on_delete, "NO ACTION")
+
+        constraint_name = f"fk_{source_schema}_{source_field}_{target_schema}"
+
+        ddl = (
+            f"ALTER TABLE {source_schema} "
+            f"ADD CONSTRAINT {constraint_name} "
+            f"FOREIGN KEY ({source_field}_object_id) "
+            f"REFERENCES {target_schema}(id) "
+            f"ON DELETE {on_delete_sql}"
+        )
+        with self.connector.transaction():
+            cursor = self.connector.get_cursor()
+            cursor.execute(ddl)
+            cursor.close()
+
+    def supports_foreign_keys(self) -> bool:
+        return True
 
     # def _serialize_record(self, record: BaseModel) -> bytes:
     #     """Serialize a record to bytes.

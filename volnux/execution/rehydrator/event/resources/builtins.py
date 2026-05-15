@@ -85,9 +85,9 @@ class FileHandleProvider(ResourceProvider[typing.IO]):
 @register_provider(name="SimpleStateProvider")
 class SimpleStateProvider(ResourceProvider[Dict[str, Any]]):
     """
-    Provider for simple dictionary-based state.
+    Provider for a simple dictionary-based state.
 
-    Use this for custom state that's already serializable.
+    Use this for a custom state that's already serializable.
     The resource itself is just a dictionary.
     """
 

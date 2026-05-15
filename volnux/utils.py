@@ -26,7 +26,7 @@ from .exceptions import ImproperlyConfigured
 from .typing import BatchProcessType
 
 if typing.TYPE_CHECKING:
-    from .base import EventBase
+    from . import EventBase
     from .executors import BaseExecutor
     from .pipeline import Pipeline
 
@@ -67,7 +67,7 @@ def generate_unique_id(obj: object) -> str:
     """
     pk = getattr(obj, "_id", None)
     if pk is None:
-        pk = f"{obj.__class__.__name__}-{time.time()}-{str(uuid.uuid4())}"
+        pk = f"{obj.__class__.__name__.lower()[:3]}-{str(uuid.uuid4())}"
         setattr(obj, "_id", pk)
     return pk
 
@@ -256,6 +256,9 @@ def get_obj_state(obj: typing.Any) -> typing.Dict[str, typing.Any]:
 
 
 def get_obj_klass_import_str(obj: typing.Any) -> str:
+    # check if the object is a class
+    if isinstance(obj, type):
+        return f"{obj.__module__}.{obj.__qualname__}"
     return f"{obj.__class__.__module__}.{obj.__class__.__qualname__}"
 
 

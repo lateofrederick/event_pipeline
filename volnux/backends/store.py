@@ -22,6 +22,7 @@ from .connection import BackendConnectorBase
 from volnux.exceptions import SerializationError
 
 if TYPE_CHECKING:
+    from .formax_fk import OnDelete
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -440,6 +441,49 @@ class KeyValueStoreBackendBase(abc.ABC):
         except Exception as e:
             logger.error(f"Failed to deserialize record: {e}")
             raise SerializationError(f"Deserialization failed: {e}")
+
+    def create_native_fk_constraint(
+        self,
+        source_backend: "KeyValueStoreBackendBase",
+        source_schema: str,
+        source_field: str,
+        target_schema: str,
+        target_field: str,
+        on_delete: "OnDelete",
+        nullable: bool,
+    ) -> None:
+        """
+        Create a native foreign key constraint between two schemas in the backend.
+
+        This function establishes a foreign key relationship between a source schema/field
+        and a target schema/field. The parameters define the behavior of the constraint,
+        such as the action on delete and whether the field can be nullable.
+
+        :param source_backend: The backend system where the schema resides. Must
+            be an instance of KeyValueStoreBackendBase.
+        :param source_schema: The name of the schema in the source backend to which
+            the foreign key constraint will be applied.
+        :param source_field: The field in the source schema that will reference the target
+            field as a foreign key.
+        :param target_schema: The name of the schema containing the target field,
+            which the source field will reference.
+        :param target_field: The specific field in the target schema that will be
+            referenced by the source field.
+        :param on_delete: Specifies the action to be taken in the source field
+            when the referenced target record is deleted.
+        :param nullable: Indicates if the source field is allowed to be nullable.
+        :return: This function does not return any value.
+        """
+
+        raise NotImplementedError("Native foreign key constraints are not supported.")
+
+    def supports_foreign_keys(self) -> bool:
+        """Check if the backend supports foreign key constraints.
+
+        Returns:
+            True if foreign key constraints are supported, False otherwise.
+        """
+        return False
 
     @abc.abstractmethod
     def exists(self, schema_name: str, record_key: str) -> bool:

@@ -31,7 +31,7 @@ class ResourceProvider(abc.ABC, Generic[TResource]):
 
     A resource provider is responsible for:
     1. Serializing resource state during checkpointing
-    2. Restoring resources from serialized state during resumption
+    2. Restoring resources from the serialized state during resumption
     3. (Optional) Cleaning up resources when no longer needed
 
     Type Parameters:

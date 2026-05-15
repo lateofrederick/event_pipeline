@@ -10,7 +10,8 @@ if TYPE_CHECKING:
 
 
 class SnapshotBuilder:
-    """Builds a snapshot of an event for checkpointing and rehydration.
+    """
+    Builds a snapshot of an event for checkpointing and rehydration.
 
     This class is responsible for serializing event data into a format suitable
     for checkpointing and rehydration. It uses a StateSerializer to handle
