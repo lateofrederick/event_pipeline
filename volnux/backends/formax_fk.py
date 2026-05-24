@@ -1,7 +1,11 @@
+import sys
 import logging
+import typing
 from enum import Enum
-from typing import Any, Dict, Optional, Type, TYPE_CHECKING, Union
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Type, TYPE_CHECKING, Union, ForwardRef
 from formax import Attrib, MiniAnnotated, MISSING, ValidationError
+from formax.typing import evaluate_forward_ref
 
 from volnux.import_utils import import_string
 from volnux.utils import get_obj_klass_import_str
@@ -144,10 +148,20 @@ class OnDelete(str, Enum):
 class FKConstraint(str, Enum):
     """Where the foreign key constraint is enforced."""
 
-    AUTO = "auto"  # Native if same database, software otherwise
+    AUTO = "auto"  # Native if the same database, software otherwise
     NATIVE = "native"  # Database-level constraint only
     SOFTWARE = "software"  # Application-level constraint only
     BOTH = "both"
+
+
+@dataclass(frozen=True)
+class FKConfig:
+    """Configuration for a ForeignKey field."""
+
+    reverse_name: Optional[str] = None
+    on_delete: OnDelete = OnDelete.PROTECT
+    nullable: bool = True
+    constraint: FKConstraint = FKConstraint.AUTO
 
 
 class ForeignKey:
@@ -164,7 +178,14 @@ class ForeignKey:
     On serialization, the object is reduced to its reference tuple.
     """
 
-    __slots__ = ("object_id", "model_path", "backend_alias", "_resolved", "_instance", "_is_native_fk")
+    __slots__ = (
+        "object_id",
+        "model_path",
+        "backend_alias",
+        "_resolved",
+        "_instance",
+        "_is_native_fk",
+    )
 
     def __init__(
         self,
@@ -236,7 +257,7 @@ class ForeignKey:
         if isinstance(value, ForeignKey):
             return value
 
-        # Already a resolved model instance (e.g., from a previous access)
+        # Already a resolved model instance (e.g., from previous access)
         if not isinstance(value, dict):
             return value
 
@@ -336,14 +357,7 @@ class ForeignKey:
         return self.object_id is not None and len(self.object_id) > 0
 
 
-def ForeignKeyField(
-    target_model: Union[Type["KeyValueStoreIntegrationMixin"], str],
-    *,
-    nullable: bool = True,
-    reverse_name: Optional[str] = None,
-    on_delete: OnDelete = OnDelete.PROTECT,
-    constraint: FKConstraint = FKConstraint.AUTO,
-) -> MiniAnnotated:
+class ForeignKeyField:
     """Create a MiniAnnotated field definition for a foreign key reference.
 
     Args:
@@ -362,50 +376,90 @@ def ForeignKeyField(
 
     Example:
         >>> class Workflow(GovernanceModel):
-        ...     created_by: ForeignKeyField(User)
-        ...     approved_by: ForeignKeyField(User, nullable=True, reverse_name='approved_workflows')
+        ...     created_by: ForeignKeyField[User]
+        ...     approved_by: ForeignKeyField[User, FKConfig(nullable=True, reverse_name='approved_workflows')]
     """
-    validators = []
 
-    if on_delete == OnDelete.SET_NULL and not nullable:
-        raise ValueError("on_delete=SET_NULL requires nullable=True.")
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError(f"Cannot subclass ForeignKeyField")
 
-    if isinstance(target_model, str):
-        try:
-            target_model = import_string(target_model)
-        except ImportError as e:
-            raise ValueError(f"Failed to import model class '{target_model}'") from e
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("ForeignKeyField cannot be instantiated")
 
-    if target_model is None:
-        pre_fmt = lambda instance, value: ForeignKey.serialize(value)
-        post_fmt = lambda instance, value: ForeignKey.deserialize(value)
-    else:
-        # Typed foreign key — validates model class on serialization
-        def pre_fmt(instance, value):
-            if value is not None and not isinstance(value, target_model):
+    @typing._tp_cache
+    def __class_getitem__(cls, params) -> MiniAnnotated:
+        if not isinstance(params, tuple):
+            params = (params, FKConfig())
+
+        if len(params) == 1:
+            target_model = params[0]
+            config = FKConfig()
+        elif len(params) == 2:
+            target_model, config = params
+            if not isinstance(config, FKConfig):
                 raise TypeError(
-                    f"Expected {target_model.__name__} instance, "
-                    f"got {type(value).__name__}"
+                    f"Second argument must be FKConfig, got {type(config).__name__}"
                 )
-            return ForeignKey.serialize(value)
+        else:
+            raise TypeError(
+                f"ForeignKeyField[...] expects 1 or 2 arguments, got {len(params)}"
+            )
 
-        post_fmt = lambda instance, value: ForeignKey.deserialize(value)
+        validators = []
 
-    if nullable:
-        validators.append(formax_null_validator)
+        if config.on_delete == OnDelete.SET_NULL and not config.nullable:
+            raise ValueError("on_delete=SET_NULL requires nullable=True.")
 
-    return MiniAnnotated[
-        Any,
-        Attrib(
-            pre_formatter=pre_fmt,
-            post_formatter=post_fmt,
-            validators=validators,
-            metadata={
-                "target_model": target_model,
-                "reverse_name": reverse_name,
-                "on_delete": on_delete or OnDelete.PROTECT,
-                "nullable": nullable,
-                "constraint": constraint,
-            },
-        ),
-    ]
+        if isinstance(target_model, str):
+            # try:
+            #     target_model = import_string(target_model)
+            # except ImportError as e:
+            #     import pdb; pdb.set_trace()
+            #     raise ValueError(
+            #         f"Failed to import model class '{target_model}'"
+            #     ) from e
+
+            # create a forward reference
+            target_model = ForwardRef(
+                target_model, module="volnux.models", is_class=True
+            )
+
+        if target_model is None:
+            pre_fmt = lambda instance, value: ForeignKey.serialize(value)
+            post_fmt = lambda instance, value: ForeignKey.deserialize(value)
+        else:
+            # Typed foreign key — validates model class on serialization
+            def pre_fmt(instance, value):
+                nonlocal target_model
+                model_class = target_model
+                if isinstance(model_class, ForwardRef):
+                    model_class = evaluate_forward_ref(target_model, None, None)
+
+                if value is not None and not isinstance(value, model_class):
+                    raise TypeError(
+                        f"Expected {target_model.__name__} instance, "
+                        f"got {type(value).__name__}"
+                    )
+                return ForeignKey.serialize(value)
+
+            post_fmt = lambda instance, value: ForeignKey.deserialize(value)
+
+        if config.nullable:
+            validators.append(formax_null_validator)
+
+        return MiniAnnotated[
+            Any,
+            Attrib(
+                pre_formatter=pre_fmt,
+                post_formatter=post_fmt,
+                validators=validators,
+                metadata={
+                    "type": "foreignkey",
+                    "target_model": target_model,
+                    "reverse_name": config.reverse_name,
+                    "on_delete": config.on_delete or OnDelete.PROTECT,
+                    "nullable": config.nullable,
+                    "constraint": config.constraint,
+                },
+            ),
+        ]

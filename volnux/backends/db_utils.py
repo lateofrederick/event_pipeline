@@ -1,9 +1,10 @@
 import logging
-from typing import Type, TYPE_CHECKING
+from typing import Type, cast, TYPE_CHECKING
 
 from .formax_fk import OnDelete
 
 if TYPE_CHECKING:
+    from .store import YoyoMigrationsMixin
     from volnux.backends.store import KeyValueStoreBackendBase
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
     from volnux.backends.stores.postgres import PostgresStoreBackend
@@ -165,3 +166,43 @@ def _create_native_fk_constraint(
         )
 
     source_backend.connector.execute_query(ddl)
+
+
+def migrate_models(*models: Type["KeyValueStoreIntegrationMixin"]) -> None:
+    """
+    Migrates models to the database by creating the necessary tables and constraints.
+
+    Args:
+        *models: Variable number of KeyValueStoreIntegrationMixin subclasses to migrate.
+
+    Raises:
+        TypeError: If any model is not a subclass of KeyValueStoreIntegrationMixin.
+    """
+
+    # Validate all models before migrating any (fail-fast)
+    for model in models:
+        if not issubclass(model, KeyValueStoreIntegrationMixin):
+            raise TypeError(
+                f"Model {model.__name__} is not a subclass of KeyValueStoreIntegrationMixin"
+            )
+
+    for model in models:
+        try:
+            model_backend = model.get_backend()
+        except Exception as e:
+            logger.error("Failed to get backend for %s: %s", model.__name__, e)
+            continue
+
+        if not hasattr(model_backend, "ensure_schema"):
+            logger.warning(
+                "Backend %s does not support model migration.",
+                model_backend.__class__.__name__,
+            )
+            continue
+
+        num_applied = model_backend.ensure_schema(model.get_schema_name(), model)
+
+        if num_applied > 0:
+            logger.info("Applied %d migrations to %s.", num_applied, model.__name__)
+        else:
+            logger.debug("No migrations to apply for %s.", model.__name__)

@@ -1,7 +1,10 @@
 import logging
 from typing import Any, Dict, List
 
-from .snapshot import InitArgsTemplate
+from volnux.import_utils import import_string as import_class
+from .event_result_serializer import ExecResultSerializer
+from .snapshot import InitArgsTemplate, CallArgsTemplate, ResourceState
+from volnux.parser.options import Options, StopCondition
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +102,7 @@ class StateDeserializer:
 
         Inverse of StateSerializer.serialize_exec_result / _ExecResultSerializer.
         """
-        return _ExecResultSerializer().deserialize_exec_result(result)
+        return ExecResultSerializer().deserialize_exec_result(result)
 
     @classmethod
     def deserialize_external_resources(

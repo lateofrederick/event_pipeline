@@ -18,10 +18,11 @@ from typing import (
     Union,
     get_args,
     TYPE_CHECKING,
+    ForwardRef,
 )
 
 from formax import Attrib
-from formax.typing import get_type_hints
+from formax.typing import get_type_hints, evaluate_forward_ref
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.backends.formax_fk import OnDelete
@@ -42,10 +43,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T", bound="ObjectIdentityMixin")
+T = TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 
 
-def _resolve_foreign_keys_for_class(cls: Type) -> None:
+def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) -> None:
     """
     Scan a class for ForeignKey fields and register backreferences.
 
@@ -65,11 +66,31 @@ def _resolve_foreign_keys_for_class(cls: Type) -> None:
         args = get_args(hint)
         if len(args) != 2:
             continue
-        attrib = args[0]
+
+        has_native_fk = False
+        attrib = args[1]
+
         if isinstance(attrib, Attrib):
             fk_meta = attrib.metadata
             if not fk_meta:
                 break
+
+            target_model: Optional["KeyValueStoreIntegrationMixin"] = fk_meta.get(
+                "target_model"
+            )
+            if not target_model:
+                break
+
+            if isinstance(target_model, ForwardRef):
+                target_model = evaluate_forward_ref(target_model, None, None)
+                fk_meta["target_model"] = target_model
+                attrib.metadata = fk_meta
+
+            if target_model == cls:
+                has_native_fk = True
+                fk_meta["has_native_fk"] = has_native_fk
+
+                attrib.metadata = fk_meta
 
             reverse_name = fk_meta.get("reverse_name")
             if not reverse_name:
@@ -77,11 +98,12 @@ def _resolve_foreign_keys_for_class(cls: Type) -> None:
                 source_name = re.sub(r"(?<!^)(?=[A-Z])", "_", cls.__name__).lower()
                 reverse_name = f"{source_name}_{field_name}"
 
-            fk_meta["target_model"].register_backreference(
+            target_model.register_backreference(
                 field_name=field_name,
                 field_attrib=attrib,
                 referencing_model=cls,
                 reverse_name=reverse_name,
+                has_native_fk=has_native_fk,
             )
             break
 
@@ -805,7 +827,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         backend = cls.get_backend()
         connector = backend.connector
 
-        # Check if backend supports transactions
+        # Check if the backend supports transactions
         if not hasattr(connector, "transaction"):
             logger.warning(
                 f"Backend {backend.__class__.__name__} doesn't support transactions"

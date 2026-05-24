@@ -8,21 +8,35 @@ with support for CRUD operations, filtering, and record management.
 import abc
 import os
 import typing
-import zlib
+import re
 import orjson as json
 import threading
 import logging
+import operator
 from yoyo import read_migrations, get_backend
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Type, Union, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Type,
+    Union,
+    Optional,
+    Tuple,
+    get_args,
+)
 
-from formax import BaseModel
+from formax import Attrib
+from formax.typing import is_mini_annotated
 
 from .connection import BackendConnectorBase
 from volnux.exceptions import SerializationError
 
 if TYPE_CHECKING:
     from .formax_fk import OnDelete
+    from volnux.result.stream import Q
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -31,18 +45,35 @@ logger = logging.getLogger(__name__)
 
 class YoyoMigrationsMixin:
 
+    @staticmethod
+    def decompose_field_type(
+        field_type: Type[Any],
+    ) -> Tuple[Type[Any], Optional[Attrib]]:
+        if is_mini_annotated(field_type):
+            args = get_args(field_type)
+            attrib: Optional[Attrib] = (
+                field_type.__metadata__[0]
+                if hasattr(field_type, "__metadata__")
+                else None
+            )
+            if args:
+                return args[0], attrib
+            else:
+                raise ValueError(f"Invalid field type: {field_type}")
+        return field_type, None
+
     def schema_exists(self, schema_name: str) -> bool:
         raise NotImplementedError
 
     def create_schema(
-        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+        self, schema_name: str, record_class: Type["KeyValueStoreIntegrationMixin"]
     ) -> None:
         raise NotImplementedError
 
     def ensure_schema(
         self,
         schema_name: str,
-        record: "KeyValueStoreIntegrationMixin",
+        record: Type["KeyValueStoreIntegrationMixin"],
         dry_run: bool = False,
     ) -> int:
         """
@@ -66,7 +97,7 @@ class YoyoMigrationsMixin:
             else:
                 self.create_schema(
                     schema_name=schema_name,
-                    record=record,
+                    record_class=record,
                 )
 
         if not hasattr(record, "get_migration_dir"):
@@ -74,7 +105,7 @@ class YoyoMigrationsMixin:
 
         migrations_dir = record.get_migration_dir()
 
-        # check if migrations dir is empty
+        # check if the migrations dir is empty
         if not os.listdir(migrations_dir):
             return 0
 
@@ -298,6 +329,36 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     RESERVED_FIELDS = {"_id", "_backend", "_schema_name"}
 
+    LOOKUP_SEPARATOR = "__"
+
+    LOOKUP_OPERATORS = {
+        "exact": operator.eq,
+        "iexact": lambda a, b: str(a).lower() == str(b).lower(),
+        "contains": lambda a, b: b in str(a) if a is not None else False,
+        "icontains": lambda a, b: (
+            b.lower() in str(a).lower() if a is not None else False
+        ),
+        "in": lambda a, b: a in b,
+        "gt": operator.gt,
+        "gte": operator.ge,
+        "lt": operator.lt,
+        "lte": operator.le,
+        "startswith": lambda a, b: str(a).startswith(b) if a is not None else False,
+        "istartswith": lambda a, b: (
+            str(a).lower().startswith(b.lower()) if a is not None else False
+        ),
+        "endswith": lambda a, b: str(a).endswith(b) if a is not None else False,
+        "iendswith": lambda a, b: (
+            str(a).lower().endswith(b.lower()) if a is not None else False
+        ),
+        "range": lambda a, b: b[0] <= a <= b[1],
+        "isnull": lambda a, b: (a is None) == b,
+        "regex": lambda a, b: bool(re.search(b, str(a))) if a is not None else False,
+        "iregex": lambda a, b: (
+            bool(re.search(b, str(a), re.IGNORECASE)) if a is not None else False
+        ),
+    }
+
     def __init__(
         self, namespace_prefix: typing.Optional[str] = None, **connector_config: Any
     ) -> None:
@@ -319,34 +380,130 @@ class KeyValueStoreBackendBase(abc.ABC):
         finally:
             self._connector_lock.release()
 
-    @staticmethod
-    def _create_filter_predicate(**filter_kwargs: Any) -> Callable[[Any], bool]:
-        """Create a filter predicate function from keyword arguments.
+    @classmethod
+    def _parse_lookup(cls, field_name: str) -> tuple[str, str]:
+        """Parse field name for a lookup type.
 
         Args:
-            **filter_kwargs: Attribute-value pairs to match against records.
+            field_name: Field name potentially containing __lookup suffix.
+
+        Returns:
+            Tuple of (actual_field_name, lookup_type).
+        """
+        parts = field_name.rsplit(cls.LOOKUP_SEPARATOR, 1)
+        if len(parts) == 2 and parts[1] in cls.LOOKUP_OPERATORS:
+            return parts[0], parts[1]
+        return field_name, "exact"
+
+    @classmethod
+    def _create_filter_predicate(cls, **filter_kwargs: Any) -> Callable[[Any], bool]:
+        """Create a filter predicate function from keyword arguments.
+
+        Supports Django-style field lookups like:
+        - age__gt=25
+        - name__contains="John"
+        - email__icontains="gmail"
+        - status__in=["active", "pending"]
+        - created_at__gte=datetime(2023, 1, 1)
+
+        Args:
+            **filter_kwargs: Attribute-lookup-value pairs to match against records.
 
         Returns:
             A predicate function that returns True if a record matches all criteria.
+        """
+        predicates = []
 
-        Example:
-            >>> predicate = _create_filter_predicate(status="active", age=25)
-            >>> predicate(record)  # Returns True if record.status == "active" and record.age == 25
+        for field_spec, value in filter_kwargs.items():
+            field_name, lookup_type = cls._parse_lookup(field_spec)
+            operator_func = cls.LOOKUP_OPERATORS[lookup_type]
+
+            def make_predicate(field, op, val):
+                def predicate(record: Any) -> bool:
+                    try:
+                        # Handle nested attributes
+                        if "__" in field:
+                            record_value = record
+                            for part in field.split("__"):
+                                record_value = getattr(record_value, part, None)
+                                if record_value is None:
+                                    break
+                        else:
+                            record_value = getattr(record, field, None)
+
+                        return op(record_value, val)
+                    except (AttributeError, TypeError, ValueError):
+                        return False
+
+                return predicate
+
+            predicates.append(make_predicate(field_name, operator_func, value))
+
+        # Combine all predicates with AND
+        def combined_predicate(record: Any) -> bool:
+            return all(predicate(record) for predicate in predicates)
+
+        return combined_predicate
+
+    @classmethod
+    def _create_complex_filter(
+        cls, q_objects: typing.List["Q"], default_connector: str = "AND"
+    ) -> Callable[[Any], bool]:
+        """Create a filter predicate from Q objects for complex queries.
+
+        Args:
+            q_objects: List of Q objects defining the filter logic.
+            default_connector: Default logical connector ('AND' or 'OR').
+
+        Returns:
+            A predicate function that evaluates the Q object tree.
         """
 
-        def predicate(record: Any) -> bool:
-            return all(
-                hasattr(record, key) and getattr(record, key) == value
-                for key, value in filter_kwargs.items()
-            )
+        from volnux.result.stream import Q
 
-        return predicate
+        def evaluate_q(q, record):
+            if q.negated:
+                return not evaluate_q_children(q, record)
+            return evaluate_q_children(q, record)
+
+        def evaluate_q_children(q, record):
+            if q.connector == "AND":
+                return all(evaluate_child(child, record) for child in q.children)
+            else:
+                return any(evaluate_child(child, record) for child in q.children)
+
+        def evaluate_child(child, record):
+            if isinstance(child, Q):
+                return evaluate_q(child, record)
+            else:
+                # It's a (field_lookup, value) tuple
+                field_spec, value = child
+                field_name, lookup_type = cls._parse_lookup(field_spec)
+                operator_func = cls.LOOKUP_OPERATORS.get(lookup_type, operator.eq)
+
+                try:
+                    record_value = getattr(record, field_name, None)
+                    return operator_func(record_value, value)
+                except (AttributeError, TypeError, ValueError):
+                    return False
+
+        # Create root Q if multiple objects
+        if len(q_objects) == 1:
+            root_q = q_objects[0]
+        else:
+            root_q = Q(*q_objects, _connector=default_connector)
+
+        return lambda record: evaluate_q(root_q, record)
 
     def close(self) -> None:
         """Close the backend connection and release resources."""
         with self._acquire_lock():
             if hasattr(self, "connector") and self.connector is not None:
                 self.connector.disconnect()
+
+    def __eq__(self, other: "KeyValueStoreBackendBase"):
+        """Equality check for backend instances."""
+        return isinstance(other, self.__class__) and self.connector == other.connector
 
     def __enter__(self) -> "KeyValueStoreBackendBase":
         """Context manager entry."""
@@ -485,6 +642,10 @@ class KeyValueStoreBackendBase(abc.ABC):
         """
         return False
 
+    def execute_query(self, query: str, *args, **kwargs) -> Any:
+        """Execute a query against the backend."""
+        raise NotImplementedError("Backend does not support execute_query.")
+
     @abc.abstractmethod
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
@@ -603,6 +764,9 @@ class KeyValueStoreBackendBase(abc.ABC):
         self,
         schema_name: str,
         record_klass: Type["KeyValueStoreIntegrationMixin"],
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
         **filter_kwargs: Any,
     ) -> Iterable["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
@@ -610,6 +774,9 @@ class KeyValueStoreBackendBase(abc.ABC):
         Args:
             schema_name: The schema/namespace to filter within.
             record_klass: The class to instantiate records with.
+            limit: Maximum number of records to return (default: None, no limit).
+            offset: Number of records to skip (default: None, no offset).
+            order_by: Attribute to order results by (default: None, no order).
             **filter_kwargs: Attribute-value pairs to filter by.
 
         Returns:

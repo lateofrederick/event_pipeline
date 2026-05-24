@@ -2,7 +2,6 @@ import functools
 import logging
 import inspect
 
-
 from volnux.execution.rehydrator.event.snapshot import EventPhase
 
 

@@ -301,6 +301,12 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
             "connector_type": self.__class__.__name__,
         }
 
+    def __eq__(self, other: "BackendConnectorBase") -> bool:
+        """Equality check for connectors based on configuration."""
+        if not isinstance(other, BackendConnectorBase):
+            return False
+        return self.config == other.config
+
     def __enter__(self) -> "BackendConnectorBase":
         """Context manager entry: establish connection.
 
@@ -321,7 +327,7 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
         self.disconnect()
 
     def __del__(self) -> None:
-        """Destructor: ensure connection is closed."""
+        """Destructor: ensure the connection is closed."""
         try:
             if self._is_connected:
                 self.disconnect()

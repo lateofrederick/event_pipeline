@@ -401,6 +401,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_klass: Type["KeyValueStoreIntegrationMixin"],
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
         **filter_kwargs: Any,
     ) -> List["KeyValueStoreIntegrationMixin"]:
         """Filter records matching the specified criteria.
@@ -411,6 +414,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         Args:
             schema_name: The schema to filter within.
             record_klass: The class to instantiate records with.
+            limit: Maximum number of records to return.
+            offset: Number of records to skip.
+            order_by: Attribute to order results by.
             **filter_kwargs: Attribute-value pairs to filter by.
 
         Returns:

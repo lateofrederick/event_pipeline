@@ -3,14 +3,22 @@ import threading
 import typing
 
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.backends.connection import BackendConnectorBase
+from volnux.backends.connection import BackendConnectorBase, ConnectionConfig
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError
 
 
 class DummyConnector(BackendConnectorBase):
 
     def __init__(self, **_: typing.Any):
-        pass
+        self.config = ConnectionConfig(
+            host="",
+            port=0,
+            username="",
+            password="",
+            database="inmemory",
+            timeout=0,
+            extra_params={},
+        )
 
     def connect(self) -> None:
         pass
@@ -127,6 +135,9 @@ class InMemoryKeyValueStoreBackend(KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_klass: typing.Type[typing.Any],
+        limit: typing.Optional[int] = None,
+        offset: typing.Optional[int] = None,
+        order_by: typing.Optional[str] = None,
         **filter_kwargs: typing.Any,
     ) -> typing.Iterable[typing.Any]:
         del record_klass
