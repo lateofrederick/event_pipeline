@@ -685,6 +685,9 @@ class EventBase(
                 except asyncio.CancelledError:
                     pass
 
+            if self._resource_monitor.is_started():
+                await self._resource_monitor.stop()
+
         if self._phase != EventPhase.COMPLETED:
             try:
                 await self._completed(*args, **kwargs)
@@ -692,6 +695,10 @@ class EventBase(
                 logger.exception(e)
 
         if result is None:
-            raise ValueError("Event cannot return no result")
+            raise ValueError("Event cannot return no result.")
 
         return result
+
+    def __del__(self) -> None:
+        if self._resource_monitor.is_started():
+            asyncio.run(self._resource_monitor.stop())

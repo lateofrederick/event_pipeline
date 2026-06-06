@@ -31,6 +31,7 @@ logger = logging.getLogger("volnux.backends.postgres")
 
 
 if TYPE_CHECKING:
+    from volnux.result.stream import ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 T = TypeVar("T", bound="KeyValueStoreIntegrationMixin")
@@ -85,7 +86,7 @@ class PostgresStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
     }
 
     def __init__(self, **connector_config: Any) -> None:
-        """Initialize the PostgreSQL store backend.
+        """Initialize the PostgresSQL store backend.
 
         Args:
             **connector_config: Configuration passed to PostgresConnector.
@@ -95,7 +96,7 @@ class PostgresStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         """
         super().__init__(**connector_config)
 
-        # Ensure connection is established
+        # Ensure a connection is established
         if not self.connector.is_connected():
             self.connector.connect()
 
@@ -989,7 +990,7 @@ class PostgresStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
         **filter_kwargs: Any,
-    ) -> List["KeyValueStoreIntegrationMixin"]:
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         """Filter records matching the specified criteria.
 
         Results are deserialized from the _record_state JSONB column.
@@ -1018,7 +1019,7 @@ class PostgresStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         try:
             where_clause, parameters = self._build_sql_filter(filter_kwargs)
 
-            query = f"SELECT _record_state FROM {schema_name} WHERE {where_clause}"
+            query = f"SELECT id FROM {schema_name} WHERE {where_clause}"
 
             if order_by:
                 if order_by.startswith("-"):
@@ -1037,21 +1038,24 @@ class PostgresStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
                 cursor.execute(query, parameters)
                 rows = cursor.fetchall()
 
-            results = []
-            for row in rows:
-                try:
-                    record = self._deserialize_record(row[0], record_klass)
-                    results.append(record)
-                except SerializationError as e:
-                    logger.warning(
-                        "Skipping corrupted record in '%s': %s", schema_name, e
-                    )
-                    continue
-
-            logger.debug(
-                "Filtered %d records from schema '%s'", len(results), schema_name
+            # results = []
+            # for row in rows:
+            #     try:
+            #         record = self._deserialize_record(row[0], record_klass)
+            #         results.append(record)
+            #     except SerializationError as e:
+            #         logger.warning(
+            #             "Skipping corrupted record in '%s': %s", schema_name, e
+            #         )
+            #         continue
+            #
+            # logger.debug(
+            #     "Filtered %d records from schema '%s'", len(results), schema_name
+            # )
+            # return results
+            return self._create_result_stream(
+                record_keys=[row[0] for row in rows], record_klass=record_klass
             )
-            return results
 
         except ObjectDoesNotExist:
             raise

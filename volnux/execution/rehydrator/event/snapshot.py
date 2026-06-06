@@ -94,7 +94,7 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:
         return {
-            "ENGINE": "volnux.backends.stores.redis_store.RedisStoreBackend",
+            "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",
             "CONNECTOR_CONFIG": {
                 "host": "localhost",
                 "port": 6379,

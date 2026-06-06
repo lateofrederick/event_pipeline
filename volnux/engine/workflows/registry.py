@@ -44,7 +44,7 @@ class WorkflowRegistry:
         self._loading = False
 
         # Cache directory for remote workflows
-        self._cache_dir = cache_dir or Path.home() / ".workflow_cache"
+        self._cache_dir = cache_dir or Path.home() / ".volnux" / "workflow_cache"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     @property

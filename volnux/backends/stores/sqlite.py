@@ -31,6 +31,7 @@ from volnux.exceptions import (
 
 if TYPE_CHECKING:
     from ..formax_fk import OnDelete
+    from volnux.result.stream import ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -859,12 +860,12 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
     def filter(
         self,
         schema_name: str,
-        record_klass: Type[BaseModel],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
         **filter_kwargs: Any,
-    ) -> List[BaseModel]:
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         """Filter records matching the specified criteria.
 
         Args:
@@ -881,7 +882,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         Raises:
             ObjectDoesNotExist: If schema doesn't exist.
             SerializationError: If deserialization fails.
-            SqlOperationError: If query fails.
+            SqlOperationError: If a query fails.
         """
         self._ensure_connected()
 
@@ -891,7 +892,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         try:
 
             where_clause, parameters = self._build_sql_filter(filter_kwargs)
-            query = f"SELECT _record_state FROM {schema_name}"
+            query = f"SELECT id FROM {schema_name}"
 
             if where_clause != "1":
                 query += f" WHERE {where_clause}"
@@ -912,17 +913,21 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             rows = cursor.fetchall()
             cursor.close()
 
-            results = []
-            for row in rows:
-                try:
-                    record = self._deserialize_record(row[0], record_klass)
-                    results.append(record)
-                except SerializationError as e:
-                    logger.warning(f"Skipping corrupted record in '{schema_name}': {e}")
-                    continue
+            # results = []
+            # for row in rows:
+            #     try:
+            #         record = self._deserialize_record(row[0], record_klass)
+            #         results.append(record)
+            #     except SerializationError as e:
+            #         logger.warning(f"Skipping corrupted record in '{schema_name}': {e}")
+            #         continue
+            #
+            # logger.debug(f"Filtered {len(results)} records from schema '{schema_name}'")
+            # return results
 
-            logger.debug(f"Filtered {len(results)} records from schema '{schema_name}'")
-            return results
+            return self._create_result_stream(
+                record_keys=[row[0] for row in rows], record_klass=record_klass
+            )
 
         except ObjectDoesNotExist:
             raise
@@ -966,30 +971,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         except sqlite3.Error as e:
             logger.error(f"Error counting records: {e}")
             raise SqlOperationError(f"Error counting records: {e}")
-
-    @staticmethod
-    def load_record(
-        record_state: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]
-    ) -> "KeyValueStoreIntegrationMixin":
-        """Load a record from its serialized state.
-
-        Args:
-            record_state: The serialized record data.
-            record_klass: The class to instantiate the record with.
-
-        Returns:
-            The instantiated record object.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            state = json.loads(record_state)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except Exception as e:
-            raise SerializationError(f"Failed to load record: {e}")
 
     def reload(
         self, schema_name: str, record: "KeyValueStoreIntegrationMixin"

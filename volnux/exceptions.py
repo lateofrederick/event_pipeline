@@ -315,3 +315,38 @@ class HallucinationDetected(RuntimeError):
     Raised when domain-specific validation rejects the LLM response.
     Subclasses override ``detect_hallucination()`` with domain rules.
     """
+
+
+# Sage errors
+class SagaCompensationError(Exception):
+    """One or more compensation steps failed after a saga step failure.
+
+    This indicates the system may be in a partially inconsistent state
+    and likely requires manual intervention.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        original_error: Exception,
+        compensation_errors: List[tuple[int, Exception]],
+    ):
+        super().__init__(message)
+        self.original_error = original_error
+        # List of (step_index, exception) for each failed compensation.
+        self.compensation_errors = compensation_errors
+
+
+class SagaError(Exception):
+    """A saga step failed; all completed steps were successfully compensated."""
+
+    def __init__(self, message: str, original_error: Exception):
+        super().__init__(message)
+        self.original_error = original_error
+
+
+# Command line errors
+class CommandError(Exception):
+    """Exception raised for command errors."""
+
+    pass

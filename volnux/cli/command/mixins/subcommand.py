@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import typing
 
-from volnux.cli.command.base import CommandError
+from volnux.exceptions import CommandError
 
 if typing.TYPE_CHECKING:
     from volnux.cli.command.base import SubCommand

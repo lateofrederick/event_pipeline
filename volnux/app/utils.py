@@ -2,7 +2,7 @@ import jwt
 import logging
 import dataclasses
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Union
 from fastapi.security import HTTPBearer
 from fastapi import HTTPException, Depends, Header
 from fastapi.security import HTTPAuthorizationCredentials
@@ -22,6 +22,15 @@ JWT_EXPIRATION_HOURS = 24
 security = HTTPBearer()
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class RequestContext:
+    user: User
+    organization: Organization
+    roles: List[str]
+    client_type: Union[ClientType, str]
+    client_id: Optional[str] = None
 
 
 def create_jwt_token(user_id: str, org_id: str, roles: List[str]) -> str:
@@ -51,7 +60,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     x_client_type: Optional[str] = Header(None, alias="X-Client-Type"),
     x_client_id: Optional[str] = Header(None, alias="X-Client-ID"),
-) -> dict:
+) -> RequestContext:
     """Authenticate the current user from JWT token and validate client type.
 
     Args:
@@ -63,7 +72,7 @@ async def get_current_user(
         Dict with user_id, organization_id, roles, client_type, client_id.
 
     Raises:
-        401: If token is invalid or client type is not registered.
+        401: If token is invalid or a client type is not registered.
     """
     payload = decode_jwt_token(credentials.credentials)
 
@@ -91,13 +100,13 @@ async def get_current_user(
     except ObjectDoesNotExist:
         raise HTTPException(status_code=401, detail="User no longer exists")
 
-    return {
-        "user_id": payload["sub"],
-        "organization_id": payload["org"],
-        "roles": payload["roles"],
-        "client_type": client_type,
-        "client_id": x_client_id,
-    }
+    return RequestContext(
+        user=user,
+        organization=Organization.get(payload["org"]),
+        roles=payload["roles"],
+        client_type=client_type,
+        client_id=x_client_id,
+    )
 
 
 def require_permission(permission: Permission):
@@ -163,7 +172,7 @@ def require_role(role_name: str):
     return check_role
 
 
-def _audit_log(
+def audit_log(
     organization: Organization,
     event_type: AuditEventType,
     actor: User,

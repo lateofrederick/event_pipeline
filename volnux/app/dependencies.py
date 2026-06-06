@@ -1,4 +1,5 @@
 import jwt
+from typing import Union, TypedDict
 from fastapi import Depends, Query
 
 from .utils import get_current_user
@@ -16,7 +17,7 @@ def Pagination(
     return {"page": page, "page_size": page_size}
 
 
-def _serialize_model(model) -> dict:
+def _serialize_model(model) -> Union[dict, list, TypedDict]:
     """Serialize a model instance, excluding internal fields."""
     state = model.__getstate__()
     # Remove internal persistence fields from API responses

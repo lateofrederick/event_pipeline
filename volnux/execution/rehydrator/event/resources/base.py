@@ -21,7 +21,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Type variable for the resource type
 TResource = TypeVar("TResource")
 
 
@@ -30,9 +29,9 @@ class ResourceProvider(abc.ABC, Generic[TResource]):
     Abstract base class for resource providers in the checkpointing system.
 
     A resource provider is responsible for:
-    1. Serializing resource state during checkpointing
-    2. Restoring resources from the serialized state during resumption
-    3. (Optional) Cleaning up resources when no longer needed
+    - Serializing the resource state during checkpointing
+    - Restoring resources from the serialized state during resumption
+    - (Optional) Cleaning up resources when no longer needed
 
     Type Parameters:
         TResource: The type of resource this provider handles

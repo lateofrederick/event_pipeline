@@ -9,6 +9,7 @@ from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
 
 if TYPE_CHECKING:
+    from volnux.result.stream import ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -240,7 +241,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
         **filter_kwargs: Any,
-    ) -> List["KeyValueStoreIntegrationMixin"]:
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         """Filter records matching the specified criteria.
 
         Args:
@@ -261,7 +262,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             self._ensure_connected()
 
             predicate = self._create_filter_predicate(**filter_kwargs)
-            matching_records: List["KeyValueStoreIntegrationMixin"] = []
+            matching_records: List[str] = []
 
             # Use HSCAN for efficient iteration over large datasets
             cursor = 0
@@ -274,7 +275,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
                     try:
                         record = self._deserialize_record(value, record_klass)
                         if predicate(record):
-                            matching_records.append(record)
+                            matching_records.append(record.id)
                     except SerializationError as e:
                         logger.warning(
                             f"Skipping corrupted record '{key}' in schema '{schema_name}': {e}"
@@ -287,7 +288,11 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
             logger.debug(
                 f"Filtered {len(matching_records)} records from schema '{schema_name}'"
             )
-            return matching_records
+            qs = self._create_result_stream(
+                record_keys=matching_records, record_klass=record_klass
+            )
+            qs._predicates.append(predicate)
+            return qs
         except RedisError as e:
             logger.error(f"Redis error during filter: {e}")
             raise ConnectionError(f"Failed to filter records: {e}")
@@ -318,7 +323,7 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
                 return self.connector.cursor.hlen(schema_name)
 
             matching_records = self.filter(schema_name, record_klass, **filter_kwargs)
-            return len(matching_records)
+            return matching_records.count()
         except RedisError as e:
             logger.error(f"Redis error during count: {e}")
             raise ConnectionError(f"Failed to count records: {e}")

@@ -7,7 +7,20 @@ from collections import defaultdict
 
 from .protocol import Monitorable, Snapshot
 
+if typing.TYPE_CHECKING:
+    from ..resilience.protocols import TaskInfo
+
 logger = logging.getLogger(__name__)
+
+
+class PeekableQueue(asyncio.Queue):
+    """A queue that supports peeking at the front element."""
+
+    async def peek(self) -> typing.Optional[typing.Any]:
+        """Peek at the front element of the queue without removing it."""
+        if self.empty():
+            return None
+        return self._queue[0]
 
 
 class VolnuxCheckPointManager:
@@ -46,7 +59,7 @@ class VolnuxCheckPointManager:
 
         # Push Queue
         maxsize = max_queue_size if max_queue_size > 0 else 0
-        self._queue: asyncio.Queue[Snapshot] = asyncio.Queue(maxsize=maxsize)
+        self._queue: PeekableQueue[Snapshot] = PeekableQueue(maxsize=maxsize)
 
         # Monitored Set: For periodic snapshotting
         self._monitored_contexts: weakref.WeakSet[Monitorable] = weakref.WeakSet()
@@ -159,13 +172,38 @@ class VolnuxCheckPointManager:
                         self.unmonitor(context)
                         self._context_error_counts.pop(context_id, None)
 
+    async def get_latest_snapshot(self) -> typing.Optional[Snapshot]:
+        """
+        Get the latest snapshot from the queue, skipping duplicates.
+
+        Returns:
+            Snapshot: The latest snapshot is available, or None if the queue is empty.
+        """
+        if self._queue.empty():
+            return None
+
+        latest = await self._queue.get()
+        self._queue.task_done()
+
+        while not self._queue.empty():
+            next_snapshot = await self._queue.peek()
+
+            if next_snapshot.id == latest.id:
+                latest = await self._queue.get()
+                self._queue.task_done()
+            else:
+                break
+
+        return latest
+
     async def _persistence_loop(self):
         """The single consumer for all persistence requests."""
         while self._running:
-            snapshot = await self._queue.get()
+            snapshot = await self.get_latest_snapshot()
+            if snapshot is None:
+                continue
             async with self._semaphore:
                 await self._persist_with_retry(snapshot)
-            self._queue.task_done()
 
     async def _persist_with_retry(self, snapshot: Snapshot):
         """Implements your original retry logic with backoff."""
@@ -182,8 +220,6 @@ class VolnuxCheckPointManager:
                 base_delay = self.retry_delay * (2 ** (attempt - 1))
                 jitter = random.uniform(0, base_delay * 0.1)  # 10% jitter
                 delay = min(base_delay + jitter, 30.0)  # Cap at 30 seconds
-
-                # delay = self.retry_delay * attempt
 
                 logger.warning(
                     f"Persist failed for {snapshot.id} (attempt {attempt}/{self.retry_attempts}): {e}"

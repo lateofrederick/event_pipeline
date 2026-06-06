@@ -10,6 +10,7 @@ from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
 
 if TYPE_CHECKING:
+    from volnux.result.stream import ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -405,7 +406,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
         **filter_kwargs: Any,
-    ) -> List["KeyValueStoreIntegrationMixin"]:
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         """Filter records matching the specified criteria.
 
         Note: Filtering in Memcache requires fetching all records in the schema
@@ -430,7 +431,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
                 "Indexing is disabled; filtering may be incomplete. "
                 "Enable indexing for accurate results."
             )
-            return []
+            return self._create_result_stream(record_keys=[], record_klass=record_klass)
 
         try:
             self._ensure_connected()
@@ -439,7 +440,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             index = self._get_schema_index(schema_name)
 
             if not index:
-                return []
+                return self._create_result_stream(
+                    record_keys=[], record_klass=record_klass
+                )
 
             # Build full keys
             full_keys = [self._build_key(schema_name, key) for key in index]
@@ -459,9 +462,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
                 try:
                     record = self._deserialize_record(serialized, record_klass)
                     if predicate(record):
-                        matching_records.append(record)
+                        matching_records.append(record.id)
                 except SerializationError as e:
-                    # Extract original key from full key
+                    # Extract original key from a full key
                     original_key = full_key.decode().split(self.NAMESPACE_SEPARATOR)[-1]
                     logger.warning(
                         f"Skipping corrupted record '{original_key}' in schema '{schema_name}': {e}"
@@ -471,17 +474,25 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             logger.debug(
                 f"Filtered {len(matching_records)} records from schema '{schema_name}'"
             )
-            return matching_records
+            return self._create_result_stream(
+                record_keys=matching_records, record_klass=record_klass
+            )
 
         except MemcacheError as e:
             logger.error(f"Memcache error during filter: {e}")
             raise ConnectionError(f"Failed to filter records: {e}")
 
-    def count(self, schema_name: str, **filter_kwargs: Any) -> int:
+    def count(
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
+    ) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:
             schema_name: The schema to count within.
+            record_klass: The record class to count instances of.
             **filter_kwargs: Optional attribute-value pairs to filter by.
 
         Returns:
@@ -491,7 +502,7 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
             ConnectionError: If Memcache operation fails.
         """
         if not filter_kwargs:
-            # Fast path: just count index entries
+            # just count index entries
             if self.enable_indexing:
                 index = self._get_schema_index(schema_name)
                 return len(index)
@@ -499,31 +510,9 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
                 logger.warning("Indexing disabled; cannot count without filtering")
                 return 0
 
-        # Slow path: filter and count
-        matching_records = self.filter(schema_name, BaseModel, **filter_kwargs)
-        return len(matching_records)
-
-    # @staticmethod
-    # def load_record(record_state: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]) -> "KeyValueStoreIntegrationMixin":
-    #     """Load a record from its serialized state.
-    #
-    #     Args:
-    #         record_state: The serialized record data.
-    #         record_klass: The class to instantiate the record with.
-    #
-    #     Returns:
-    #         The instantiated record object.
-    #
-    #     Raises:
-    #         SerializationError: If deserialization fails.
-    #     """
-    #     try:
-    #         state = json.loads(record_state)
-    #         record = record_klass.__new__(record_klass)
-    #         record.__setstate__(state)
-    #         return record
-    #     except Exception as e:
-    #         raise SerializationError(f"Failed to load record: {e}")
+        # filter and count
+        matching_records = self.filter(schema_name, record_klass, **filter_kwargs)
+        return matching_records.count()
 
     def reload(
         self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
@@ -688,17 +677,3 @@ class MemcacheStoreBackend(KeyValueStoreBackendBase):
         except MemcacheError as e:
             logger.error(f"Memcache error during clear schema: {e}")
             raise ConnectionError(f"Failed to clear schema: {e}")
-
-    def list_all(
-        self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"]
-    ) -> List["KeyValueStoreIntegrationMixin"]:
-        """List all records in a schema.
-
-        Args:
-            schema_name: The schema to list from.
-            record_klass: The class to instantiate records with.
-
-        Returns:
-            List of all records in the schema.
-        """
-        return self.filter(schema_name, record_klass)

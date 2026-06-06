@@ -7,17 +7,13 @@ from typing import Optional
 
 from volnux import __version__ as version
 
-from ..base import BaseCommand, CommandCategory, CommandError
+from ..base import BaseCommand, CommandCategory
+from volnux.exceptions import CommandError
 
 
 class InitProjectCommand(BaseCommand):
     """
     Scaffold a new Volnux project in the given directory.
-
-    This class creates a predefined project structure for a Volnux application
-    and initializes essential files, including configuration and workflow
-    initializer files. It allows specifying a custom directory, overwriting an
-    existing directory, and enforces project naming conventions.
 
     :ivar help: Help message describing the command functionality.
     :type help: str

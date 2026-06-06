@@ -10,27 +10,30 @@ from volnux.task import PipelineTask
 from volnux.parser.options import Options
 from ..base import EventBase, EventType
 from volnux.constants import EMPTY
-from volnux.result import EventResult, ResultSet
-from volnux.signal.handlers.event_initialiser import ExtraEventInitKwargs
+from volnux.result import EventResult, ResultStream
+from volnux.signal.handlers.event_initialiser import EventInitKwargs
 from volnux.exceptions import (
     MetaEventConfigurationError,
     MetaEventExecutionError,
     NestedMetaEventError,
     StopProcessingError,
 )
-from volnux.default_batch_processors import batched
 from volnux.flows.meta import MetaFlow
 from volnux.execution.result import ResultProcessor
 from volnux.result_evaluators import ResultEvaluationStrategies
-from volnux.utils import resolve_event_str_to_class
+from volnux.event.utils import resolve_event_ref_to_class
 
 
 logger = logging.getLogger(__name__)
 
-AttributesKwargs: TypeAlias = ExtraEventInitKwargs
+AttributesKwargs: TypeAlias = EventInitKwargs
 
 
 class MetaAttributes(typing.TypedDict, total=False):
+    """
+    Typed dictionary for meta-attributes configuration.
+    """
+
     collection: typing.List[typing.Any]
     keep_on_error: bool
     max_workers: int
@@ -45,6 +48,7 @@ class MetaAttributes(typing.TypedDict, total=False):
     concurrency_mode: typing.Literal["thread", "process"]
     timeout: typing.Optional[float]
     partial_success: bool
+
     # filter
     invert: bool
 
@@ -78,7 +82,7 @@ def validate_meta_event(
         NestedMetaEventError: If template is a meta event
         ValueError: If template event doesn't exist
     """
-    resolved_event_class = resolve_event_str_to_class(nested_event_class)
+    resolved_event_class = resolve_event_ref_to_class(nested_event_class)
 
     if is_control_flow_event(resolved_event_class):
         raise NestedMetaEventError(
@@ -92,7 +96,7 @@ def validate_meta_event(
 @dataclass
 class TaskDefinition:
     template_class: typing.Type[EventBase]
-    input_data: typing.Union[ResultSet[EventResult], EventResult]
+    input_data: typing.Union[ResultStream[EventResult], EventResult]
     order: int
     task_id: str
     options: typing.Optional[Options] = None
@@ -133,9 +137,7 @@ class ControlFlowEvent(EventBase):
             "type": str,
             "default": "thread",
             "description": "The parallel execution mode",
-            "validators": [
-                lambda x: isinstance(x, str) and x.lower() in ["thread", "process"]
-            ],
+            "choices": ["thread", "process"],
         },
         "max_workers": {
             "type": int,
@@ -152,7 +154,7 @@ class ControlFlowEvent(EventBase):
 
     event_type = EventType.META
 
-    INIT_PARAMS_SCHEMA: typing.Dict[str, ExtraEventInitKwargs] = {
+    INIT_PARAMS_SCHEMA: typing.Dict[str, EventInitKwargs] = {
         "template_class": {
             "type": EventBase,
             "required": True,
@@ -174,6 +176,7 @@ class ControlFlowEvent(EventBase):
             is_required = config.get("required", False)
             data_type = config.get("type", object)
             default_value = config.get("default", EMPTY)
+            choice_values = config.get("choices", EMPTY)
             validators: typing.List[typing.Callable[[typing.Any], bool]] = config.get(
                 "validators", []
             )
@@ -193,6 +196,12 @@ class ControlFlowEvent(EventBase):
                 raise TypeError(
                     f"Event '{self.__class__.__name__}' requires type '{data_type}' for '{param_name}', "
                     f"but received type '{type(value_to_set)}' (value: {value_to_set})."
+                )
+
+            if choice_values != EMPTY and value_to_set not in choice_values:
+                raise TypeError(
+                    f"Invalid value '{value_to_set}' for '{param_name}' in event '{self.__class__.__name__}'. "
+                    f"Allowed values: {choice_values}"
                 )
 
             for validator in validators:
@@ -225,11 +234,13 @@ class ControlFlowEvent(EventBase):
         try:
             if isinstance(template_class, str):
                 setattr(
-                    self, "template_class", resolve_event_str_to_class(template_class)
+                    self, "template_class", resolve_event_ref_to_class(template_class)
                 )
         except ValueError as e:
             logger.error(f"Failed to resolve template class '{template_class}': {e}")
-            raise StopProcessingError(str(e))
+            raise StopProcessingError(
+                f"Event '{template_class}' resolution failed"
+            ) from e
 
         try:
             attributes = self._validate_attributes()
@@ -240,16 +251,19 @@ class ControlFlowEvent(EventBase):
                 collection_data=attributes.get("collection")
             )
 
-            task_definitions = self.action(input_data)
-
-            if not task_definitions:
+            if not input_data.has_results():
                 # Empty input handled by subclass
                 return True, self._handle_empty_input(input_data)
 
-            pipeline_tasks = self._create_pipeline_tasks(task_definitions)
+            pipeline_tasks = deque(
+                [
+                    self._create_pipeline_task(task_def)
+                    async for task_def in self.action(input_data)
+                ]
+            )
 
             flow = MetaFlow(
-                task_profiles=deque(pipeline_tasks),
+                task_profiles=pipeline_tasks,
                 context=self._execution_context,
                 attributes=attributes,
             )
@@ -276,7 +290,9 @@ class ControlFlowEvent(EventBase):
             logger.error(f"{self.name} execution failed: {e}", exc_info=True)
             raise MetaEventExecutionError(f"{self.name} failed: {e}") from e
 
-    def action(self, input_data: ResultSet) -> typing.List[TaskDefinition]:
+    async def action(
+        self, input_data: ResultStream[EventResult]
+    ) -> typing.AsyncGenerator[TaskDefinition, None]:
         """
         Generate task definitions for Meta operation.
 
@@ -287,44 +303,39 @@ class ControlFlowEvent(EventBase):
             input_data: Collection of items to map over
 
         Returns:
-            List of TaskDefinition objects, one per item/batch
+            Async generator of TaskDefinition objects, one per item/batch
 
         Note:
             Task order is preserved to maintain result ordering
         """
         attributes: MetaAttributes = self.options.extras
         batch_size: int = attributes.get("batch_size", 0)
-        task_defs = []
+
+        shard_index = 0
 
         # Generate tasks from batched or individual items
-        for index, batch in enumerate(self.batch_input_data(input_data, batch_size)):
-            task_def = TaskDefinition(
+        async for shard in self.batch_input_data(input_data, batch_size):
+            shard_index += 1
+
+            yield TaskDefinition(
                 template_class=self.get_template_class(),
-                input_data=batch,
-                order=index,
-                task_id=self._generate_task_id(index),
+                input_data=shard,
+                order=shard_index,
+                task_id=self._generate_task_id(shard_index),
                 options=self.options,
             )
-            task_defs.append(task_def)
-
-        logger.debug(
-            f"{self.name}: Created {len(task_defs)} tasks "
-            f"from {len(input_data)} items (batch_size={batch_size})"
-        )
-
-        return task_defs
 
     @abstractmethod
     def aggregate_results(
-        self, results: ResultSet[EventResult], original_input: typing.Any
+        self, results: ResultStream[EventResult], original_input: typing.Any
     ) -> typing.Any:
         """
-        Aggregate individual task results into final output.
+        Aggregate individual task results into a final output.
 
         Each subclass implements its own aggregation strategy.
 
         Args:
-            results: List of EventResult from task execution
+            results: Stream of EventResult from task execution
             original_input: The original input data
 
         Returns:
@@ -336,13 +347,13 @@ class ControlFlowEvent(EventBase):
 
     def _extract_input_data(
         self, collection_data: typing.Optional[typing.List[typing.Any]] = None
-    ) -> ResultSet:
+    ) -> ResultStream[EventResult]:
         """
         Extract input data from previous_result and collection from a pointy script
         Args:
             collection_data: Optional collection data from options
         Returns:
-            ResultSet: Set of results to process
+            ResultStream: Stream of results to process
         Raises:
             MetaEventExecutionError: if both previous_result and collection are empty
             TypeError: if collection data contains unhashable type
@@ -353,7 +364,16 @@ class ControlFlowEvent(EventBase):
             )
 
         if self.previous_result == EMPTY:
-            self.previous_result = ResultSet()
+            self.previous_result = ResultStream._make(
+                model_klass=EventResult,
+                keys=[],
+                predicates=[],
+                q_predicates=[],
+                chunk_size=1000,
+                transaction_id=f"meta-{self.id}",
+                persisted_backend=EventResult.get_backend(),
+                memory_backend=None,
+            )
 
         if collection_data:
             for content in collection_data:
@@ -365,35 +385,37 @@ class ControlFlowEvent(EventBase):
                     )
                 self.previous_result.add(content)
 
-        if self.previous_result.is_empty():
+        if self.previous_result.has_results():
             raise MetaEventExecutionError(f"{self.name} received empty result set")
 
         return self.previous_result
 
     @staticmethod
-    def batch_input_data(
-        input_data: ResultSet, batch_size: int
-    ) -> typing.Generator[ResultSet, None, None]:
+    async def batch_input_data(
+        input_data: ResultStream[EventResult], batch_size: int
+    ) -> typing.AsyncGenerator[ResultStream[EventResult], None]:
         """
         Batch input data if batch_size is set in Options.
 
         Args:
-            input_data: The full ResultSet from _extract_input_data
+            input_data: The full ResultStream from _extract_input_data
             batch_size: The number of items per batch
 
         Yields:
-            A ResultSet containing a subset of the original EventResults
+            A ResultStream containing a subset of the original EventResults
         """
         if batch_size <= 0:
             yield input_data
             return
 
-        for batch_tuple in batched(input_data, batch_size):
-            batch_set = ResultSet()
-            for item in batch_tuple:
-                batch_set.add(item)
+        total_items = input_data.count()
+        if total_items == 0:
+            return
 
-            yield batch_set
+        num_shards = max(1, (total_items + batch_size - 1) // batch_size)
+
+        for shard in input_data.shard(num_shards):
+            yield shard
 
     def _validate_collection_input(self, input_data: typing.Any) -> typing.List:
         """Validate that input is a collection"""
@@ -427,7 +449,7 @@ class ControlFlowEvent(EventBase):
         return []
 
     def _get_error_summary(self, results: typing.List[EventResult]) -> typing.Dict:
-        """Create error summary for failed execution"""
+        """Create an error summary for failed execution"""
         errors = [r for r in results if r.error]
         return {
             "total_tasks": len(results),
@@ -439,31 +461,26 @@ class ControlFlowEvent(EventBase):
             ],
         }
 
-    def _create_pipeline_tasks(
-        self, task_definitions: typing.List[TaskDefinition]
-    ) -> typing.List[PipelineTask]:
+    def _create_pipeline_task(self, task_def: TaskDefinition) -> PipelineTask:
         """
-        Create PipelineTask objects from task definitions
+        Create PipelineTask objects from task definition
 
         Args:
-            task_definitions: List of task definitions
+            task_def: Task definition
 
         Returns:
-            List of PipelineTask objects
+            PipelineTask object
         """
-        tasks = []
-        for task_def in task_definitions:
-            task = PipelineTask(event=task_def.template_class)
-            setattr(task, "_id", task_def.task_id)
-            setattr(task, "sequence_number", task_def.order)
 
-            if task_def.options:
-                options = self.options or Options()
-                options.merge_with(task_def.options)
-                task.options = options
-            else:
-                task.options = self.options
+        task = PipelineTask(event=task_def.template_class)
+        setattr(task, "_id", task_def.task_id)
+        setattr(task, "sequence_number", task_def.order)
 
-            tasks.append(task)
+        if task_def.options:
+            options = self.options or Options()
+            options.merge_with(task_def.options)
+            task.options = options
+        else:
+            task.options = self.options
 
-        return tasks
+        return task

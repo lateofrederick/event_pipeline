@@ -169,7 +169,6 @@ class GenerateManifestSubCommand(SubCommand):
         if not skip_validate:
             self._validate_generated(manifest)
 
-        # ── Output ───────────────────────────────────────────────────────
         if dry_run:
             self.stdout.write(manifest_json + "\n")
             self.warning("Dry run — manifest was NOT written to disk.\n")

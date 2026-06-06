@@ -6,6 +6,7 @@ from typing import (
     Dict,
     Tuple,
     Any,
+    cast,
     Callable,
     Union,
     Type,
@@ -23,7 +24,7 @@ from volnux.signal.signals import event_init
 from volnux.concurrency.async_utils import to_thread
 from volnux.parser.options import Options, StopCondition
 from volnux.exceptions import MaxRetryError, SuspendTask, SwitchTask
-from volnux.utils import get_function_call_args
+from volnux.utils import get_function_call_args, get_obj_klass_import_str
 from volnux.execution.rehydrator.event.snapshot import EventPhase
 from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 from volnux.execution.rehydrator.event.snapshot import (
@@ -31,7 +32,10 @@ from volnux.execution.rehydrator.event.snapshot import (
     ResourceState,
 )
 from volnux.execution.rehydrator.event.builder import SnapshotBuilder
-from volnux.execution.rehydrator.event.resources import ResourceProvider
+from volnux.execution.rehydrator.event.resources import (
+    ResourceProvider,
+    ResourceMonitor,
+)
 from volnux.mixins.protocols.event import BaseEvent as _BaseEvent
 
 if TYPE_CHECKING:
@@ -206,6 +210,8 @@ class EventCheckPointingMixin:
         """
 
         self._external_resources: Dict[str, ResourceState] = {}
+        self._resource_instances: Dict[str, object] = {}
+        self._resource_monitor: ResourceMonitor = ResourceMonitor()
 
         self._execution_context = execution_context
 
@@ -274,7 +280,7 @@ class EventCheckPointingMixin:
         indicate that the event can be skipped, the event execution completes successfully without
         proceeding further, and the bypass conditions are logged.
 
-        :param args: Positional arguments passed to the pre-processing handler.
+        :param args: Positional arguments are passed to the pre-processing handler.
         :type args: tuple
         :param kwargs: Keyword arguments passed to the pre-processing handler.
         :type kwargs: dict
@@ -336,8 +342,7 @@ class EventCheckPointingMixin:
                 try:
                     provider_class = import_string(provider_path)
                     if issubclass(provider_class, ResourceProvider):
-                        # Get the restored resource
-                        resource = getattr(self, f"_{resource_name}", None)
+                        resource = self._resource_instances.get(resource_name)
                         if resource:
                             if not inspect.iscoroutinefunction(provider_class.cleanup):
                                 await to_thread(provider_class.cleanup, resource)
@@ -420,7 +425,77 @@ class EventCheckPointingMixin:
 
         return result
 
-    def register_resource(
+    async def acquire_resource(
+        self,
+        name: str,
+        provider: Union[str, Type[ResourceProvider]],
+        init_args: dict,
+        init_func: Optional[Callable[[dict], Any]] = None,
+    ) -> Any:
+        """
+        Acquires a resource by its name, provider, and initialization data. If the resource
+        is already managed, it attempts to restore it. Otherwise, it initializes a new
+        resource using the specified provider or an initialization function.
+
+        Example:
+            >>> my_resource = await self.acquire_resource("my_resource", MyResourceProvider, {"param": "value"})
+            >>> # Or using a function
+            >>> my_resource = await self.acquire_resource("my_resource", MyResourceProvider, {"param": "value"}, init_func=lambda args: MyResource(args))
+
+        :param name: The name of the resource to be acquired.
+        :type name: str
+        :param provider: Specifies the resource provider for the resource. It can be a string
+            representing the provider path or a class of type ResourceProvider.
+        :type provider: Union[str, Type[ResourceProvider]]
+        :param init_args: A dictionary containing initialization parameters for the resource.
+        :type init_args: dict
+        :param init_func: Optional callable that initializes the resource. If provided,
+            the resource will be created using this function.
+        :type init_func: Optional[Callable[[dict], Any]]
+        :return: The acquired resource instance.
+        :rtype: Any
+        """
+
+        if name in self._external_resources:
+            saved_state = self._external_resources[name]
+            provider_path = saved_state.get("provider_path")
+            if provider_path:
+                try:
+                    provider = cast(
+                        Type[ResourceProvider], import_string(provider_path)
+                    )
+                    saved_state["provider_path"] = get_obj_klass_import_str(provider)
+                except ImportError:
+                    pass
+            return await self._restore_resource(name, saved_state, bind=False)
+
+        if init_func is not None:
+            resource = init_func(init_args)
+            if asyncio.iscoroutine(resource):
+                resource = await resource
+
+            await self._register_resource(name, resource, provider)
+        else:
+            saved_state: ResourceState = {
+                "resource_name": name,
+                "provider_path": (
+                    get_obj_klass_import_str(provider)
+                    if not isinstance(provider, str)
+                    else provider
+                ),
+                "data": init_args,
+            }
+            resource = await self._restore_resource(name, saved_state, bind=False)
+
+            self._external_resources[name] = saved_state
+
+        # Start resource monitoring
+        if not self._resource_monitor.is_started():
+            await self._resource_monitor.start(self)
+
+        return resource
+
+    async def _register_resource(
         self,
         resource_name: str,
         resource: Any,
@@ -444,24 +519,8 @@ class EventCheckPointingMixin:
         Raises:
             TypeError: If the provider is not a ResourceProvider subclass
             ValueError: If the provider doesn't implement required methods
-
-        Example:
-            ```python
-
-            >>> from volnux.execution.rehydrator.builtin_providers import FileHandleProvider
-            >>> file_handle = open("data.txt", "r")
-            >>> # Using class directly
-            >>> self.register_resource("data_file", file_handle, FileHandleProvider)
-            >>> # Or using import string
-            >>> self.register_resource(
-            ...    "data_file",
-            ...    file_handle,
-            ...    "volnux.execution.rehydrator.builtin_providers.FileHandleProvider"
-            ...)
-            ```
         """
         try:
-            # Import provider if string
             if isinstance(provider, str):
                 provider_class = import_string(provider)
                 provider_path = provider
@@ -469,14 +528,12 @@ class EventCheckPointingMixin:
                 provider_class = provider
                 provider_path = f"{provider.__module__}.{provider.__name__}"
 
-            # Validate provider is a ResourceProvider subclass
             if not issubclass(provider_class, ResourceProvider):
                 raise TypeError(
                     f"Provider must be a subclass of ResourceProvider, "
                     f"got {type(provider_class)}"
                 )
 
-            # Validate required methods exist
             if not hasattr(provider_class, "save_state"):
                 raise ValueError(
                     f"Provider {provider_class.__name__} must implement save_state() method"
@@ -487,22 +544,22 @@ class EventCheckPointingMixin:
                     f"Provider {provider_class.__name__} must implement restore_state() method"
                 )
 
-            # Save resource state using a provider
             resource_data = provider_class.save_state(resource)
+            if asyncio.iscoroutine(resource_data):
+                resource_data = await resource_data
 
-            # Validate that saved data is a dict
             if not isinstance(resource_data, dict):
                 raise ValueError(
                     f"Provider save_state() must return a dict, "
                     f"got {type(resource_data)}"
                 )
 
-            # Store in external_resources
             self._external_resources[resource_name] = {
                 "resource_name": resource_name,
                 "data": resource_data,
                 "provider_path": provider_path,
             }
+            self._resource_instances[resource_name] = resource
 
             logger.debug(
                 f"Registered resource '{resource_name}' with provider {provider_class.__name__}"
@@ -515,9 +572,9 @@ class EventCheckPointingMixin:
             logger.error(f"Failed to register resource '{resource_name}': {e}")
             raise
 
-    def restore_resource(
-        self, resource_name: str, resource_config: "ResourceState"
-    ) -> None:
+    async def _restore_resource(
+        self, resource_name: str, resource_config: "ResourceState", bind: bool = True
+    ) -> object:
         """
         Restore an external resource from checkpoint data.
 
@@ -526,6 +583,9 @@ class EventCheckPointingMixin:
         Args:
             resource_name: Name of the resource to restore
             resource_config: ResourceState dict with restoration data
+            bind: Whether to bind the restored resource to the event
+        Return:
+            Restored resource object
         """
         try:
             provider_path = resource_config.get("provider_path")
@@ -533,9 +593,8 @@ class EventCheckPointingMixin:
                 logger.warning(
                     f"No provider_path for resource '{resource_name}', skipping restoration"
                 )
-                return
+                return None
 
-            # Import and validate provider
             provider_class = import_string(provider_path)
 
             if not issubclass(provider_class, ResourceProvider):
@@ -543,16 +602,22 @@ class EventCheckPointingMixin:
                     f"Provider {provider_path} is not a ResourceProvider subclass"
                 )
 
-            # Restore resource using provider
             resource_data = resource_config.get("data", {})
             restored_resource = provider_class.restore_state(resource_data)
 
-            # Attach to event instance (convention: prefix with underscore)
-            setattr(self, f"_{resource_name}", restored_resource)
+            if asyncio.iscoroutine(restored_resource):
+                restored_resource = await restored_resource
+
+            if bind:
+                setattr(self, f"{resource_name}", restored_resource)
 
             logger.info(
                 f"Restored resource '{resource_name}' using provider {provider_class.__name__}"
             )
+
+            self._resource_instances[resource_name] = restored_resource
+
+            return restored_resource
 
         except ImportError as e:
             logger.error(
@@ -591,29 +656,5 @@ class EventCheckPointingMixin:
             if conf.get("CHECKPOINT_REQUIRED", default=False):
                 raise
 
-    async def create_snapshot(self: _BaseEvent) -> EventCheckpointSnapshot:
+    async def create_snapshot(self) -> EventCheckpointSnapshot:
         return await SnapshotBuilder().build(self)
-
-    # @classmethod
-    # def resume_task(cls, task_id, checkpoint_manager, execution_context):
-    #
-    #     data = checkpoint_manager.load(task_id)
-    #     if not data:
-    #         return None
-    #
-    #     event_cls = _event_registry.get(data["class_path"])
-    #
-    #     instance = event_cls(
-    #         execution_context=execution_context, task_id=task_id, **data["init_args"]
-    #     )
-    #
-    #     instance._phase = EventPhase(data["phase"])
-    #     instance._exec_result = data["exec_result"]
-    #     instance._execution_status = data["exec_status"]
-    #
-    #
-    #     for res_name, res_config in data["user_resources"].items():
-    #         # Trigger the user's defined restoration logic
-    #         instance.restore_resource(res_name, res_config)
-    #
-    #     return instance

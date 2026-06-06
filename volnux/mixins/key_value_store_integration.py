@@ -40,6 +40,7 @@ from volnux.concurrency.async_utils import to_thread
 
 if TYPE_CHECKING:
     from volnux.config import VolnuxConfig
+    from volnux.result.stream import ResultStream
 
 logger = logging.getLogger(__name__)
 
@@ -625,14 +626,14 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         return await to_thread(cls.get_or_none, record_id=record_id)
 
     @classmethod
-    def filter(cls: Type[T], **filters: Any) -> List[T]:
+    def filter(cls: Type[T], **filters: Any) -> "ResultStream[T]":
         """Filter objects by the given criteria.
 
         Args:
             **filters: Field-value pairs to filter by.
 
         Returns:
-            List of instances matching the filters.
+            Stream of instances matching the filters.
 
         Example:
             >>> active_users = User.filter(status="active")
@@ -653,11 +654,11 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             raise
 
     @classmethod
-    async def filter_async(cls, **filters: Any) -> List[T]:
+    async def filter_async(cls, **filters: Any) -> "ResultStream[T]":
         return await to_thread(cls.filter, **filters)
 
     @classmethod
-    def all(cls) -> List[T]:
+    def all(cls) -> "ResultStream[T]":
         """Get all objects of this class from the backend.
 
         Returns:
@@ -666,7 +667,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         return cls.filter()
 
     @classmethod
-    async def all_async(cls) -> List[T]:
+    async def all_async(cls) -> "ResultStream[T]":
         return await to_thread(cls.all)
 
     @classmethod

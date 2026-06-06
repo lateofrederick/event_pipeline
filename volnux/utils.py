@@ -413,7 +413,7 @@ def resolve_event_str_to_class(
     :return: EventBase subclass of event_str.
     """
 
-    from volnux.base import get_event_registry, EventBase
+    from volnux.event import get_event_registry, EventBase
 
     if not isinstance(event_str, str):
         event_str = str(event_str).strip()

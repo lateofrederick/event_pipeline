@@ -6,7 +6,7 @@ from volnux.models.enums import BreakGlassReviewStatus, AuditEventType
 from ..app import get_current_app
 from ..dependencies import get_org_id, _serialize_model
 from ..permission import Permission
-from ..utils import require_permission, get_current_user, _audit_log
+from ..utils import require_permission, get_current_user, audit_log
 
 app = get_current_app()
 
@@ -29,7 +29,7 @@ async def initiate_break_glass(
     await access.save_async()
 
     # Log to audit
-    _audit_log(
+    audit_log(
         org_id=org_id,
         event_type=AuditEventType.BREAK_GLASS_INITIATED,
         actor_id=user["user_id"],
@@ -50,7 +50,7 @@ async def review_break_glass(
     user: dict = Depends(get_current_user),
     _: None = Depends(require_permission(Permission.BREAK_GLASS_REVIEW)),
 ):
-    """Submit post-incident review for break-glass access. Requires auditor."""
+    """Submit a post-incident review for break-glass access. Requires auditor."""
     access = await BreakGlassAccess.get_async(access_id)
     access.review_status = BreakGlassReviewStatus(data["status"])
     access.review_findings = data.get("findings")

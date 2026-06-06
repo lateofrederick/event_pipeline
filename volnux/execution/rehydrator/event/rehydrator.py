@@ -1,3 +1,8 @@
+from .deserializer import StateDeserializer
+from .snapshot import EventCheckpointSnapshot
+from volnux.import_utils import import_string as import_class
+
+
 class EventRehydrator:
     """Reconstructs an event from an EventCheckpointSnapshot.
 
@@ -10,23 +15,13 @@ class EventRehydrator:
         self.deserializer = deserializer
 
     async def rehydrate(self, snapshot: EventCheckpointSnapshot) -> "EventBase":
-        """Reconstruct an event from its checkpoint snapshot.
+        """Reconstruct an event from its checkpoint snapshot."""
 
-        Steps:
-        1. Import the event class
-        2. Deserialize init args and instantiate
-        3. Restore internal state (phase, retry count, exec result)
-        4. Restore external resources
-        5. Deserialize call args for potential process() re-execution
-        """
-        # 1. Import the event class
         event_class = import_class(snapshot.class_path)
 
-        # 2. Deserialize init args and instantiate
         init_kwargs = self.deserializer.deserialize_init_args(snapshot.init_args)
         event = event_class(**init_kwargs)
 
-        # 3. Restore internal state
         event._phase = snapshot.phase
         event._retry_count = snapshot.retry_count
         event._exec_status = snapshot.exec_status
@@ -36,7 +31,6 @@ class EventRehydrator:
                 snapshot.exec_result
             )
 
-        # 4. Restore external resources
         if snapshot.external_resources:
             event._external_resources = (
                 self.deserializer.deserialize_external_resources(

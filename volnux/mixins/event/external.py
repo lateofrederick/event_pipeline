@@ -1,8 +1,9 @@
 import uuid
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 from ..protocols.event import BaseEvent
+from .._phase_decorator import EventPhase
 from volnux.exceptions import ExternalCommunicationSuspensionRequest
 
 
@@ -82,6 +83,60 @@ class ExternalCommunicationMixin:
         """
         return None
 
+    async def wait_for_condition(
+        self: "BaseEvent",
+        condition_fn: Callable[[], bool],
+        title: str,
+        description: str = "",
+        timeout_hours: Optional[int] = None,
+        poll_interval_seconds: float = 30.0,
+    ) -> None:
+        """
+        Suspend this event until an arbitrary condition is met.
+
+        The condition is polled every poll_interval_seconds until it
+        returns True or the timeout expires. The event checkpoints,
+        suspends, and resumes at process() when the condition is met.
+
+        This is the Volnux equivalent of Airflow's sensor — it waits
+        for an external condition (file exists, API healthy, database
+        ready) without consuming a worker slot.
+
+        Example:
+
+            async def communicate(self, batch_id: str, **kwargs):
+                await self.wait_for_condition(
+                    condition_fn=lambda: s3_object_exists(
+                        "data-lake", f"batches/{batch_id}.csv"
+                    ),
+                    title="Waiting for batch file",
+                    description=f"Awaiting s3://data-lake/batches/{batch_id}.csv",
+                    timeout_hours=4,
+                    poll_interval_seconds=60.0,
+                )
+                # When we reach process(), the file exists
+        """
+        if self._phase != EventPhase.COMMUNICATING:
+            raise RuntimeError(
+                "wait_for_condition() can only be called from communicate() hook"
+            )
+
+        await self.enqueue_checkpoint()
+
+        raise ExternalCommunicationSuspensionRequest(
+            task=self,
+            task_id=self._task_id,
+            request_id=str(uuid.uuid4()),
+            request_type=ExternalCommunicationType.CONDITION,
+            title=title,
+            description=description,
+            payload={},
+            options=[],
+            timeout_hours=timeout_hours,
+            condition_fn=condition_fn,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
     async def wait_for_event(
         self: BaseEvent,
         event_type: str,
@@ -113,6 +168,11 @@ class ExternalCommunicationMixin:
                     timeout_hours=1,
                 )
         """
+        if self._phase != EventPhase.COMMUNICATING:
+            raise RuntimeError(
+                "wait_for_event() can only be called from communicate() hook"
+            )
+
         await self.enqueue_checkpoint()
 
         raise ExternalCommunicationSuspensionRequest(
@@ -166,6 +226,11 @@ class ExternalCommunicationMixin:
 
                 return True, {"order": order}
         """
+        if self._phase != EventPhase.COMMUNICATING:
+            raise RuntimeError(
+                "request_human_input() can only be called from communicate() hook"
+            )
+
         await self.enqueue_checkpoint()
 
         raise ExternalCommunicationSuspensionRequest(

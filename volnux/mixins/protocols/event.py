@@ -23,7 +23,10 @@ if TYPE_CHECKING:
         EventCheckpointSnapshot,
         ResourceState,
     )
-    from volnux.execution.rehydrator.event.resources import ResourceProvider
+    from volnux.execution.rehydrator.event.resources import (
+        ResourceProvider,
+        ResourceMonitor,
+    )
     from volnux.flows.bridge.communications.tasks import TaskCommand
     from volnux.flows.bridge.communications.tasks.base import CommandChannelBase
 
@@ -72,6 +75,8 @@ class BaseEvent(Protocol):
     _init_args: dict
     _call_args: Union[dict, Any]
     _external_resources: Dict[str, "ResourceState"]
+    _resource_instances: Dict[str, object] = {}
+    _resource_monitor: "ResourceMonitor"
 
     # communication
     _pause_gate: asyncio.Event
@@ -94,7 +99,21 @@ class BaseEvent(Protocol):
         """
         ...
 
-    def register_resource(
+    async def acquire_resource(
+        self,
+        name: str,
+        provider: Union[str, Type[ResourceProvider]],
+        init_args: dict,
+        init_func: Optional[Callable[[dict], Any]] = None,
+    ) -> Any:
+        """
+        Acquires a resource by its name, provider, and initialization data. If the resource
+        is already managed, it attempts to restore it. Otherwise, it initializes a new
+        resource using the specified provider or an initialization function.
+        """
+        ...
+
+    def _register_resource(
         self,
         resource_name: str,
         resource: Any,
@@ -116,9 +135,9 @@ class BaseEvent(Protocol):
         """
         ...
 
-    def restore_resource(
-        self, resource_name: str, resource_config: "ResourceState"
-    ) -> None:
+    def _restore_resource(
+        self, resource_name: str, resource_config: "ResourceState", bind: bool = True
+    ) -> object:
         """
         Restores the state of a specified resource using the provided configuration.
 
@@ -128,7 +147,8 @@ class BaseEvent(Protocol):
         :param resource_name: The name of the resource to be restored.
         :param resource_config: The configuration object containing the specific state
             details for the resource.
-        :return: None
+        :param bind: Whether to bind the restored resource to the event context. Defaults to True.
+        :return: object
         """
         ...
 

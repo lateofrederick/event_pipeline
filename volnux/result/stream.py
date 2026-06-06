@@ -6,7 +6,7 @@ import warnings
 from dataclasses import dataclass, field
 
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.backends.stores.inmemory_store import InMemoryKeyValueStoreBackend
+from volnux.backends.stores.inmemory import InMemoryKeyValueStoreBackend
 from volnux.mixins import KeyValueStoreIntegrationMixin
 
 try:
@@ -14,7 +14,7 @@ try:
 except ImportError:
     from typing_extensions import TypeAlias
 
-__all__ = ["ResultStream"]
+__all__ = ["ResultStream", "Q"]
 
 logger = logging.getLogger(__name__)
 
@@ -140,11 +140,16 @@ class ResultStream(typing.Generic[T]):
         keys: typing.List[str],
         predicates: typing.List[typing.Callable[[T], bool]],
         chunk_size: int,
-        memory_backend: KeyValueStoreBackendBase,
+        memory_backend: typing.Optional[KeyValueStoreBackendBase],
         persisted_backend: typing.Optional[KeyValueStoreBackendBase],
         q_predicates: typing.Optional[typing.List[Q]] = None,
     ) -> "ResultStream[T]":
         """Internal factory that bypasses add() for bulk key assignment."""
+        if memory_backend is None:
+            memory_backend = InMemoryKeyValueStoreBackend(
+                namespace_prefix=transaction_id
+            )
+
         stream: ResultStream[T] = cls.__new__(cls)
         stream.model_klass = model_klass
         stream.transaction_id = transaction_id
@@ -644,7 +649,7 @@ class ResultStream(typing.Generic[T]):
         if not self._q_objects or not self.persisted_backend:
             return self
 
-        # Try to push simple Q objects to backend
+        # Try to push simple Q objects to the backend
         optimized_predicates = list(self._predicates)
 
         for q in self._q_objects:

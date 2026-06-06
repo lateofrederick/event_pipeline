@@ -15,6 +15,7 @@ class EventInitKwargs(typing.TypedDict, total=False):
     default: typing.Any
     description: typing.Optional[str]
     default_factory: typing.Callable[[], typing.Any]
+    choices: typing.List[typing.Any]
     validators: typing.List[ValidatorFunc]
 
 
@@ -48,6 +49,7 @@ def inject_event_initialisation_extra_params(
         is_required = config.get("required", False)
         default_value = config.get("default")
         default_factory = config.get("default_factory")
+        choices = config.get("choices")
         validators: List[ValidatorFunc] = config.get("validators", [])
 
         value_to_set = None
@@ -77,6 +79,13 @@ def inject_event_initialisation_extra_params(
             continue
 
         if value_to_set is not None:
+
+            if choices is not None and value_to_set not in choices:
+                raise ValueError(
+                    f"Invalid value '{value_to_set}' for parameter '{param_name}' in "
+                    f"event '{event_class.__name__}'. Allowed values: {choices}"
+                )
+
             for validator in validators:
                 try:
                     # Validator function signature: validator(value, param_name, event_instance)

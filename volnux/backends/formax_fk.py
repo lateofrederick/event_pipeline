@@ -411,18 +411,15 @@ class ForeignKeyField:
             raise ValueError("on_delete=SET_NULL requires nullable=True.")
 
         if isinstance(target_model, str):
-            # try:
-            #     target_model = import_string(target_model)
-            # except ImportError as e:
-            #     import pdb; pdb.set_trace()
-            #     raise ValueError(
-            #         f"Failed to import model class '{target_model}'"
-            #     ) from e
+            try:
+                module_path, class_name = target_model.rsplit(".", 1)
+            except ValueError as err:
+                raise ImportError(
+                    f"{target_model} doesn't look like a module path"
+                ) from err
 
             # create a forward reference
-            target_model = ForwardRef(
-                target_model, module="volnux.models", is_class=True
-            )
+            target_model = ForwardRef(class_name, module=module_path, is_class=True)
 
         if target_model is None:
             pre_fmt = lambda instance, value: ForeignKey.serialize(value)

@@ -23,6 +23,7 @@ class TriggerType(Enum):
 
     SCHEDULE = "schedule"
     EVENT = "event"
+    ASSET = "asset"
     CONDITION = "condition"
     WORKFLOW_CHAIN = "workflow_chain"
     MANUAL = "manual"

@@ -1,1 +1,1 @@
-from .base import EventBase
+from .base import EventBase, get_event_registry

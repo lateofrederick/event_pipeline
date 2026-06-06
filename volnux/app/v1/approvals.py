@@ -6,29 +6,29 @@ from volnux.models.enums import ApprovalStatus, WorkflowStatus
 from ..app import get_current_app
 from ..dependencies import get_org_id, Pagination, _serialize_model
 from ..permission import Permission
-from ..utils import require_permission, get_current_user
+from ..utils import require_permission, get_current_user, RequestContext
 
 app = get_current_app()
 
 
-@app.get("/api/v1/approvals/pending")
+@app.get("/api/v1/approvals/pending", tags=["Approvals"])
 async def list_pending_approvals(
     org_id: str = Depends(get_org_id),
-    user: dict = Depends(get_current_user),
+    request: RequestContext = Depends(get_current_user),
     pagination: dict = Depends(Pagination),
     _: None = Depends(require_permission(Permission.APPROVAL_REVIEW)),
 ):
     """List workflows pending the current user's review. Requires reviewer or compliance approver."""
     steps = await ApprovalStep.filter_async(
         status=ApprovalStatus.PENDING,
-        individual_id=user["user_id"],
+        individual_id=request.user.id,
         limit=pagination["page_size"],
         offset=(pagination["page"] - 1) * pagination["page_size"],
     )
     return {"status": "success", "data": [_serialize_model(s) for s in steps]}
 
 
-@app.post("/api/v1/approvals/{workflow_id}/approve")
+@app.post("/api/v1/approvals/{workflow_id}/approve", tags=["Approvals"])
 async def approve_workflow(
     workflow_id: str = Path(...),
     data: dict = Body(default={}),
@@ -55,7 +55,7 @@ async def approve_workflow(
     return {"status": "success", "data": _serialize_model(step)}
 
 
-@app.post("/api/v1/approvals/{workflow_id}/reject")
+@app.post("/api/v1/approvals/{workflow_id}/reject", tags=["Approvals"])
 async def reject_workflow(
     workflow_id: str = Path(...),
     data: dict = Body(...),
@@ -86,7 +86,7 @@ async def reject_workflow(
     return {"status": "success", "data": _serialize_model(step)}
 
 
-@app.get("/api/v1/approvals/chains")
+@app.get("/api/v1/approvals/chains", tags=["Approvals"])
 async def list_approval_chains(
     org_id: str = Depends(get_org_id),
     user: dict = Depends(get_current_user),
@@ -96,7 +96,7 @@ async def list_approval_chains(
     return {"status": "success", "data": [_serialize_model(c) for c in chains]}
 
 
-@app.post("/api/v1/approvals/chains", status_code=201)
+@app.post("/api/v1/approvals/chains", status_code=201, tags=["Approvals"])
 async def create_approval_chain(
     data: dict = Body(...),
     org_id: str = Depends(get_org_id),

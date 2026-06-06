@@ -36,7 +36,7 @@ from volnux.exceptions import SerializationError
 
 if TYPE_CHECKING:
     from .formax_fk import OnDelete
-    from volnux.result.stream import Q
+    from volnux.result.stream import Q, ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
@@ -599,6 +599,24 @@ class KeyValueStoreBackendBase(abc.ABC):
             logger.error(f"Failed to deserialize record: {e}")
             raise SerializationError(f"Deserialization failed: {e}")
 
+    def _create_result_stream(
+        self,
+        record_keys: typing.List[str],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        chunk_size: int = 1000,
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
+        """Create a result stream for querying records."""
+        from volnux.result.stream import ResultStream
+
+        return ResultStream._make(
+            model_klass=record_klass,
+            keys=record_keys,
+            chunk_size=chunk_size,
+            memory_backend=None,
+            persisted_backend=self,
+            transaction_id=f"{self.__class__.__name__}",
+        )
+
     def create_native_fk_constraint(
         self,
         source_backend: "KeyValueStoreBackendBase",
@@ -768,7 +786,7 @@ class KeyValueStoreBackendBase(abc.ABC):
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
         **filter_kwargs: Any,
-    ) -> Iterable["KeyValueStoreIntegrationMixin"]:
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         """Filter records matching the specified criteria.
 
         Args:
@@ -862,7 +880,7 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     def list_all(
         self, schema_name: str, record_klass: Type["KeyValueStoreIntegrationMixin"]
-    ) -> Iterable["KeyValueStoreIntegrationMixin"]:
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         """List all records in a schema.
 
         Args:
