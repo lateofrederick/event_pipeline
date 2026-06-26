@@ -128,7 +128,7 @@ class GeminiProviderAdapter(LLMProviderAdapterBase):
         #     )
 
         return genai.Client(
-            api_key="AQ.Ab8RN6LtuinHSNVe0P0Sxrwjr9fkCmsgzoOrJfZGYbV_lcbXHQ"
+            api_key=""
         )
 
     async def complete(
