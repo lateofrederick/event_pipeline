@@ -1,5 +1,4 @@
 """
-volnux/agents/providers/gemini.py
 
 Google Gemini LLM provider adapter using the new ``google-genai`` SDK.
 
