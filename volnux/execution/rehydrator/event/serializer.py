@@ -4,6 +4,8 @@ from typing import Dict, Any, Optional, Union, List, Hashable, Tuple
 from .snapshot import InitArgsTemplate, CallArgsTemplate
 from volnux.parser.options import StopCondition
 from .event_result_serializer import ExecResultSerializer
+from volnux.execution.utils import is_json_serializable
+from volnux.execution.constants import EVENT_EXCLUDED_ATTRS
 
 
 logger = logging.getLogger(__name__)
@@ -122,3 +124,52 @@ class StateSerializer:
             else:
                 data[k] = v
         return data
+
+    @classmethod
+    def serialize_attribs(cls, event_instance) -> dict:
+        """Capture user-bound serializable attributes from event.__dict__.
+
+        Excludes:
+            1. Framework internal attributes (FRAMEWORK_EXCLUDED_ATTRS)
+            2. Keys already tracked in init_args, call_args, or external_resources
+            3. Non-JSON-serializable values (warns and skips)
+        """
+        attribs = {}
+
+        # Gather already-tracked keys from dedicated snapshot fields
+        init_arg_keys = (
+            set(event_instance.init_args)
+            if getattr(event_instance, "init_args", None)
+            else set()
+        )
+
+        call_args = getattr(event_instance, "call_args", {}) or {}
+        call_arg_keys = set(call_args) if isinstance(call_args, dict) else set()
+
+        external_resource_keys = (
+            set(event_instance.external_resources)
+            if getattr(event_instance, "external_resources", None)
+            else set()
+        )
+
+        tracked_keys = init_arg_keys | call_arg_keys | external_resource_keys
+
+        for key, value in vars(event_instance).items():
+            if key in EVENT_EXCLUDED_ATTRS:
+                continue
+            if key in tracked_keys:
+                continue
+            if not is_json_serializable(value):
+                logger.warning(
+                    "Cannot checkpoint attribute '%s' on '%s': "
+                    "value is not JSON-serializable. "
+                    "Use acquire_resource() for non-serializable state.",
+                    key,
+                    getattr(
+                        event_instance, "class_path", type(event_instance).__name__
+                    ),
+                )
+                continue
+            attribs[key] = value
+
+        return attribs

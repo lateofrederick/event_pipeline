@@ -10,52 +10,52 @@ from volnux.engine.workflows.trigger.engine import TriggerEngine, WorkflowExecut
 
 
 class ProjectMixin:
-    """
-    Provides functionality for workflows initialization, configuration loading, and
-    project context handling.
-    """
+    """Provides project loading and engine initialization for CLI commands."""
+
+    def resolve_project_dir(self) -> Path:
+        """Walk up from cwd to find the project root."""
+        cwd = Path.cwd()
+        for directory in [cwd, *cwd.parents]:
+            if (directory / "init.py").exists() and (directory / "config.py").exists():
+                return directory
+        raise CommandError(
+            "No Volnux project found in the current directory or any parent.\n"
+            "Run this command from your project root, or create a project with:\n"
+            "  volnux init <project_name>"
+        )
 
     async def _initialise_workflows(
         self, project_dir: Path, workflow_name: Optional[str] = None
     ) -> TriggerEngine:
-        """
-        Initialise the workflow registry.
-        :param project_dir: Project directory
-        :param workflow_name: workflow name
-        :return: Registry
-        """
+        """Initialize the engine for a project directory."""
         if workflow_name is None:
-            workflows_initialiser = load_module_from_path(
-                "initialiser", project_dir / "init.py"
-            )
-            if not workflows_initialiser:
+            module = load_module_from_path("initialiser", project_dir / "init.py")
+            engine = getattr(module, "engine", None)
+            if engine is None:
                 raise CommandError(
-                    f"Failed to load workflow initializer module from path: {project_dir / 'init.py'}"
+                    f"init.py in {project_dir} does not define an 'engine' variable.\n"
+                    "Ensure init.py contains:\n"
+                    "  engine = initialise_workflows(project_dir)"
                 )
+            if not isinstance(engine, TriggerEngine):
+                raise CommandError(
+                    f"init.py 'engine' is not a TriggerEngine. "
+                    f"Got {type(engine).__name__}."
+                )
+            return engine
 
-            engine = cast(TriggerEngine, await workflows_initialiser.engine)
-        else:
-            engine = await initialise_workflows(project_dir, workflow_name)
-
-        try:
-            workflows_registry = engine.get_workflow_registry()
-        except WorkflowExecutionError:
-            raise CommandError(
-                "Workflow executor was not provided. The framework was not initialized."
-            )
-
-        if not workflows_registry.is_ready():
-            raise CommandError("Workflow registry is not ready yet, try again later.")
-        return engine
+        return await initialise_workflows(project_dir, workflow_name)
 
     def initialise_workflows(
         self, project_dir: Path, workflow_name: Optional[str] = None
     ) -> TriggerEngine:
-        """Initialise the workflows engine. Handles async execution for CLI context."""
+        """Sync wrapper for CLI commands outside an async context."""
         try:
             return asyncio.run(self._initialise_workflows(project_dir, workflow_name))
+        except CommandError:
+            raise
         except Exception as e:
-            raise CommandError(f"Failed to initialize workflows: {e}")
+            raise CommandError(f"Failed to initialize workflows: {e}") from e
 
     def load_project_config(self) -> Optional[types.ModuleType]:
         """

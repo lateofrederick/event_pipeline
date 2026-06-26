@@ -328,14 +328,13 @@ class EventBase(
         self,
         execution_context: "ExecutionContext",
         task_id: str,
-        *args: typing.Tuple[typing.Any],
         checkpoint_manager: typing.Optional[VolnuxCheckPointManager] = None,
+        command_channel: typing.Optional["CommandChannelBase"] = None,
         previous_result: typing.Union[typing.List[EventResult], EMPTY] = EMPTY,
         stop_condition: StopCondition = StopCondition.NEVER,
         run_bypass_event_checks: bool = False,
         options: typing.Optional["Options"] = None,
         sequence_number: typing.Optional[int] = None,
-        **kwargs: typing.Dict[str, typing.Any],
     ) -> None:
         """
         Initializes an EventBase instance with the provided execution context and configuration.
@@ -348,8 +347,6 @@ class EventBase(
         :type execution_context: ExecutionContext
         :param task_id: Unique identifier for the task associated with this event.
         :type task_id: str
-        :param args: Positional arguments to be passed to the base class constructor.
-        :type args: Tuple[Any]
         :param checkpoint_manager: The checkpoint manager instance to use for event
             checkpointing. Defaults to None.
         :type checkpoint_manager: Optional[VolnuxCheckPointManager]
@@ -366,10 +363,10 @@ class EventBase(
         :param sequence_number: Specifies the sequence number associated with the event,
             if applicable.
         :type sequence_number: Optional[int]
-        :param kwargs: Key-value arguments to provide additional flexibility for configuration.
-        :type kwargs: Dict[str, Any]
+        :param command_channel: Key-value arguments to provide additional flexibility for configuration.
+        :type command_channel: CommandChannelBase
         """
-        super().__init__(*args, **kwargs)
+        super().__init__()
 
         self._setup_event(
             execution_context=execution_context,
@@ -380,6 +377,7 @@ class EventBase(
             run_bypass_event_checks=run_bypass_event_checks,
             options=options,
             sequence_number=sequence_number,
+            command_channel=command_channel,
         )
 
     def __repr__(self) -> str:
@@ -489,7 +487,7 @@ class EventBase(
             )
         return EventEvaluator(cls.result_evaluation_strategy)
 
-    def can_bypass_current_event(self) -> typing.Tuple[bool, typing.Any]:
+    async def bypass(self) -> typing.Tuple[bool, typing.Any]:
         """
         Determines if the current event execution can be bypassed, allowing pipeline
         processing to continue to the next event regardless of validation or execution failures.
@@ -499,7 +497,7 @@ class EventBase(
         and proceed to the next event in the sequence. When False, normal execution
         and error handling will occur.
 
-        The bypass decision is typically based on business rules such as:
+        The bypass decision is typically based on business rules such as
         - Event is optional in certain contexts
         - an Alternative processing path exists
         - Specific data conditions make this event unnecessary
@@ -511,7 +509,7 @@ class EventBase(
             In a shipping pipeline, certain validation steps might be bypassed
             for internal transfers while being required for external shipments.
         """
-        return False, None
+        raise NotImplementedError(f"{self.__class__.__name__} does not support bypass")
 
     @abc.abstractmethod
     async def process(
@@ -694,11 +692,9 @@ class EventBase(
             except Exception as e:
                 logger.exception(e)
 
-        if result is None:
-            raise ValueError("Event cannot return no result.")
-
         return result
 
     def __del__(self) -> None:
-        if self._resource_monitor.is_started():
-            asyncio.run(self._resource_monitor.stop())
+        if hasattr(self, "_resource_monitor"):
+            if self._resource_monitor.is_started():
+                asyncio.run(self._resource_monitor.stop())

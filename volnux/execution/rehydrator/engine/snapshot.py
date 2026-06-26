@@ -168,7 +168,9 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         return cls(**data)
 
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
-        self.from_dict(state)
+        data = state.copy()
+        data["traversal"] = TraversalSnapshot(**data["traversal"])
+        self.__dict__.update(data)
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
         state = self.__dict__.copy()

@@ -2,27 +2,26 @@ import logging
 import typing
 import os
 import asyncio
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from collections import ChainMap
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TYPE_CHECKING, Set
 from concurrent.futures import ThreadPoolExecutor
 
-from volnux.event.base import get_event_registry
 from volnux import __version__ as version
 from volnux.exceptions import ImproperlyConfigured
 from volnux.event.registry import RegistryNotReady
 from volnux.result import EventResult
 from .source import WorkflowSource, RegistrySource
 
-__all__ = ["get_workflow_registry"]
+__all__ = ["get_workflow_registry", "WorkflowRegistry"]
 
 logger = logging.getLogger(__name__)
 
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
+    from volnux.event import EventBase
     from .workflow import WorkflowConfig
+    from volnux.pipeline import Pipeline, BatchPipeline
 
 
 class WorkflowRegistry:
@@ -139,6 +138,8 @@ class WorkflowRegistry:
     async def load_workflow_configs(self) -> None:
         """
         Load workflows from all configured sources.
+
+        :return: None
         """
         self._loading = True
 
@@ -187,23 +188,51 @@ class WorkflowRegistry:
         """
         return await workflow_source.load_workflow_config(registry, params)
 
-    def get_events(self):
+    def get_events(self) -> Set[Type["EventBase"]]:
+        """
+        Fetches the set of event classes registered in the workflow registry.
+
+        :raises RegistryNotReady: If the workflow registry is not ready.
+        :return: Set of unique event classes present in the registered workflows.
+        :rtype: Set[Type[EventBase]]
+        """
         if not self.is_ready():
             raise RegistryNotReady("Workflow registry is not ready yet.")
 
-        events = []
-        event_registry = get_event_registry()
-
+        events = set()
         for workflow in self._workflows.values():
-            if workflow.module:
-                events.extend(event_registry.get_classes_for_module(workflow.module))
-
+            events.update(workflow.get_event_classes())
         return events
 
-    def get_pipeline(self):
-        raise NotImplementedError(
-            "WorkflowRegistry.get_pipeline() is not implemented yet."
-        )
+    def get_pipelines(self) -> Set[Type["Pipeline"]]:
+        """
+        Retrieves a set of all pipeline types available within the current context.
+
+        :raises RegistryNotReady: If the workflow registry is not ready.
+        :return: A set containing the distinct pipeline types is available.
+        :rtype: Set[Type[ "Pipeline"]]
+        """
+        if not self.is_ready():
+            raise RegistryNotReady("Workflow registry is not ready yet.")
+        pipelines = set()
+        for workflow in self._workflows.values():
+            pipelines.add(workflow.get_pipeline_class())
+        return pipelines
+
+    def get_batch_pipelines(self) -> Set[Type["BatchPipeline"]]:
+        """
+        Retrieves a set of batch pipeline classes from the registered workflows.
+
+        :raises RegistryNotReady: If the workflow registry is not ready.
+        :return: A set of unique batch pipeline classes derived from the workflows.
+        :rtype: set[Type[ "BatchPipeline"]]
+        """
+        if not self.is_ready():
+            raise RegistryNotReady("Workflow registry is not ready yet.")
+        batch_pipelines = set()
+        for workflow in self._workflows.values():
+            batch_pipelines.add(workflow.get_batch_pipeline_class())
+        return batch_pipelines
 
 
 _workflow_registry = WorkflowRegistry(cache_dir=os.environ.get("WORKFLOWS_CACHE_DIR"))

@@ -1,3 +1,10 @@
+"""Lazy rehydrator for workflow execution trees.
+
+Rehydrates a workflow tree lazily, one node at a time, using LazyContextProxy
+placeholders for neighbours. Only the branches that execution actually walks
+into ever get materialised — avoids loading the entire fractal tree up front.
+"""
+
 import typing
 import logging
 import threading
@@ -115,15 +122,16 @@ class LazyRehydrator:
     the branches that execution actually walks into ever get materialised.
     """
 
-    pipeline_registry: typing.Dict[str, typing.Any] = {}
-
     def __init__(
         self,
         deserializer: StateDeserializer = StateDeserializer,
         pipeline_registry: typing.Optional[dict] = None,
     ):
         self.deserializer = deserializer
-        self.pipeline_registry.update(pipeline_registry or {})
+        # Instance-level registry — avoids cross-instance mutation.
+        self.pipeline_registry: typing.Dict[str, typing.Any] = dict(
+            pipeline_registry or {}
+        )
         # Shared cache so a context fetched via two different links resolves once.
         self._cache: weakref.WeakValueDictionary[str, "ExecutionContext"] = (
             weakref.WeakValueDictionary()
@@ -144,7 +152,7 @@ class LazyRehydrator:
         engine: typing.Optional["WorkflowEngine"] = None
         if engine_class is not None:
             snapshot = await self._load_snapshot(state_id)
-            engine = self._rehydrate_engine(engine_class, snapshot, context)
+            engine = await self._rehydrate_engine(engine_class, snapshot, context)
             context.set_engine(engine)
 
         return context, engine
@@ -198,7 +206,7 @@ class LazyRehydrator:
         context.change_object_id(snapshot.state_id)
         context.workflow_id = snapshot.workflow_id
 
-        self._restore_execution_state(context, snapshot)
+        await self._restore_execution_state(context, snapshot)
 
         if snapshot.traversal.current_task_checkpoint:
             context.set_task_checkpoint(snapshot.traversal.current_task_checkpoint)
@@ -249,14 +257,18 @@ class LazyRehydrator:
         event_class = import_class(task_snapshot.event_class_import_path)
         return PipelineTask(event=event_class)
 
-    def _restore_execution_state(
+    async def _restore_execution_state(
         self, context: "ExecutionContext", snapshot: ContextSnapshot
     ) -> None:
         from volnux.execution.state_manager import ExecutionState, ExecutionStatus
         from volnux.result import ResultSet
+        from ..event.event_result_serializer import EXEC_RESULT_SERIALIZER
 
         results = ResultSet(
-            [self.deserializer.deserialize_result(r) for r in snapshot.results]
+            [
+                await EXEC_RESULT_SERIALIZER.deserialize_exec_result(r)
+                for r in snapshot.results
+            ]
         )
 
         state = ExecutionState(
@@ -297,7 +309,7 @@ class LazyRehydrator:
             return cached
         return LazyContextProxy(state_id=state_id, rehydrator=self)
 
-    def _rehydrate_engine(
+    async def _rehydrate_engine(
         self,
         engine_class: typing.Type["WorkflowEngine"],
         snapshot: ContextSnapshot,
@@ -306,17 +318,19 @@ class LazyRehydrator:
         engine = engine_class(enable_checkpointing=True)
         traversal = snapshot.traversal
         engine.tasks_processed = traversal.tasks_processed
-        engine.current_task_node = self._rebuild_current_task_node(traversal, context)
+        engine.current_task_node = await self._rebuild_current_task_node(
+            traversal, context
+        )
         return engine
 
-    def _rebuild_current_task_node(
+    async def _rebuild_current_task_node(
         self, traversal: TraversalSnapshot, context: "ExecutionContext"
     ) -> typing.Optional["TaskNode"]:
         from volnux.engine.base import TaskNode
 
         if not traversal.current_task:
             return None
-        task = self._rebuild_task(traversal.current_task)
+        task = await self._rebuild_task(traversal.current_task)
         if task is None:
             return None
         return TaskNode(task=task, previous_context=context)

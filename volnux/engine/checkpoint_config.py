@@ -1,4 +1,3 @@
-import typing
 from enum import Enum
 from typing import Dict, Any, Optional, Union
 from formax import BaseModel, MiniAnnotated, Attrib, InitStrategy
@@ -47,13 +46,17 @@ class CheckPointStorageConfig(BaseModel):
     Configuration for how checkpointing is stored.
     """
 
-    backend: str = "volnux.backends.stores.inmemory_store.InMemoryKeyValueStoreBackend"
-    host: Optional[str]
-    port: Optional[int]
-    username: Optional[str]
-    password: Optional[str]
-    database: Union[str, int, None] = None
     extra_params: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
+    backend: str = "volnux.backends.stores.inmemory.InMemoryKeyValueStoreBackend"
+    host: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    database: Union[str, int, None] = None
+
+    class Config:
+        frozen = True
+        init_strategy = InitStrategy.DATACLASS
 
 
 class CheckPointConfig(BaseModel):

@@ -23,7 +23,13 @@ from volnux.mixins._phase_decorator import phase_step
 from volnux.signal.signals import event_init
 from volnux.concurrency.async_utils import to_thread
 from volnux.parser.options import Options, StopCondition
-from volnux.exceptions import MaxRetryError, SuspendTask, SwitchTask
+from volnux.exceptions import (
+    MaxRetryError,
+    SuspendTask,
+    SwitchTask,
+    SkipExecutionError,
+    EmptyResultError,
+)
 from volnux.utils import get_function_call_args, get_obj_klass_import_str
 from volnux.execution.rehydrator.event.snapshot import EventPhase
 from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
@@ -165,6 +171,23 @@ class StopConditionProcessor:
 
 class EventCheckPointingMixin:
 
+    @staticmethod
+    def _process_result_tuple(result: Any, method_name="process") -> Tuple[bool, Any]:
+        is_event_result = isinstance(result, EventResult)
+        is_tuple = isinstance(result, tuple)
+
+        if not is_event_result and not is_tuple:
+            raise ValueError(
+                f"{method_name} result must be a tuple with two elements or an instance of EventResult"
+            )
+        if is_tuple and not isinstance(result[0], bool):
+            raise ValueError(f"First element of {method_name} result must be a boolean")
+
+        if is_event_result:
+            return result.success, result
+
+        return result
+
     @phase_step(EventPhase.INITIALIZED)
     def _setup_event(
         self: _BaseEvent,
@@ -268,7 +291,7 @@ class EventCheckPointingMixin:
         await self._run_step(self.communicate, *args, **kwargs)
 
     @phase_step(EventPhase.PRE_PROCESS)
-    def _pre_process(self: _BaseEvent, *args, **kwargs):
+    async def _pre_process(self: _BaseEvent, *args, **kwargs):
         """
         Handles the pre-processing phase of an event within the event lifecycle. This method
         is executed with the intention of determining whether the event execution should proceed
@@ -288,22 +311,28 @@ class EventCheckPointingMixin:
             result containing a dictionary with the bypass status, data, and status flag.
         :rtype: dict, optional
         """
-        if self.run_bypass_event_checks:
-            try:
-                should_skip, data = self.can_bypass_current_event()
-            except Exception as e:
-                logger.error(
-                    "Error in event setup status checks: %s", str(e), exc_info=e
-                )
-                raise
+        try:
+            result = self.bypass()
+            if asyncio.iscoroutine(result):
+                result = await result
+        except NotImplementedError:
+            return
+        except Exception as e:
+            logger.error("Error in event bypass check: %s", str(e), exc_info=e)
+            raise
 
-            if should_skip:
-                execution_result = {
-                    "status": 1,
-                    "skip_event_execution": should_skip,
-                    "data": data,
-                }
-                return self.on_success(execution_result)
+        if result is None:
+            raise EmptyResultError(self.__class__.__name__, method_name="bypass")
+
+        success, data = self._process_result_tuple(result)
+
+        self.exec_status = success
+        self.exec_result = data
+
+        logger.debug(
+            f"Event '{self.__class__.__name__}' bypassed with " f"status={success}"
+        )
+        raise SkipExecutionError("skipped")
 
     @phase_step(EventPhase.PROCESSING)
     async def _process(self: _BaseEvent, *args, **kwargs):
@@ -408,22 +437,10 @@ class EventCheckPointingMixin:
         else:
             result = await to_thread(self.process, *args, **kwargs)
 
-        is_event_result = isinstance(result, EventResult)
-        is_tuple = isinstance(result, tuple)
-
         if result is None:
-            raise ValueError("Process result cannot be None")
-        if not is_event_result and not is_tuple:
-            raise ValueError(
-                "Process result must be a tuple with two elements or an instance of EventResult"
-            )
-        if is_tuple and not isinstance(result[0], bool):
-            raise ValueError("First element of process result must be a boolean")
+            raise EmptyResultError(event_class=self.__class__.__name__)
 
-        if is_event_result:
-            return result.success, result
-
-        return result
+        return self._process_result_tuple(result)
 
     async def acquire_resource(
         self,
@@ -635,7 +652,7 @@ class EventCheckPointingMixin:
 
     async def enqueue_checkpoint(self) -> None:
         if self.checkpoint_manager is None:
-            logger.warning("Checkpoint manager is not available. Skipping enqueue.")
+            # logger.warning("Checkpoint manager is not available. Skipping enqueue.")
             # Enforce checkpointing if configured
             if conf.get("CHECKPOINT_REQUIRED", default=False):
                 raise RuntimeError(

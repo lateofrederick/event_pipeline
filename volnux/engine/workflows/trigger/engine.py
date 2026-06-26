@@ -157,7 +157,7 @@ class TriggerEngine:
         if drain_timeout <= 0:
             raise ValueError("drain_timeout must be a positive number")
 
-        self.workflow_executor = workflow_executor  # type: ignore[assignment]
+        self.workflow_executor: BaseWorkflowConfigExecutor = workflow_executor  # type: ignore[assignment]
         self.consumer_concurrency = consumer_concurrency
         self.triggers: Dict[str, TriggerBase] = {}
         self._running = False

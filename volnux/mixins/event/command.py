@@ -254,7 +254,7 @@ class EventCommandMixin:
         :type kwargs: dict
         :return: The result produced by the final step
         :rtype: EventResult
-        :raises SuspendTask: When task is preempted for re-queueing
+        :raises SuspendTask: When a task is preempted for re-queueing
         :raises asyncio.CancelledError: When task is cancelled
         :raises Exception: Any error during step execution
         """
@@ -264,7 +264,6 @@ class EventCommandMixin:
             getattr(self._phase, "name", None),
         )
 
-        result = None
         current_index = 0
         steps = list(self._get_steps())
         total_steps = len(steps)
@@ -289,7 +288,7 @@ class EventCommandMixin:
                     )
                     continue
 
-                # Wait for pause gate (non-blocking if gate is set)
+                # Wait for a pause gate (non-blocking if a gate is set)
                 await self._pause_gate.wait()
 
                 # Execute the step
@@ -297,7 +296,7 @@ class EventCommandMixin:
                     logger.debug(
                         f"Executing step {current_index + 1}/{total_steps}: {step.__name__}"
                     )
-                    result = await self._run_step(step, *args, **kwargs)
+                    await self._run_step(step, *args, **kwargs)
 
                 except Exception as e:
                     logger.exception(
@@ -318,7 +317,7 @@ class EventCommandMixin:
                     )
                     raise
 
-                # Non-blocking checkpoint after successful step
+                # Non-blocking checkpoint after a successful step
                 await self.enqueue_checkpoint()
 
                 # Send progress update
@@ -384,4 +383,10 @@ class EventCommandMixin:
             )
             raise
 
+        # construct event result from the exec_status and exec_result attributes
+        result = (
+            self.on_success(self.exec_result)
+            if self.exec_status
+            else self.on_failure(self.exec_result)
+        )
         return result

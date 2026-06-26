@@ -666,6 +666,10 @@ class ExecutorRegistry:
 
 # Global registry
 _global_registry = ExecutorRegistry()
+_global_registry.register("default", DefaultExecutor, override=True)
+_global_registry.register("thread", ThreadPoolExecutor, override=True)
+_global_registry.alias("threads", "thread")
+logger.info("Registered built-in executors:")
 
 
 def get_global_executor_registry() -> ExecutorRegistry:

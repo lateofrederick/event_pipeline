@@ -133,7 +133,7 @@ class TestEventBaseAdditional(unittest.TestCase):
                 return True, {"message": "ok"}
 
         class BypassEvent(EventBase):
-            def can_bypass_current_event(self):
+            def bypass(self):
                 return True, {"reason": "skip"}
 
             def process(self, *args, **kwargs):

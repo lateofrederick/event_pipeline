@@ -155,7 +155,7 @@ class StateDeserializer:
         """Recursively restore keyword arguments.
 
         Inverse of StateSerializer._build_keyword_args.
-        No special transformation needed since _build_keyword_args
+        No special transformation is needed since _build_keyword_args
         preserves the structure — but subclasses can override for
         custom deserialization logic.
         """

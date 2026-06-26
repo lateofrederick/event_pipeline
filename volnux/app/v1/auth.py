@@ -36,9 +36,7 @@ async def login(data: Annotated[LoginForm, Form()]) -> UserLoginResponse:
         raise HTTPException(401, "Invalid credentials")
 
     # Get user's role assignments
-    assignments: List[RoleAssignment] = await RoleAssignment.filter_async(
-        user__object_id=user.id
-    )
+    assignments = await RoleAssignment.filter_async(user__object_id=user.id)
     role_ids = [a.role.id for a in assignments]
     roles = []
     for rid in role_ids:

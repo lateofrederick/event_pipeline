@@ -1,9 +1,15 @@
+import re
+import json
 import logging
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
+
+
+class ProtocolViolation(Exception):
+    pass
 
 
 class LLMProvider(Enum):
@@ -36,6 +42,23 @@ class LLMProviderAdapterBase:
 
         super().__init_subclass__(**kwargs)
         LLMProviderRegistry.register(cls.provider_name, cls)
+
+    @staticmethod
+    def parse_react_tool(text: str):
+        tool_re = re.compile(
+            r"^TOOL:\s*(?:(?P<ns>[^:]+):)?(?P<tool>\w+)\s*\|\s*(?P<args>\{.*\})$",
+            re.DOTALL,
+        )
+        m = tool_re.match(text.strip())
+        if not m:
+            raise ProtocolViolation("Malformed TOOL format")
+
+        return {
+            "action": "TOOL_CALL",
+            "tool_name": m.group("tool"),
+            "namespace": m.group("ns"),
+            "tool_args": json.loads(m.group("args") or "{}"),
+        }
 
     async def complete(
         self,

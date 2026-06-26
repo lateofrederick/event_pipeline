@@ -133,7 +133,7 @@ class WorkflowSource:
 
         Args:
             registry: The workflow registry to register the loaded config into.
-            options:  Optional extra options forwarded to the loader's process().
+            options:  Optional extra options are forwarded to the loader's process().
 
         Returns:
             EventResult with ``error=False`` on success, ``error=True`` on

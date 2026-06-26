@@ -12,6 +12,7 @@ from formax import (
     BaseModel,
     MiniAnnotated,
     ValidationFlags,
+    InitStrategy,
     ValidationError as FormaxValidationError,
 )
 
@@ -138,6 +139,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     class Config:
         validation = ValidationFlags.NONE
+        init_strategy = InitStrategy.DATACLASS
 
     def __post_init__(
         self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]

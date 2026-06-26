@@ -38,37 +38,14 @@ class EventRehydrator:
                 )
             )
 
-        # 5. Deserialize call args
         event._call_args = self.deserializer.deserialize_call_args(snapshot.call_args)
 
-        # 6. Restore retry configuration
         if hasattr(event, "retry_policy") and event.retry_policy:
             event.retry_policy.max_attempts = snapshot.max_retry_attempts
 
+        # Restore user-bound serializable attributes
+        if snapshot.attribs:
+            for key, value in snapshot.attribs.items():
+                setattr(event, key, value)
+
         return event
-
-    async def resume_execution(self, event: "EventBase") -> None:
-        """Resume event execution from its restored state.
-
-        Skips phases that were already completed based on the
-        checkpointed phase value.
-        """
-        current_phase = event.get_phase()
-
-        if current_phase < EventPhase.COMMUNICATING:
-            await event.communicate()
-
-        if current_phase < EventPhase.PRE_PROCESS:
-            await event.pre_process()
-
-        if current_phase < EventPhase.PROCESSING:
-            args = event._call_args.get("args", [])
-            kwargs = event._call_args.get("kwargs", {})
-            event._exec_result = await event.process(*args, **kwargs)
-            event._exec_status = True
-
-        if current_phase < EventPhase.POST_PROCESS:
-            await event.post_process()
-
-        if current_phase < EventPhase.COMPLETED:
-            await event.complete()

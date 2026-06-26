@@ -32,7 +32,7 @@ def initialize_and_register_workflow(
     """
     workflow_config = workflow_class(workflow_path=workflow_dir)
     try:
-        workflow_config.discover_workflow_submodules()
+        workflow_config._ensure_modules_loaded()
         workflow_config.is_executable = True
     except PointyNotExecutable:
         workflow_config.is_executable = False

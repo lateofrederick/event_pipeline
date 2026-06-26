@@ -8,7 +8,6 @@ except ImportError:
 from typing import Any, Dict, List, Optional
 
 from .base import LLMProviderAdapterBase
-from ..base import AgentAction
 from volnux.exceptions import LLMProviderError
 
 
@@ -54,6 +53,7 @@ class OllamaProviderAdapter(LLMProviderAdapterBase):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        from ..base import AgentAction
 
         base_url = os.environ.get("OLLAMA_BASE_URL", self._DEFAULT_BASE_URL).rstrip("/")
         endpoint = f"{base_url}/api/chat"
@@ -85,11 +85,11 @@ class OllamaProviderAdapter(LLMProviderAdapterBase):
 
         # Include tools only when provided — Ollama ignores unknown fields,
         # but some older versions may reject them.
-        if tools:
-            payload["tools"] = [{"type": "function", "function": t} for t in tools]
+        # if tools:
+        #     payload["tools"] = [{"type": "function", "function": t} for t in tools]
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=1200) as client:
                 http_response = await client.post(
                     endpoint,
                     json=payload,
@@ -134,6 +134,12 @@ class OllamaProviderAdapter(LLMProviderAdapterBase):
                     tool_args = {}
             else:
                 tool_args = raw_args
+
+        if content_text.upper().startswith("TOOL:"):
+            components = self.parse_react_tool(content_text)
+            action = AgentAction.TOOL_CALL
+            tool_name = components["tool_name"]
+            tool_args = components.get("tool_args", {})
 
         # Ollama reports usage at the response root in non-streaming mode.
         prompt_tok = data.get("prompt_eval_count", 0)

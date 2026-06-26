@@ -71,7 +71,6 @@ class BaseEvent(Protocol):
     checkpoint_manager: "VolnuxCheckPointManager"
 
     # Resource management
-    run_bypass_event_checks: bool
     _init_args: dict
     _call_args: Union[dict, Any]
     _external_resources: Dict[str, "ResourceState"]
@@ -102,7 +101,7 @@ class BaseEvent(Protocol):
     async def acquire_resource(
         self,
         name: str,
-        provider: Union[str, Type[ResourceProvider]],
+        provider: Union[str, Type["ResourceProvider"]],
         init_args: dict,
         init_func: Optional[Callable[[dict], Any]] = None,
     ) -> Any:
@@ -152,7 +151,12 @@ class BaseEvent(Protocol):
         """
         ...
 
-    def can_bypass_current_event(self) -> Tuple[bool, Any]: ...
+    @staticmethod
+    def _process_result_tuple(
+        result: Any, method_name="process"
+    ) -> Tuple[bool, Any]: ...
+
+    async def bypass(self) -> Optional[Tuple[bool, Any]]: ...
 
     def is_exhausted(self) -> bool: ...
 

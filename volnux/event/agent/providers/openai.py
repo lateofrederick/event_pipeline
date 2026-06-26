@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict
 
 from .base import LLMProviderAdapterBase
@@ -50,7 +51,6 @@ class OpenAIProviderAdapter(LLMProviderAdapterBase):
             action = AgentAction.TOOL_CALL
             tool_name = tc.function.name
             tool_call_id = tc.id
-            import json
 
             tool_args = json.loads(tc.function.arguments or "{}")
 

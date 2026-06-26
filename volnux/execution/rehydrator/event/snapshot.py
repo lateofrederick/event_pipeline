@@ -66,6 +66,10 @@ class EventCheckpointSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         typing.Dict[str, ResourceState], Attrib(default_factory=dict)
     ]
 
+    # User-bound serializable attributes captured from self.__dict__
+    # (framework internals and already-tracked keys are excluded)
+    attribs: MiniAnnotated[typing.Dict[str, typing.Any], Attrib(default_factory=dict)]
+
     # Metadata for the orchestrator (e.g., when it was last touched)
     timestamp: MiniAnnotated[
         float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())

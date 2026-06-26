@@ -9,8 +9,15 @@ from volnux.parser.operator import PipeType
 from volnux.parser.protocols import TaskType
 from volnux.pipeline import Pipeline
 
-from ..execution.utils import evaluate_context_execution_results
-from .base import EngineExecutionResult, EngineResult, TaskNode, WorkflowEngine
+from ...execution.utils import evaluate_context_execution_results
+from .base import (
+    CheckPointConfig,
+    CheckPointFrequency,
+    EngineExecutionResult,
+    EngineResult,
+    TaskNode,
+    WorkflowEngine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +26,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
     """
     Default iterative workflow execution engine.
 
-    This engine uses a queue-based breadth-first traversal strategy to execute
+    This engine uses a queue-based traversal strategy to execute
     workflows without recursion, preventing stack overflow issues.
 
     Orchestration Strategy:
@@ -29,16 +36,19 @@ class DefaultWorkflowEngine(WorkflowEngine):
     - Dynamic task switching support
     - Deferred sink node execution
     - Context chaining for execution history
+    - Opt-in checkpointing via base class hooks
 
     The engine focuses solely on flow control and delegates:
-    - Task execution → ExecutionContext
-    - Metrics collection → ExecutionContext
-    - Hook invocation → ExecutionContext
-    - Error handling → ExecutionContext
+    - Task execution -> ExecutionContext
+    - Metrics collection -> ExecutionContext
+    - Hook invocation -> ExecutionContext
+    - Error handling -> ExecutionContext
     """
 
     def __init__(
         self,
+        enable_checkpointing: bool = False,
+        checkpoint_config: typing.Optional[CheckPointConfig] = None,
         enable_debug_logging: bool = False,
         strict_mode: bool = True,
     ):
@@ -46,11 +56,31 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Initialize the default workflow engine.
 
         Args:
+            enable_checkpointing: If True, enables checkpoint persistence
+            checkpoint_config: Optional checkpoint configuration; defaults
+                to CheckPointConfig() when enable_checkpointing is True
             enable_debug_logging: If True, enables detailed flow logging
-            strict_mode: If True, stops execution on first error; if False, attempts to continue
+            strict_mode: If True, stops execution on first error; if False,
+                attempts to continue
         """
+        super().__init__(
+            enable_checkpointing=enable_checkpointing,
+            checkpoint_config=checkpoint_config,
+        )
+        self._task_queue: typing.Deque[TaskNode] = deque()
+        self._sink_queue: typing.Deque[TaskType] = deque()
         self.enable_debug_logging = enable_debug_logging
         self.strict_mode = strict_mode
+
+    @property
+    def task_queue(self) -> typing.Deque[TaskNode]:
+        """Primary engine queue used for active task scheduling."""
+        return self._task_queue
+
+    @property
+    def sink_queue(self) -> typing.Deque[TaskType]:
+        """Queue used for deferred/sink tasks."""
+        return self._sink_queue
 
     def get_name(self) -> str:
         return "DefaultIterativeEngine"
@@ -61,19 +91,22 @@ class DefaultWorkflowEngine(WorkflowEngine):
         pipeline: Pipeline,
     ) -> EngineResult:
         """
-        Execute workflow using iterative queue-based traversal.
+        Execute a workflow using iterative queue-based traversal.
 
         Flow:
-        1. Initialize work queue with root task
-        2. Process tasks from queue (LIFO for depth-first)
-        3. Detect parallelism and group parallel tasks
-        4. Create execution context and chain to previous
-        5. Delegate execution to context (context handles hooks/metrics)
-        6. Evaluate execution state for early termination
-        7. Handle dynamic task switching
-        8. Evaluate conditionals and determine next task
-        9. Schedule the next task in queue
-        10. Process deferred sink nodes
+        1. Reset queues and counters for fresh execution
+        2. Initialize a work queue with a root task
+        3. Process tasks from queue (LIFO via appendleft/popleft)
+        4. Detect parallelism and group parallel tasks
+        5. Create execution context and chain to previous
+        6. Checkpoint before a task (if checkpointing is enabled)
+        7. Delegate execution to context (context handles hooks/metrics)
+        8. Checkpoint after a task (if checkpointing is enabled)
+        9. Evaluate execution state for early termination
+        10. Handle dynamic task switching
+        11. Evaluate conditionals and determine the next task
+        12. Schedule the next task in the queue
+        13. Process deferred sink nodes
 
         Args:
             root_task: The workflow entry point
@@ -89,20 +122,20 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 status=EngineExecutionResult.COMPLETED, tasks_processed=0
             )
 
-        # Work queue: (task, previous_context)
-        self.queue: typing.Deque[TaskNode] = deque()
-        self.queue.append(TaskNode(root_task, None))
+        # Reset state for fresh execution
+        self.task_queue.clear()
+        self.sink_queue.clear()
+        self.tasks_processed = 0
+        self.final_context = None
+        self.current_task_node = None
 
-        # Deferred sink nodes
-        sink_queue: typing.Deque[TaskType] = deque()
-
-        tasks_processed = 0
-        execution_error: typing.Optional[Exception] = None
+        # Seed the work queue
+        self.task_queue.append(TaskNode(root_task, None))
 
         try:
-            while self.queue:
-                executable_node = self.queue.popleft()
-                tasks_processed += 1
+            while self.task_queue:
+                executable_node = self.task_queue.popleft()
+                self.tasks_processed += 1
 
                 if self.enable_debug_logging:
                     logger.debug(f"[Engine] Processing task: {executable_node.task}")
@@ -111,15 +144,20 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     # Detect parallelism
                     parallel_tasks = self._detect_parallel_tasks(executable_node.task)
 
+                    # Build execution context
                     execution_context = self._build_context(
                         task=executable_node.task,
                         pipeline=pipeline,
                         previous_context=executable_node.previous_context,
                         parallel_tasks=parallel_tasks,
-                        sink_queue=sink_queue,
                     )
 
                     self.final_context = execution_context
+
+                    # Checkpoint before task execution (idempotency support)
+                    await self._checkpoint_before_task(
+                        execution_context, executable_node
+                    )
 
                     # Dispatch task profiles for execution
                     await execution_context.dispatch()
@@ -127,12 +165,15 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     # Get execution state
                     execution_state = await execution_context.state_async
 
+                    # Checkpoint after task completion
+                    await self._checkpoint_after_task(execution_context, success=True)
+
                     if self._should_terminate(execution_state):
                         status = self._map_termination_status(execution_state.status)
                         return EngineResult(
                             status=status,
                             final_context=self.final_context,
-                            tasks_processed=tasks_processed,
+                            tasks_processed=self.tasks_processed,
                         )
 
                     # Handle task switching
@@ -140,7 +181,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                         task=executable_node.task,
                         execution_state=execution_state,
                         previous_context=executable_node.previous_context,
-                        queue=self.queue,
+                        queue=self.task_queue,
                     )
                     if switched:
                         continue
@@ -150,46 +191,72 @@ class DefaultWorkflowEngine(WorkflowEngine):
                         executable_node.task, execution_context
                     )
 
-                    # Schedule next task
+                    # Schedule the next task (prepend for LIFO depth-first)
                     if next_task:
-                        self.queue.appendleft(TaskNode(next_task, execution_context))
+                        self._task_queue.appendleft(
+                            TaskNode(next_task, execution_context)
+                        )
 
                 except Exception as e:
                     logger.error(
-                        f"[Engine] Error processing task {executable_node.task}: {e}",
+                        f"[Engine] Error processing task "
+                        f"{executable_node.task}: {e}",
                         exc_info=True,
                     )
-                    execution_error = e
 
                     if self.strict_mode:
                         return EngineResult(
                             status=EngineExecutionResult.FAILED,
-                            final_context=final_context,
+                            final_context=self.final_context,
                             error=e,
-                            tasks_processed=tasks_processed,
+                            tasks_processed=self.tasks_processed,
                         )
                     # In non-strict mode, continue to next task
 
-            # Process sink nodes
-            self._drain_sink_nodes(sink_queue, pipeline)
+            # Process deferred sink nodes
+            await self._drain_sink_nodes(pipeline)
 
             if self.enable_debug_logging:
-                logger.debug(f"[Engine] Completed processing {tasks_processed} tasks")
+                logger.debug(
+                    f"[Engine] Completed processing {self.tasks_processed} tasks"
+                )
 
         except Exception as e:
             logger.exception("[Engine] Fatal error during workflow execution")
             return EngineResult(
                 status=EngineExecutionResult.FAILED,
-                final_context=final_context,
+                final_context=self.final_context,
                 error=e,
-                tasks_processed=tasks_processed,
+                tasks_processed=self.tasks_processed,
             )
 
         return EngineResult(
             status=EngineExecutionResult.COMPLETED,
-            final_context=final_context,
-            tasks_processed=tasks_processed,
+            final_context=self.final_context,
+            tasks_processed=self.tasks_processed,
         )
+
+    async def _checkpoint_after_task(self, context: "ExecutionContext", success: bool):
+        """
+        Override base to persist after a task without double-counting.
+
+        The execute() loop manages ``self.tasks_processed`` directly,
+        so this override only handles persistence and state cleanup.
+        """
+        if not self._checkpointer:
+            return
+
+        self.current_task_node = None
+
+        if self._checkpoint_frequency in [
+            CheckPointFrequency.PER_TASK,
+            CheckPointFrequency.ON_STATE_CHANGE,
+        ]:
+            await context.persist()
+            logger.debug(
+                f"[Engine] Checkpointed after task: "
+                f"{self.tasks_processed} tasks processed"
+            )
 
     def _detect_parallel_tasks(
         self, task: TaskType
@@ -209,7 +276,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         if not task.is_parallel_execution_node:
             return None
 
-        parallel_tasks = set()
+        parallel_tasks: typing.Set[TaskType] = set()
         current = task
 
         while (
@@ -231,7 +298,6 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self,
         task: TaskType,
         pipeline: Pipeline,
-        sink_queue: typing.Deque[TaskType],
         previous_context: typing.Optional[ExecutionContext] = None,
         parallel_tasks: typing.Optional[typing.Set[TaskType]] = None,
     ) -> ExecutionContext:
@@ -246,7 +312,6 @@ class DefaultWorkflowEngine(WorkflowEngine):
             pipeline: Workflow pipeline
             previous_context: Previous context for chaining
             parallel_tasks: Parallel task group if applicable
-            sink_queue: Queue to collect sink nodes
 
         Returns:
             Configured ExecutionContext
@@ -255,6 +320,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             pipeline=pipeline,  # type: ignore
             task_profiles=list(parallel_tasks) if parallel_tasks else task,  # type: ignore
         )
+        context.set_engine(self)
 
         if previous_context is None:
             # First context becomes pipeline's root context
@@ -262,7 +328,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         else:
             # Collect sink nodes for deferred execution
             if task.sink_node:
-                sink_queue.append(task.sink_node)
+                self.sink_queue.append(task.sink_node)
 
             # Link context chain
             context.previous_context = previous_context
@@ -316,7 +382,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             queue: Work queue to prepend a switched task
 
         Returns:
-            True if switch occurred, False otherwise
+            True if a switch occurred, False otherwise
 
         Raises:
             TaskSwitchingError: If target descriptor doesn't exist
@@ -330,16 +396,20 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         if next_task is None:
             raise TaskSwitchingError(
-                f"Cannot switch to descriptor '{switch_request.next_task_descriptor}'",
+                f"Cannot switch to descriptor "
+                f"'{switch_request.next_task_descriptor}'",
                 params=switch_request,
                 code="task-switching-failed",
             )
 
-        # Schedule switched a task
+        # Schedule the switched task
         queue.appendleft(TaskNode(next_task, previous_context))
 
         if self.enable_debug_logging:
-            logger.debug(f"[Engine] Switched to descriptor: {switch_request.next_task_descriptor}")  # type: ignore
+            logger.debug(
+                f"[Engine] Switched to descriptor: "
+                f"{switch_request.next_task_descriptor}"  # type: ignore
+            )
 
         return True
 
@@ -350,14 +420,14 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Determine the next task based on conditional or sequential flow.
 
         For conditional tasks, evaluate the condition and follow
-        success/failure branch. For normal tasks, follow a success path.
+         the success / failure branch. For normal tasks, follow a success path.
 
         Args:
             task: Current task
             execution_context: Context with execution results
 
         Returns:
-            Next task to execute, or None if workflow ends
+            Next task to execute, or None if the workflow ends
         """
         if task.is_conditional:
             return self._evaluate_conditional_branch(task, execution_context)
@@ -399,7 +469,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self, task: TaskType, execution_context: ExecutionContext
     ) -> typing.Optional[TaskType]:
         """
-        Follow normal sequential flow.
+        Follow the normal sequential flow.
 
         For multitask contexts, uses decision task's success path.
         For single tasks, follows standard success path.
@@ -419,27 +489,24 @@ class DefaultWorkflowEngine(WorkflowEngine):
         else:
             return task.condition_node.on_success_event  # type: ignore
 
-    def _drain_sink_nodes(
-        self, sink_queue: typing.Deque[TaskType], pipeline: Pipeline
-    ) -> None:
+    async def _drain_sink_nodes(self, pipeline: Pipeline) -> None:
         """
         Execute deferred sink nodes.
 
-        Sink nodes are executed after main workflow completes,
+        Sink nodes are executed after the main workflow completes,
         typically for cleanup or finalization tasks.
 
         Args:
-            sink_queue: Queue of accumulated sink nodes
             pipeline: Workflow pipeline
         """
-        if not sink_queue:
+        if not self._sink_queue:
             return
 
         if self.enable_debug_logging:
-            logger.debug(f"[Engine] Processing {len(sink_queue)} sink nodes")
+            logger.debug(f"[Engine] Processing {len(self._sink_queue)} sink nodes")
 
-        while sink_queue:
-            sink_task = sink_queue.popleft()
+        while self._sink_queue:
+            sink_task = self._sink_queue.popleft()
 
             try:
                 # Create standalone context for sink node
@@ -447,7 +514,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     pipeline=pipeline,  # type: ignore
                     task_profiles=sink_task,  # type: ignore
                 )
-                context.dispatch()
+                await context.dispatch()
 
             except Exception as e:
                 logger.error(f"[Engine] Error in sink node {sink_task}: {e}")

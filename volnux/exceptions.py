@@ -125,6 +125,25 @@ class ValidationError(PipelineError, ValueError):
         super().__init__(*args, **kwargs)  # type: ignore
 
 
+class EmptyResultError(Exception):
+    """Raised when an event's process() method returns a None or no result."""
+
+    def __init__(self, event_class: str, method_name: Optional[str] = None):
+        super().__init__(
+            f"The {method_name or 'process'}() method of '{event_class}' did not return a result.\n\n"
+            f"Every {method_name or 'process'}() method must return a tuple of (success: bool, result: Any).\n"
+            f"Example:\n"
+            f"    async def {method_name or 'process'}(self, *args, **kwargs):\n"
+            f"        data = await self.previous_result.first()\n"
+            f"        processed = transform(data)\n"
+            f"        return True, processed\n\n"
+            f"Check your implementation and ensure:\n"
+            f"  1. The method returns a value (not None)\n"
+            f"  2. The first element is a boolean (True/False)\n"
+            f"  3. The second element is your result data"
+        )
+
+
 class ObjectExistError(ValueError):
     """ObjectExistError raised when an object already exists."""
 
@@ -183,6 +202,12 @@ class SuspendTask(Exception):
     ):
         self.task_instance = task_instance
         super().__init__(message)
+
+
+class SkipExecutionError(Exception):
+    """Raised internally to skip remaining lifecycle phases."""
+
+    pass
 
 
 @dataclass
