@@ -33,7 +33,7 @@ from volnux.result import ResultSet as TriggerSet
 from volnux.event import EventBase
 from volnux.event.agent import AgentEventBase
 from volnux.event.meta import ControlFlowEvent
-from volnux.pipeline import Pipeline, BatchPipeline
+from volnux.execution.pipeline import Pipeline, BatchPipeline
 from volnux.config import VolnuxConfig
 from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
@@ -173,6 +173,11 @@ class WorkflowConfig(ABC):
     default_timeout: int = 300_000  # milliseconds
     default_retries: int = 3
     default_auto_cleanup: bool = False
+
+    # checkpointing
+    checkpointing = True
+    checkpoint_interval: int = 10000
+    checkpoint_timeout: int = 300000
 
     def __init__(self, workflow_path: Optional[Path] = None):
         """Initialize the workflow configuration.
@@ -548,7 +553,7 @@ class WorkflowConfig(ABC):
         return issues
 
     # Execution
-    def run_workflow(
+    async def run_workflow(
         self,
         params: Dict[str, Any],
         run_type: Literal["batch", "single"] = "single",
@@ -571,26 +576,27 @@ class WorkflowConfig(ABC):
         """
         issues = self.check()
         if issues:
-            for issue in issues:
-                logger.warning("Workflow '%s' check: %s", self.name, issue)
-            return None
+            issue_summary = "; ".join(issues)
+            raise WorkflowExecutionError(
+                f"Workflow '{self.name}' pre-flight checks failed: {issue_summary}"
+            )
 
         if run_type == "single":
-            return self._run_single(params)
+            return await self._run_single(params)
 
         if run_type == "batch":
-            return self._run_batch(params)
+            return await self._run_batch(params)
 
         raise RuntimeError(
             f"Unknown run_type '{run_type}'. Expected 'single' or 'batch'."
         )
 
-    def _run_single(self, params: Dict[str, Any]) -> Pipeline:
+    async def _run_single(self, params: Dict[str, Any]) -> Pipeline:
         """Execute a single pipeline run."""
         pipeline_class = self.get_pipeline_class()
         try:
             pipeline = pipeline_class(**params)
-            pipeline.start(force_rerun=True)
+            await pipeline.start(force_rerun=True)
             logger.info("Workflow '%s' completed single run successfully", self.name)
             return pipeline
         except Exception as e:
@@ -599,12 +605,24 @@ class WorkflowConfig(ABC):
                 f"Workflow '{self.name}' execution failed"
             ) from e
 
-    def _run_batch(self, params: Dict[str, Any]) -> BatchPipeline:
-        """Execute a batch pipeline run."""
+    async def _run_batch(
+        self, params: Dict[str, Any], on_result: typing.Optional[typing.Callable] = None
+    ) -> BatchPipeline:
+        """
+        Execute a batch pipeline run.
+
+        Args:
+            params: Parameters passed to the BatchPipeline constructor.
+            on_result: Callback invoked for each completed result. When
+                       ``None``, a no-op discard callback is used — results
+                       are not accumulated. Pass a callback to collect or
+                       stream results.
+        """
         batch_pipeline_class = self.get_batch_pipeline_class()
+        _on_result = on_result if on_result is not None else (lambda r: None)
         try:
             batch_pipeline = batch_pipeline_class(**params)
-            batch_pipeline.execute()
+            await batch_pipeline.execute(on_result=_on_result)
             logger.info("Workflow '%s' completed batch run successfully", self.name)
             return batch_pipeline
         except Exception as e:

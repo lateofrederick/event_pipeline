@@ -1,10 +1,13 @@
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from formax import Attrib, BaseModel, MiniAnnotated, preformat, postformat
 
 from .triggers import TriggerLifecycle
 from volnux.mixins import KeyValueStoreIntegrationMixin
+
+if TYPE_CHECKING:
+    from volnux.result import ResultStream
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
         }
 
     @classmethod
-    async def get_dirty(cls) -> List["TriggerStateRecord"]:
+    async def get_dirty(cls) -> "ResultStream[TriggerStateRecord]":
         records = await cls.filter_async(dirty=True)
         return records
 

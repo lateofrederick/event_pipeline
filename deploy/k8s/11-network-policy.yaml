@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/11-network-policy.yaml
 #
 # NetworkPolicies for all Volnux components.
 #

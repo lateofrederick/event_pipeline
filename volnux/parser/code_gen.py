@@ -257,10 +257,10 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_unaryop(self, node: ast.UnaryOpNode):
         pass
 
-    def visit_access_environment_variable(
-        self, node: ast.EnvironmentVariableAccessNode
-    ):
-        pass
+    # def visit_access_environment_variable(
+    #     self, node: ast.EnvironmentVariableAccessNode
+    # ):
+    #     pass
 
     def visit_list(self, node: ast.ListNode):
         pass

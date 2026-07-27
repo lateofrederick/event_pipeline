@@ -35,7 +35,8 @@ from typing import (
 from datetime import datetime, timezone
 
 from .state import TriggerStateRecord
-from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotfound
+from volnux.engine.workflows.workflow import WorkflowExecutionError
+from volnux.exceptions import WorkflowNotfound
 from .triggers import TriggerBase, TriggerLifecycle, TriggerActivation, TriggerType
 
 if TYPE_CHECKING:
@@ -201,7 +202,7 @@ class TriggerEngine:
         that the framework has been properly initialized and a workflow executor is available before
         attempting to access the workflow registry.
 
-        :raises WorkflowExecutionError: If the workflow executor is not available or the framework
+        :raises WorkflowExecutionError: If the workflow executor is not available, or the framework
             has not been initialized correctly.
 
         :return: The workflow registry instance associated with the workflow executor.
@@ -426,7 +427,7 @@ class TriggerEngine:
         stop_errors: List[Tuple[str, Exception]] = []
         for trigger in self.triggers.values():
             try:
-                await trigger.stop()
+                await trigger.end()
             except Exception as e:
                 stop_errors.append((trigger.trigger_id, e))
 
@@ -509,7 +510,7 @@ class TriggerEngine:
 
         elif lifecycle == TriggerLifecycle.STOPPED:
             logger.info("State-sync: stopping trigger '%s'.", record.id)
-            await trigger.stop()
+            await trigger.end()
 
         else:
             logger.debug(

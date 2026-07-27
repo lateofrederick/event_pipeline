@@ -1,0 +1,48 @@
+import logging
+from typing import Any
+
+from volnux.backends.messaging.base import PubSubCapabilityMixin, PushPopCapabilityMixin
+
+logger = logging.getLogger(__name__)
+
+
+def supports_pubsub(backend: Any) -> bool:
+    """Return True if the backend implements PubSubCapabilityMixin."""
+    return isinstance(backend, PubSubCapabilityMixin)
+
+
+def supports_pushpop(backend: Any) -> bool:
+    """Return True if the backend implements PushPopCapabilityMixin."""
+    return isinstance(backend, PushPopCapabilityMixin)
+
+
+def require_pubsub(backend: Any, feature: str) -> None:
+    """
+    Assert that backend supports pub/sub.
+    Raises a clear error when a feature that needs pub/sub is used
+    with a backend that does not implement it.
+
+    Usage:
+        require_pubsub(engine.checkpoint_backend, "RehydrationManager")
+    """
+    if not supports_pubsub(backend):
+        raise TypeError(
+            f"{feature} requires a backend that implements PubSubCapabilityMixin. "
+            f"'{type(backend).__name__}' does not support pub/sub. "
+            f"Configure a Redis or PostgreSQL backend for this feature."
+        )
+
+
+def require_pushpop(backend: Any, feature: str) -> None:
+    """
+    Assert that backend supports push/pop.
+
+    Usage:
+        require_pushpop(engine.checkpoint_backend, "HITLQueue")
+    """
+    if not supports_pushpop(backend):
+        raise TypeError(
+            f"{feature} requires a backend that implements PushPopCapabilityMixin. "
+            f"'{type(backend).__name__}' does not support push/pop. "
+            f"Configure a Redis backend for this feature."
+        )

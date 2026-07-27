@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/13-postgres-backup-cronjob.yaml
 #
 # Nightly PostgreSQL backup CronJob.
 #

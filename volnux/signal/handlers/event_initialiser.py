@@ -8,6 +8,8 @@ from volnux.signal.signals import event_init
 
 ValidatorFunc = Callable[[Any, str, EventBase], None]
 
+PROTECTED_NAMES = EventBase.__dict__.keys()
+
 
 class EventInitKwargs(typing.TypedDict, total=False):
     type: typing.Type[typing.Any]
@@ -24,12 +26,11 @@ def inject_event_initialisation_extra_params(
     event: EventBase, **init_kwargs: Dict[str, Any]
 ):
     """
-    A generic listener connected to event_init that reads the EXTRA_INIT_PARAMS_SCHEMA
+    A generic listener connected to event_init that reads the INIT_PARAMS_SCHEMA
     (defined using the ExtraEventInitKwargs TypedDict), handles required parameters,
     default values, default factories, and custom validators, then injects
     the parameters as instance attributes.
     """
-    PROTECTED_NAMES = EventBase.__dict__.keys()
     event_class = type(event)
 
     if not hasattr(event_class, "INIT_PARAMS_SCHEMA"):

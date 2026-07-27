@@ -1,5 +1,5 @@
 from volnux.parser.protocols import TaskType
-from volnux.pipeline import Pipeline
+from volnux.execution.pipeline import Pipeline
 
 from .base import EngineExecutionResult, EngineResult
 from .default_engine import DefaultWorkflowEngine

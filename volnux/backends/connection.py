@@ -191,7 +191,7 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
         """Ensure the connection is active, reconnecting if necessary.
 
         Raises:
-            ConnectionError: If connection cannot be established.
+            ConnectionError: If a connection cannot be established.
         """
         if not self.is_connected():
             logger.info(f"Reconnecting to {self.config.host}:{self.config.port}")

@@ -48,10 +48,6 @@ class SubgraphControlFlow(ControlFlowEvent):
         self._subgraph_root: Optional[TaskType] = None
         self._result_processor = ResultProcessor()
 
-    # ------------------------------------------------------------------
-    # Public API — called by the parent engine
-    # ------------------------------------------------------------------
-
     def set_subgraph(self, root: TaskType, events: List[TaskType]) -> None:
         """
         Configure the subgraph with its root task and all contained events.
@@ -64,10 +60,6 @@ class SubgraphControlFlow(ControlFlowEvent):
         """
         self._subgraph_root = root
         self._subgraph_events = events
-
-    # ------------------------------------------------------------------
-    # ControlFlowEvent interface
-    # ------------------------------------------------------------------
 
     def get_template_class(self) -> None:
         # Subgraphs don't have a template class — they contain their own events

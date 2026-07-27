@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/10-hpa.yaml
 #
 # HorizontalPodAutoscalers for API and Worker deployments.
 #

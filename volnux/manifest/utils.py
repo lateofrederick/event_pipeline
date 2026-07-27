@@ -10,7 +10,7 @@ import importlib.resources as pkg_resources
 from pathlib import Path
 from urllib.parse import quote
 from volnux import __version__ as volnux_runtime_version
-from typing import Any, Dict, List, Optional, Union, Set, TYPE_CHECKING, Tuple
+from typing import Any, Dict, List, Optional, Union, Set, TYPE_CHECKING, Tuple, Literal
 from urllib.parse import urlparse, urlunparse
 
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ __all__ = [
     "load_manifest",
     "check_compatibility",
     "register_workflow_config_and_events_from_manifest",
-    "build_authenticated_index_url",
+    "build_authenticated_url",
     "resolve_workflow_config_classes",
     "resolve_event_class",
     "redact_credentials",
@@ -589,84 +589,84 @@ def _validate_event_class(
     return candidate
 
 
-def build_authenticated_index_url(
+def build_authenticated_url(
     credentials: "SourceCredentials",
-    index_url: str,
-) -> Optional[Union[str, bytes]]:
+    url: str,
+    auth_style: Literal["general", "pypi"] = "general",
+) -> Union[str, bytes]:
     """
-    Embed ``credentials`` into ``index_url`` and return the authenticated URL.
+    Embed ``credentials`` into ``url`` and return the authenticated URL.
 
     The credential is placed in the URL authority component
-    (``scheme://auth@host/path``) so it is sent as HTTP Basic Auth by pip.
+    (``scheme://auth@host/path``) so it is transmitted as HTTP Basic Auth.
     This avoids passing secrets as plaintext CLI arguments that could be
     captured by process-listing tools or shell history.
 
-    Token auth (preferred)::
+    Non-HTTP schemes (``ssh://``, ``git://``) are returned unchanged —
+    those transports use key-based auth and do not embed credentials in URLs.
 
-        https://token@my.registry.com/simple
+    Auth styles
+    -----------
+    ``General`` (default)::
+        https://<token>@host/path
+        https://<username>:<password>@host/path
 
-    Username/password auth::
+    ``PyPI``::
+        https://__token__:<token>@host/path
+        https://<username>:<password>@host/path
 
-        https://user:password@my.registry.com/simple
+    Args:
+        credentials: Must satisfy ``is_valid()`` before calling.
+        url:         The remote URL to authenticate.
+        auth_style:  Token embedding convention. Defaults to ``general``.
 
-    Returns ``None`` if:
-    - ``index_url`` is not a valid ``http://`` or ``https://`` URL.
-    - ``credentials.is_valid()`` is False (guards against a partially
-      constructed ``SourceCredentials`` reaching this function).
+    Returns:
+        The authenticated URL as a string, or the original URL unchanged for
+        non-HTTP/HTTPS schemes.
 
-    The returned URL is only passed to pip internals and is never logged
-    directly. All log sites must pass the URL through ``_redact_credentials``
-    before emitting it.
+    Raises:
+        ValueError: If ``credentials.is_valid()`` is ``False``.
+        ValueError: If ``url`` is an http/https URL with no valid hostname.
     """
     if not credentials.is_valid():
-        logger.debug(
-            "_build_authenticated_index_url: credentials are not valid; "
-            "returning unauthenticated URL."
+        raise ValueError(
+            "Cannot build authenticated URL: credentials are not valid. "
+            "Provide either a token or both username and password."
         )
-        return None
 
-    parsed = urlparse(index_url)
+    parsed = urlparse(url)
 
+    # Non-HTTP schemes (ssh://, git://) use key-based auth — return unchanged.
     if parsed.scheme not in ("http", "https"):
-        logger.error(
-            "_build_authenticated_index_url: '%s' is not a valid http/https "
-            "URL. Only http and https private registries are supported.",
-            redact_credentials(index_url),
-        )
-        return None
+        return url
 
-    if not parsed.netloc:
-        logger.error(
-            "_build_authenticated_index_url: '%s' has no host component.",
-            redact_credentials(index_url),
+    if not parsed.hostname:
+        raise ValueError(
+            f"Cannot build authenticated URL: {redact_credentials(url)!r} "
+            "has no valid host component."
         )
-        return None
 
-    # Build the auth string. Token takes precedence over username/password
-    # because token auth is more secure and more widely supported by private
-    # PyPI-compatible registries (e.g. Artifactory, AWS CodeArtifact, GCP
-    # Artifact Registry, Azure Artifacts).
     if credentials.token:
-        # Many registries use "__token__" as the conventional username when
-        # authenticating with a token. The token itself is the password.
-        auth = f"__token__:{credentials.token}"
+        if auth_style.lower() is "pypi":
+            # PyPI convention: __token__ is the username, token is the password.
+            auth = f"__token__:{credentials.token}"
+        else:
+            # Git convention: bare token as the userinfo (no explicit password).
+            auth = credentials.token
     else:
-        # Percent-encode username and password to handle special characters
-        # (e.g. "@", ":", "/") that would otherwise break URL parsing.
+        # Username/password — percent-encode to handle special characters
+        # (@, :, /) that would otherwise break URL parsing.
         encoded_user = quote(credentials.username, safe="")
         encoded_pass = quote(credentials.password, safe="")
         auth = f"{encoded_user}:{encoded_pass}"
 
-    # Replace any existing netloc auth (user:pass@host) with the new
-    #  credentials, so we never double-embed if the URL already had auth.
+    # Reconstruct netloc from hostname + optional port only, stripping any
+    # pre-existing auth — prevents double-embedding on already-authenticated URLs.
     host_only = parsed.hostname
     if parsed.port:
         host_only = f"{host_only}:{parsed.port}"
 
-    authenticated_netloc = f"{auth}@{host_only}"
-    authenticated = parsed._replace(netloc=authenticated_netloc)
-
-    return urlunparse(authenticated)
+    return urlunparse(parsed._replace(netloc=f"{auth}@{host_only}"))
 
 
 def redact_credentials(text: str) -> str:

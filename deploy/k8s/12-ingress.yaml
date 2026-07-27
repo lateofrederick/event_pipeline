@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/12-ingress.yaml
 #
 # Ingress for Volnux REST API and Web Dashboard.
 # Requires:

@@ -4,6 +4,10 @@ import typing
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.backends.connection import BackendConnectorBase, ConnectionConfig
+from volnux.backends.messaging.stores.inmemory import (
+    InMemoryPubSubMixin,
+    InMemoryPushPopMixin,
+)
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError
 
 
@@ -45,7 +49,9 @@ class DummyConnector(BackendConnectorBase):
         pass
 
 
-class InMemoryKeyValueStoreBackend(KeyValueStoreBackendBase):
+class InMemoryKeyValueStoreBackend(
+    InMemoryPubSubMixin, InMemoryPushPopMixin, KeyValueStoreBackendBase
+):
     """
     In-memory implementation of the KeyValueStoreBackend.
 
@@ -54,6 +60,23 @@ class InMemoryKeyValueStoreBackend(KeyValueStoreBackendBase):
     CRUD functionalities. The data is stored in memory, and no persistence is
     provided. It is suitable for testing and scenarios where persistence is
     not required.
+
+    Example:
+        >>> backend = InMemoryKeyValueStoreBackend()
+        >>>
+        >>> # Key-value store operations
+        >>> backend.insert("users", "user_1", user_record)
+        >>> user = backend.get("users", UserModel, "user_1")
+        >>>
+        >>> # Pub/sub operations
+        >>> await backend.publish("events:user", {"action": "created"})
+        >>> async with backend.subscribe("events:user") as messages:
+        ...     async for msg in messages:
+        ...         print(msg["data"])
+        >>>
+        >>> # Queue operations
+        >>> await backend.push("tasks", task_1, task_2)
+        >>> task = await backend.pop("tasks")
 
     :ivar connector_klass: Specifies the default connector class for the
         backend. This is set to `DummyConnector`.
@@ -66,9 +89,25 @@ class InMemoryKeyValueStoreBackend(KeyValueStoreBackendBase):
         super().__init__(namespace_prefix)
         self._storage: typing.Dict[str, typing.Dict[str, typing.Any]] = {}
 
+        # Initialize messaging mixins
+        self.__post_init_pubsub__()
+        self.__post_init_queues__()
+
     def close(self) -> None:
         with self._acquire_lock():
             self._storage.clear()
+
+            # Cleanup pub/sub
+            if hasattr(self, "_pubsub_channels"):
+                self._pubsub_channels.clear()
+            if hasattr(self, "_pubsub_patterns"):
+                self._pubsub_patterns.clear()
+
+            # Cleanup queues
+            if hasattr(self, "_queues"):
+                self._queues.clear()
+            if hasattr(self, "_queue_events"):
+                self._queue_events.clear()
 
     def create_filter_predicate(
         self, **filter_kwargs: typing.Any

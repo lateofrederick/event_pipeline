@@ -18,7 +18,7 @@ class TaskBase(ObjectIdentityMixin):
         self.options: typing.Optional[Options] = None
 
         # Use for identify the order of a task.
-        # This will be pass to events during initialisation
+        # This will be passed to events during initialization
         self.sequence_number: typing.Optional[int] = None
 
         # attributes for when a task is created from a descriptor

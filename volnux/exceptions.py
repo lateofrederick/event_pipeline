@@ -375,3 +375,17 @@ class CommandError(Exception):
     """Exception raised for command errors."""
 
     pass
+
+
+class SubprocessTimeoutError(Exception):
+    """
+    Raised by ``run_command`` when the subprocess exceeds its timeout.
+
+    Wraps ``subprocess.TimeoutExpired`` with the timeout value already
+    converted to seconds, so callers do not need to re-derive it.
+    """
+
+    def __init__(self, cmd: List[str], timeout_seconds: float):
+        self.cmd = cmd
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"Command timed out after {timeout_seconds:.1f}s: {cmd[0]!r}")

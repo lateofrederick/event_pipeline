@@ -104,7 +104,7 @@ class EventCategory(str, Enum):
         INGEST
             Streaming or continuous data ingestion (Kafka, CDC, webhooks, etc.).
             Prefer ``EXTRACT`` for one-shot batch reads.
-                ETL categories do not cover DATABASE
+            ETL categories do not cover DATABASE
     Relational / NoSQL database operations.
         HTTP
             Outbound HTTP / REST / GraphQL calls.
@@ -311,17 +311,12 @@ class EventBase(
 
     def __init_subclass__(cls, **kwargs: typing.Dict[str, typing.Any]) -> None:
         # prevent the overriding of __init__
-        if cls.__name__ != "EventBase":
-            for attr_name in ["__init__"]:
-                if attr_name in cls.__dict__:
-                    raise PermissionError(
-                        f"Model '{cls.__name__}' cannot override {attr_name!r}. "
-                        f"Consider registering a 'listener' function for the signal 'event_init' "
-                        f"for all your custom initialization. Also, you can configure the EXTRA_INIT_PARAMS_SCHEMA "
-                        f"class variable and the runtime will take care of the initialisation of your custom arguments"
-                        f"You can also handle initialisation within the 'process' method"
-                    )
-
+        if "__init__" in cls.__dict__:
+            raise ImproperlyConfigured(
+                f"'{cls.__name__}' must not override '__init__'. "
+                "Use INIT_PARAMS_SCHEMA for custom init arguments, or handle "
+                "initialisation inside the 'process' method."
+            )
         super().__init_subclass__(**kwargs)
 
     def __init__(
@@ -513,7 +508,7 @@ class EventBase(
 
     @abc.abstractmethod
     async def process(
-        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
+        self, *args: typing.Any, **kwargs: typing.Any
     ) -> typing.Tuple[bool, typing.Any]:
         """
         Processes pipeline data and executes the associated logic.
@@ -693,8 +688,3 @@ class EventBase(
                 logger.exception(e)
 
         return result
-
-    def __del__(self) -> None:
-        if hasattr(self, "_resource_monitor"):
-            if self._resource_monitor.is_started():
-                asyncio.run(self._resource_monitor.stop())

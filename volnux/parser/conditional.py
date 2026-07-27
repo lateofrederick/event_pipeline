@@ -92,7 +92,7 @@ class ConditionalNode:
     @staticmethod
     def _is_valid_descriptor(descriptor: int) -> bool:
         """
-        Valid descriptors ranges from 0 to 9. O and 1 are standard descriptors and are used to
+        Valid descriptors range from 0 to 9. O and 1 are standard descriptors and are used to
         denote failure and success conditions respectively.
         However, 2 to 9 descriptors are available for custom and user-defined conditionals.
         """

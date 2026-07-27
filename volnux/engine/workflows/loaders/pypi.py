@@ -1,71 +1,60 @@
-import importlib
 import logging
 import re
-import subprocess
 import sys
 import typing
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from volnux import Event
-from ..source import SourceCredentials
 from volnux.event.base import EventType
-from .utils import get_workflow_config_name
-from volnux.manifest.utils import (
-    load_manifest,
-    redact_credentials,
-    build_authenticated_index_url,
-    check_compatibility,
-    register_workflow_config_and_events_from_manifest,
-)
+
+from ..source import SourceCredentials
+from volnux.exceptions import SubprocessTimeoutError
+from volnux.utils import run_command
+from volnux.manifest.utils import build_authenticated_url, redact_credentials
+
 
 if typing.TYPE_CHECKING:
-    from volnux.engine.workflows import WorkflowRegistry
+    from ..registry import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
 
+# PEP 508 package name: letters, digits, hyphens, underscores, dots.
+_SAFE_PACKAGE_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
-# PEP 508 package name — letters, digits, hyphens, underscores, dots.
-_SAFE_PACKAGE_RE = re.compile(
-    r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?|[A-Za-z0-9])$"
+# PEP 440 version: digits and dots, with optional pre/post/dev suffixes.
+_SAFE_VERSION_RE = re.compile(
+    r"^\d+(\.\d+)*"
+    r"([-_.]?(alpha|beta|preview|rc|a|b|c)\d*)?"
+    r"([-_.]?(post|rev|r)\d*)?"
+    r"([-_.]?dev\d*)?$",
+    re.IGNORECASE,
 )
-# PEP 440 version specifier — digits, dots, letters, and common operators.
-_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9.*+!\-<>=,\s]+$")
 
 
 class LoadFromPyPi(Event):
     """
-    Engine-internal SYSTEM event that installs and registers a workflow
-    packaged on PyPI (or a compatible private index).
+    Represents an event for loading packages from PyPI with validation, installation,
+    and optional authentication for private indices.
 
-    This event is never instantiated by user code. The engine resolves it
-    via ``LoaderResolver`` when a ``WorkflowSource`` with
-    ``source_type=RegistrySource.PYPI`` calls ``load_workflow_config()``.
+    This class is responsible for ensuring that packages loaded via PyPI conform
+    to certain requirements, such as valid package names and version specifications.
+    It optionally accepts credentials for private indices and handles embedding
+    these credentials into the appropriate URL during installation. The class
+    utilizes pip for package management and performs validation before installation
+    to prevent misconfiguration.
 
-    Installation contract
-    ---------------------
-    - ``version`` is required. Unpinned installs are rejected to guarantee
-      reproducible workflow loading across environments.
-    - ``package_name`` (the ``location`` field of ``WorkflowSource``) must
-      satisfy PEP 508 naming rules. Invalid names are rejected before any
-      subprocess is spawned.
-    - Credentials are forwarded to pip via ``--extra-index-url`` with the
-      token or username:password embedded in the URL. They are never logged.
-    - ``timeout`` (in milliseconds) is applied to each pip invocation.
-    - The installed package's ``__version__`` is verified against the
-      requested version before the workflow config is registered.
-
-    Discovery order
-    ---------------
-    After installation, the workflow config class is located by:
-    1. A conventionally named class derived from the package name via
-       ``get_workflow_config_name()``.
-    2. A scan of the package's ``workflow`` submodule for any direct
-       ``WorkflowConfig`` subclass.
+    :ivar name: Event name identifier.
+    :type name: str
+    :ivar event_type: Type of event, represents it as a system-level event.
+    :type event_type: EventType
+    :ivar checkpointing_enabled: Indicates if checkpointing is enabled for this event.
+    :type checkpointing_enabled: bool
     """
 
     name = "pypi"
     event_type = EventType.SYSTEM
+    checkpointing_enabled = False
 
     def process(
         self,
@@ -76,88 +65,79 @@ class LoadFromPyPi(Event):
         timeout: int = 30_000,
         index_url: Optional[str] = None,
         **kwargs: Any,
-    ) -> typing.Tuple[bool, Any]:
+    ) -> typing.Tuple[bool, Optional[str]]:
         """
-        Install ``location`` from PyPI and register its workflow config.
+        Validate and install a PyPI package.
 
         Args:
-            location:    PyPI package name (the ``location`` field of
-                         ``WorkflowSource``).
-            registry:    Workflow registry to register the loaded config into.
+            location: PyPI package name.
+            registry:    Passed through for interface compatibility; not used
+                         by this loader — registration is handled downstream.
             version:     Required. Exact version to install (PEP 440).
             credentials: Optional credentials for private index authentication.
-            timeout:     Per-attempt pip timeout in milliseconds.
-            index_url:   Optional private index URL. Supplied via
-                         ``WorkflowSource.metadata["index_url"]``. When
-                         present and credentials are valid, credentials are
-                         embedded into this URL and passed to pip as
-                         ``--extra-index-url``. When absent, pip uses the
-                         public PyPI index and credentials are ignored.
-            **kwargs:    Absorbed; dropped kwargs are logged by WorkflowSource.
+            timeout:     pip timeout in milliseconds. Defaults to 30 000 ms.
+            index_url:   Private index URL. When present and credentials are
+                         valid, credentials are embedded into the URL and passed
+                         as ``--extra-index-url``. Ignored when absent.
+            **kwargs:    Absorbed; unexpected kwargs are silently dropped.
 
         Returns:
-            ``(True, WorkflowConfig class)`` on success.
-            ``(False, None)`` on any failure.
+            ``(True, package_spec)`` — e.g. ``(True, "mypackage==1.2.3")``
+            on successful installation.
+            ``(False, None)`` on any validation or installation failure.
         """
         package_name = str(location)
 
         if not _SAFE_PACKAGE_RE.match(package_name):
             logger.error(
-                "LoadFromPyPi: '%s' is not a valid PEP 508 package name.",
+                "LoadFromPyPi: %r is not a valid PEP 508 package name.",
                 package_name,
             )
             return False, None
 
         if not version:
             logger.error(
-                "LoadFromPyPi: 'version' is required for '%s'. "
-                "Unpinned installs produce non-reproducible workflow loading.",
+                "LoadFromPyPi: 'version' is required for %r. "
+                "Unpinned installs are rejected to guarantee reproducible loading.",
                 package_name,
             )
             return False, None
 
         if not _SAFE_VERSION_RE.match(version):
             logger.error(
-                "LoadFromPyPi: '%s' is not a valid PEP 440 version specifier.",
+                "LoadFromPyPi: %r is not a valid PEP 440 version specifier.",
                 version,
             )
             return False, None
 
         package_spec = f"{package_name}=={version}"
-        logger.info("LoadFromPyPi: installing '%s'", package_spec)
+        logger.info("LoadFromPyPi: installing %r", package_spec)
 
         cmd = self._build_pip_command(package_spec, credentials, index_url)
 
-        timeout_seconds = timeout / 1000
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
+            result = run_command(cmd, timeout_ms=timeout)
+        except SubprocessTimeoutError as exc:
             logger.error(
-                "LoadFromPyPi: pip timed out after %.1fs for '%s'.",
-                timeout_seconds,
+                "LoadFromPyPi: pip timed out after %.1fs for %r.",
+                exc.timeout_seconds,
                 package_spec,
             )
             return False, None
 
         if result.returncode != 0:
-            # stderr may contain index URLs with embedded credentials if pip
-            # echoes the command. Strip credential patterns before logging.
-            safe_stderr = redact_credentials(result.stderr)
+            # stderr may echo the index URL with embedded credentials — redact
+            # before logging.
             logger.error(
-                "LoadFromPyPi: pip failed for '%s':\n%s",
+                "LoadFromPyPi: pip failed (exit %d) for %r:\n%s",
+                result.returncode,
                 package_spec,
-                safe_stderr,
+                redact_credentials(result.stderr or result.stdout or "(no output)"),
             )
             return False, None
 
-        logger.info("LoadFromPyPi: pip install succeeded for '%s'", package_spec)
-
-        return self._load_and_register(package_name, version, registry)
+        logger.info("LoadFromPyPi: installed %r successfully", package_spec)
+        return True, package_spec
 
     @staticmethod
     def _build_pip_command(
@@ -166,150 +146,28 @@ class LoadFromPyPi(Event):
         index_url: Optional[str],
     ) -> List[str]:
         """
-        Build the pip install command, injecting credentials into the index
-        URL when a private registry is configured.
+        Build the ``pip install`` command.
 
-        Credentials are embedded in the URL (``token@host`` or
-        ``user:pass@host``) so they never appear as plaintext CLI arguments
-        that could be captured by process-listing tools.
+        Credentials are embedded in the index URL rather than passed as
+        plaintext CLI arguments, so they cannot be captured by process-listing
+        tools or shell history.
 
-        If ``index_url`` is absent, credentials are ignored and pip installs
-        from the public PyPI index. A warning is emitted if credentials were
-        supplied without an index URL, since that is almost certainly a
-        misconfiguration — public PyPI does not require authentication for
-        package downloads.
+        A warning is emitted when credentials are supplied without an
+        ``index_url`` — public PyPI does not require authentication, so this
+        is almost always a misconfiguration.
         """
         cmd = [sys.executable, "-m", "pip", "install", package_spec]
 
         if credentials and credentials.is_valid():
             if not index_url:
                 logger.warning(
-                    "LoadFromPyPi: credentials supplied for '%s' but no "
-                    "'index_url' was provided in WorkflowSource.metadata. "
-                    "Credentials will be ignored and the public PyPI index "
-                    "will be used. Set metadata={'index_url': 'https://...'} "
-                    "to authenticate against a private registry.",
+                    "LoadFromPyPi: credentials supplied for %r but no "
+                    "'index_url' was provided. Credentials will be ignored "
+                    "and the public PyPI index will be used.",
                     package_spec,
                 )
             else:
-                authed_url = build_authenticated_index_url(credentials, index_url)
-                if authed_url:
-                    cmd += ["--extra-index-url", authed_url]
+                authed_url = build_authenticated_url(credentials, index_url, "pypi")
+                cmd += ["--extra-index-url", authed_url]
 
         return cmd
-
-    @staticmethod
-    def _load_and_register(
-        package_name: str,
-        version: str,
-        registry: "WorkflowRegistry",
-    ) -> typing.Tuple[bool, Any]:
-        """
-        Import the package, verify its version, then register its contents.
-
-        Two package types are supported — both must supply a manifest:
-
-        Event-only package
-            Contains a ``volnux.manifest.json`` and one or more ``EventBase``
-            subclasses. No ``WorkflowConfig`` is present. The manifest is the
-            authoritative list of event classes to register.
-
-        Workflow package
-            Contains a ``volnux.manifest.json``, one or more ``EventBase``
-            subclasses, *and* a ``WorkflowConfig`` subclass. Both the events
-            and the workflow config are registered.
-
-        The manifest is required for both types — it is the stable contract
-        between a package and the engine. ``WorkflowConfig`` is additive.
-
-        Return value
-        ------------
-        ``(True, result)`` where ``result`` is:
-          - the ``WorkflowConfig`` class for workflow packages
-          - the parsed manifest dict for event-only packages
-
-        ``(False, None)`` on any failure.
-        """
-        from ..workflow import WorkflowConfig
-
-        try:
-            module = importlib.import_module(package_name)
-        except ImportError as exc:
-            logger.error(
-                "LoadFromPyPi: '%s' installed successfully but cannot be "
-                "imported: %s",
-                package_name,
-                exc,
-            )
-            return False, None
-
-        # Version is verified against manifest["package"]["version"] rather
-        # than module.__version__ because the manifest is the authoritative
-        # source of truth for the installed package identity. module.__version__
-        # is a convention, not a guarantee; packages may omit it or set it
-        # incorrectly. The manifest version is validated by the EventHub
-        # registry at publish time and is always present.
-        manifest = load_manifest(module, package_name)
-        if manifest is None:
-            # load_manifest logs the specific failure; nothing more to add.
-            return False, None
-
-        # Version verification against manifest
-        manifest_version = manifest.get("package", {}).get("version", "")
-        if manifest_version != version:
-            logger.error(
-                "LoadFromPyPi: version mismatch for '%s' — "
-                "requested %s but manifest declares %s. "
-                "The environment may have a conflicting version pinned by "
-                "another package, or the manifest was not regenerated after "
-                "a version bump.",
-                package_name,
-                version,
-                manifest_version,
-            )
-            return False, None
-
-        # Emits warnings only — does not block loading. The operator is
-        # informed of unsupported Python/Volnux combinations at load time
-        # rather than silently proceeding.
-        check_compatibility(manifest, package_name)
-
-        registered_events, registered_workflow_config = (
-            register_workflow_config_and_events_from_manifest(
-                manifest, module, package_name, registry
-            )
-        )
-        if not registered_events:
-            logger.error(
-                "LoadFromPyPi: manifest for '%s' declared no events, or none "
-                "could be resolved. At least one event must be registered.",
-                package_name,
-            )
-            return False, None
-
-        config_class: Optional[typing.Type[WorkflowConfig]] = (
-            _find_workflow_config_class(module, package_name)
-        )
-
-        if config_class is not None:
-            config_instance = config_class()
-            registry.register(config_instance)
-            logger.info(
-                "LoadFromPyPi: registered workflow config '%s' from '%s==%s' "
-                "(%d events registered)",
-                config_instance.name,
-                package_name,
-                version,
-                len(registered_events),
-            )
-            return True, config_class
-
-        # Event-only package — successful load.
-        logger.info(
-            "LoadFromPyPi: registered %d event(s) from '%s==%s' "
-            "(event-only package, no WorkflowConfig)",
-            len(registered_events),
-            package_name,
-            version,
-        )
-        return True, manifest

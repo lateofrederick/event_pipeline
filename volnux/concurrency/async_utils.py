@@ -42,3 +42,21 @@ async def to_thread(
     ctx = contextvars.copy_context()
     func_call = functools.partial(ctx.run, func, *args, **kwargs)
     return await loop.run_in_executor(None, func_call)
+
+
+async def as_coroutine(
+    fn: typing.Callable[[...], typing.Any], /, *args, **kwargs
+) -> typing.Any:
+    """
+    Normalise a synchronous or asynchronous callable into a coroutine.
+
+    :param fn: The callable to be executed. It can be a synchronous or
+        asynchronous function.
+    :param args: Positional arguments to be passed to the callable.
+    :param kwargs: Keyword arguments to be passed to the callable.
+    :return: The result of the executed callable, delivered as a coroutine.
+    :rtype: typing.Any
+    """
+    if asyncio.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    return to_thread(fn, *args, **kwargs)

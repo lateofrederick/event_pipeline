@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/02-configmap.yaml
 #
 # Non-sensitive configuration for all Volnux pods.
 # Sensitive values (passwords, API keys, secrets) come from 01-secrets.yaml.

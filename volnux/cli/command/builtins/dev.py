@@ -188,28 +188,6 @@ class DevCommand(ProjectMixin, CheckMixin, BaseCommand):
         self.stdout.write(self.style.BOLD("\n  Volnux Development Server\n"))
         self.stdout.write("─" * 60)
 
-    def _run_checks(self, engine) -> None:
-        """Run pre-flight backend checks and print results."""
-        self.stdout.write(self.style.NOTICE("  Checking backends:\n"))
-
-        results = asyncio.run(_check_backends(engine))
-
-        for name, ok, msg in results:
-            icon = self.style.SUCCESS("  ✔") if ok else self.style.ERROR("  ✘")
-            status = self.style.SUCCESS(msg) if ok else self.style.ERROR(msg)
-            self.stdout.write(f"{icon}  {name:<22} {status}")
-
-        failures = [name for name, ok, _ in results if not ok]
-        if failures:
-            self.stdout.write(
-                self.style.WARNING(
-                    f"\n  Warning: {len(failures)} backend(s) unreachable "
-                    f"({', '.join(failures)})."
-                )
-            )
-        else:
-            self.stdout.write(self.style.SUCCESS("\n  All backends reachable.\n"))
-
     async def _run_dev_server(
         self,
         engine,
@@ -222,7 +200,7 @@ class DevCommand(ProjectMixin, CheckMixin, BaseCommand):
     ) -> None:
         """
         Start the Volnux API server in development mode.
-        Sets up graceful shutdown on SIGTERM/SIGINT.
+        Sets up a graceful shutdown on SIGTERM/SIGINT.
         When reload=True, watches .py and .pty files for changes.
         """
         # Configure logging

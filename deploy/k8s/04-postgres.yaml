@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/04-postgres.yaml
 #
 # PostgreSQL StatefulSet for Volnux governance data.
 # Stores: audit trail, asset catalog, approval chains, delegation records,

@@ -6,6 +6,10 @@ from redis.exceptions import RedisError
 
 from volnux.backends.connectors.redis import RedisConnector
 from volnux.backends.store import KeyValueStoreBackendBase
+from volnux.backends.messaging.stores.redis import (
+    RedisStorePubSubMixin,
+    RedisStorePushPopMixin,
+)
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
 
 if TYPE_CHECKING:
@@ -16,7 +20,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RedisStoreBackend(KeyValueStoreBackendBase):
+class RedisStoreBackend(
+    RedisStorePubSubMixin, RedisStorePushPopMixin, KeyValueStoreBackendBase
+):
     """Redis-backed key-value store implementation.
 
     Example:
@@ -24,6 +30,16 @@ class RedisStoreBackend(KeyValueStoreBackendBase):
         >>> backend.insert("users", "user_1", user_record)
         >>> user = backend.get("users", UserModel, "user_1")
         >>> users = backend.filter("users", UserModel, status="active")
+        >>>
+        >>> # Pub/sub operations
+        >>> await backend.publish("events:user", {"action": "created", "id": "user_1"})
+        >>> async with backend.subscribe("events:user") as messages:
+        ...     async for msg in messages:
+        ...         print(msg["data"])
+        >>>
+        >>> # Queue operations
+        >>> await backend.push("tasks", task_1, task_2, side=QueueSide.RIGHT)
+        >>> task = await backend.pop("tasks", side=QueueSide.LEFT)
     """
 
     connector_klass = RedisConnector

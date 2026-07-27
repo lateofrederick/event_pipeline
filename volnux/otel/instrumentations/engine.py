@@ -55,13 +55,13 @@ class InstrumentedDefaultWorkflowEngine:
         Creates a root span for the engine execution and instruments all key operations.
         """
         if not self.tracer:
-            # Tracing not initialized, fall back to normal execution
+            # Tracing isn't initialized, fall back to normal execution
             logger.warning(
                 "OpenTelemetry tracer not initialized, executing without tracing"
             )
             return self.engine.execute(root_task, pipeline)
 
-        # Create engine-level span
+        # Create an engine-level span
         with self.tracer.start_as_current_span(
             "workflow.engine.execute", kind=trace.SpanKind.INTERNAL
         ) as span:

@@ -4,6 +4,7 @@ import os
 import threading
 import typing
 import orjson as json
+from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from types import ModuleType
 from typing import Any, Optional, Union
@@ -13,6 +14,9 @@ from volnux import settings as default_settings
 from volnux.concurrency.async_utils import to_thread
 from volnux.constants import UNKNOWN
 from volnux.crypto.signer import Signer, KeyLoader
+
+if typing.TYPE_CHECKING:
+    from volnux.result.result import ResultSet
 
 __all__ = ["VolnuxConfig", "ConfigEntry"]
 
@@ -195,6 +199,9 @@ class VolnuxConfig:
         from volnux.result.result import ResultSet
 
         self._store: ResultSet[ConfigEntry] = ResultSet()
+        self._namespace_store: typing.DefaultDict[str, ResultSet[ConfigEntry]] = (
+            defaultdict(ResultSet)
+        )
         self._lamport_clock = 0
         self._signer = signer
 
@@ -202,6 +209,8 @@ class VolnuxConfig:
         if not self._node_id:
             self._node_id = _generate_node_id()
             os.environ[ENV_MESH_NODE_ID] = self._node_id
+
+        self.load_from_environ()
 
         self._load_module(default_settings)
 
@@ -312,32 +321,61 @@ class VolnuxConfig:
             logger.error("Config file %s could not be loaded.", config_file)
             raise ImportError(str(exc)) from exc
 
+    def load_from_environ(self):
+        """
+        Load configurations from environment variables starting with a specific prefix.
+
+        :return: None
+        """
+        for key, value in os.environ.items():
+            if key.startswith("VOLNUX_"):
+                self.add(key[7:], value)
+
     async def load_from_file_async(
         self, config_file: typing.Union[str, os.PathLike]
     ) -> None:
         await to_thread(self.load_from_file, config_file)
 
-    def get_config_entry(self, key: str) -> Optional[ConfigEntry]:
+    def get_config_entry(
+        self, key: str, namespace: Optional[str] = None
+    ) -> Optional[ConfigEntry]:
+        """
+        Retrieve a configuration entry by key within an optional namespace.
+
+        This function attempts to fetch a configuration entry using the provided key
+        and optional namespace. The key is first resolved in its uppercase form. It
+        utilizes two approaches to locate the entry: by hash and by name. If the entry
+        cannot be found, it returns None.
+
+        :param key: The key of the configuration entry to fetch.
+        :type key: str
+        :param namespace: The optional namespace of the configuration entry. Default is None.
+        :type namespace: Optional[str]
+        :return: The configuration entry object if found, else None.
+        :rtype: Optional[ConfigEntry]
+        """
         key = key.upper()
 
+        def get_store(ne: Optional[str] = None) -> "ResultSet[ConfigEntry]":
+            if ne is not None:
+                return self._namespace_store[ne]
+            return self._store
+
         try:
-            return self._store.get_entry_by_hash(hash(key))
+            return get_store(namespace).get_entry_by_hash(hash(key))
         except KeyError:
             pass
 
         try:
-            return self._store.get(name=key)
+            return get_store(namespace).get(name=key)
         except KeyError:
             return None
 
-    def get(self, key: str, default: Any = _MISSING) -> Any:
+    def get(
+        self, key: str, default: Any = _MISSING, namespace: Optional[str] = None
+    ) -> Any:
         """
         Retrieve the value associated with a configuration key.
-
-        This method first checks if the key exists in the environment variables. If found, it returns the value
-        from the environment. Otherwise, it attempts to locate the key in the internal
-        configuration store. If the key is still not found, the provided default is returned.
-        If no default is given and the key does not exist, an error is raised.
 
         :param key: The configuration key to retrieve.
         :type key: str
@@ -345,13 +383,11 @@ class VolnuxConfig:
         :type default: Any
         :return: The value corresponding to the configuration key, or the default value if the key is not found.
         :rtype: Any
+        :param namespace: Optional. Specifies the namespace for the configuration entry.
+        :type namespace: Optional[str]
         :raises AttributeError: If the key is missing and no default value is provided.
         """
-        env_val = os.environ.get(key)
-        if env_val is not None:
-            return env_val
-
-        entry = self.get_config_entry(key)
+        entry = self.get_config_entry(key, namespace)
         if entry is not None:
             return entry.value
 
@@ -359,7 +395,9 @@ class VolnuxConfig:
             raise AttributeError(f"Missing configuration key '{key}'")
         return default
 
-    def add_entry_config(self, config_entry: ConfigEntry) -> None:
+    def add_entry_config(
+        self, config_entry: ConfigEntry, namespace: Optional[str] = None
+    ) -> None:
         with self._lock:
             if self._signer and config_entry.is_local() and not config_entry.signature:
                 config_entry.sign(self._signer)
@@ -367,6 +405,12 @@ class VolnuxConfig:
             if config_entry.is_remote() and config_entry in self._store:
                 status = self.update_from_mesh(config_entry)
                 logger.info("Update from mesh: %s", status)
+                return
+
+            if namespace is not None:
+                qs = self._namespace_store.get(namespace)
+                qs.add(config_entry)
+                self._namespace_store[namespace] = qs
                 return
 
             self._store.add(config_entry)
@@ -377,6 +421,7 @@ class VolnuxConfig:
         value: Any,
         node_id: Optional[str] = None,
         timestamp: Optional[float] = None,
+        namespace: Optional[str] = None,
     ) -> None:
         """
         Adds a configuration entry to the internal storage.
@@ -387,6 +432,7 @@ class VolnuxConfig:
             provided, the current node identifier is used.
         :param timestamp: Optional. Sets the time for the entry. If not provided,
             uses the current Lamport clock value.
+        :param namespace: Optional. Specifies the namespace for the configuration entry.
         :return: None
         """
         entry = ConfigEntry(
@@ -396,7 +442,7 @@ class VolnuxConfig:
             name=key.upper(),
         )
 
-        self.add_entry_config(entry)
+        self.add_entry_config(entry, namespace)
 
     def update_from_mesh(self, incoming_entry: ConfigEntry) -> bool:
         """
@@ -457,8 +503,9 @@ class VolnuxConfig:
         value: Any,
         node_id: Optional[str] = None,
         timestamp: Optional[float] = None,
+        namespace: Optional[str] = None,
     ) -> None:
-        await to_thread(self.add, key, value, node_id, timestamp)
+        await to_thread(self.add, key, value, node_id, timestamp, namespace)
 
     def __getattr__(self, item: str) -> Any:
         if item.startswith("_"):

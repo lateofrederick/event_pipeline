@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import threading
 import typing
 import weakref
@@ -115,7 +116,12 @@ class SoftSignal(ObjectIdentityMixin):
                 signal=self, sender=sender, **kwargs
             )
             try:
-                response = listener(**bounded_args.kwargs)
+                # listener can be async
+                if asyncio.iscoroutinefunction(listener):
+                    loop = asyncio.get_running_loop()
+                    response = loop.run_until_complete(listener(**bounded_args.kwargs))
+                else:
+                    response = listener(**bounded_args.kwargs)
             except Exception as e:
                 logger.exception(str(e), exc_info=e)
                 response = e

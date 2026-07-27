@@ -11,17 +11,14 @@ from volnux.exceptions import ImproperlyConfigured
 from volnux.parser.options import Options
 from volnux.result import EventResult
 from volnux.utils import get_function_call_args
-
-logger = logging.getLogger(__name__)
-
-
-# PEP 508 package name — letters, digits, hyphens, underscores, dots.
-_SAFE_PACKAGE_RE = re.compile(
-    r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?|[A-Za-z0-9])$"
+from volnux.engine.workflows.loaders import (
+    LoadFromPyPi,
+    LoadFromGit,
+    LoadFromEventHub,
+    LoadFromLocal,
 )
 
-# PEP 440 version specifier — digits, dots, letters, and common operators.
-_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9.*+!\-<>=,\s]+$")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -63,27 +60,15 @@ class RegistrySource(Enum):
     LOCAL = "local"
     PYPI = "pypi"
     GIT = "git"
+    HUB = "hub"
 
 
-class LoaderResolver:
-    """
-    Resolves a ``RegistrySource`` to its corresponding SYSTEM loader class.
-    """
-
-    _loader_registry: Dict[RegistrySource, Type["Event"]] = {
-        RegistrySource.LOCAL: None,
-        RegistrySource.PYPI: None,
-        RegistrySource.GIT: None,
-    }
-
-    @classmethod
-    def resolve(cls, source_type: RegistrySource) -> Optional[Type["Event"]]:
-        """
-        Return the loader class for ``source_type``, or ``None`` if no
-        matching SYSTEM event is registered.
-        """
-
-        return cls._loader_registry.get(source_type)
+_LOADER_REGISTRY: Dict[RegistrySource, Type["Event"]] = {
+    RegistrySource.LOCAL: LoadFromLocal,
+    RegistrySource.PYPI: LoadFromPyPi,
+    RegistrySource.GIT: LoadFromGit,
+    RegistrySource.EVENTHUB: LoadFromEventHub,
+}
 
 
 @dataclass
@@ -111,7 +96,14 @@ class WorkflowSource:
 
     def __post_init__(self) -> None:
         if isinstance(self.source_type, str):
-            self.source_type = RegistrySource(self.source_type)
+            try:
+                self.source_type = RegistrySource(self.source_type)
+            except ValueError:
+                valid = [s.value for s in RegistrySource]
+                raise ValueError(
+                    f"WorkflowSource '{self.name}': invalid source_type {self.source_type!r}. "
+                    f"Expected one of: {valid}."
+                )
 
     async def load_workflow_config(
         self,
@@ -142,7 +134,7 @@ class WorkflowSource:
         if options is None:
             options = {}
 
-        loader_class = LoaderResolver.resolve(self.source_type)
+        loader_class = _LOADER_REGISTRY.get(self.source_type)
         if loader_class is None:
             raise ImproperlyConfigured(
                 f"No loader registered for source type '{self.source_type.value}'. "

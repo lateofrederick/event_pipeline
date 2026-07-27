@@ -26,6 +26,10 @@ from volnux.exceptions import (
     SerializationError,
 )
 from volnux.backends.connectors.postgres import PostgresConnector
+from volnux.backends.messaging.stores.postgres import (
+    PostgresPubSubMixin,
+    PostgresPushPopMixin,
+)
 
 logger = logging.getLogger("volnux.backends.postgres")
 
@@ -37,7 +41,12 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 
 
-class PostgresStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
+class PostgresStoreBackend(
+    PostgresPubSubMixin,
+    PostgresPushPopMixin,
+    YoyoMigrationsMixin,
+    KeyValueStoreBackendBase,
+):
     """PostgreSQL-backed key-value store implementation.
 
     This backend uses PostgreSQL tables to store records, with automatic schema

@@ -89,6 +89,7 @@ class LinearChainTrigger(TriggerBase):
         workflow_name: str,
         triggers: List[TriggerBase],
         step_timeout: Optional[float] = None,
+        reducer: Optional[Callable[[Dict, Dict], Dict]] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
         enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
@@ -108,6 +109,7 @@ class LinearChainTrigger(TriggerBase):
 
         self._triggers: List[TriggerBase] = list(triggers)
         self.step_timeout = step_timeout
+        self._reducer = reducer or (lambda a, b: {**a, **b})
 
         # Mutable chain state — all mutations are serialised by _lock.
         self._current_step: int = 0
@@ -241,8 +243,15 @@ class LinearChainTrigger(TriggerBase):
 
             next_step = step + 1
 
+            reduced_state = self._reducer(
+                self._accumulated_data, activation.workflow_params
+            )
+            if asyncio.iscoroutine(reduced_state):
+                reduced_state = await reduced_state
+
             if next_step < len(self._triggers):
                 # Chain incomplete — arm the next step.
+                self._triggers[next_step].update_workflow_params(reduced_state)
                 await self._arm_step(next_step)
                 return
 
@@ -255,8 +264,10 @@ class LinearChainTrigger(TriggerBase):
             accumulated = dict(self._accumulated_data)
             self._reset_state()
 
+            activation_data = {**reduced_state, "__trigger_history__": accumulated}
+
             try:
-                await self.activate(**accumulated)
+                await self.activate(**activation_data)
             finally:
                 # Re-arm for the next window even if the workflow callback
                 # raised, so the chain stays live.
@@ -265,7 +276,7 @@ class LinearChainTrigger(TriggerBase):
 
     async def _run_timeout(self, step: int) -> None:
         """
-        Wait ``step_timeout`` seconds then reset the chain if ``step`` is
+        Wait ``step_timeout`` seconds, then reset the chain if ``step`` is
         still the active step.
 
         Cancellation (via ``_cancel_timeout``) is the normal exit path when

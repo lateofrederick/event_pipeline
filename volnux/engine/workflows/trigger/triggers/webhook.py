@@ -31,7 +31,7 @@ class WebhookTrigger(TriggerBase):
         @app.post(trigger.endpoint_path)
         async def webhook_handler(request: Request):
             headers = dict(request.headers)
-            body = await request.body()       # raw bytes for HMAC
+            body = await request.body() # raw bytes for HMAC
             await trigger.handle_webhook(body, headers=headers)
 
     Self-registering subclass

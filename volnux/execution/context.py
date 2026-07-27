@@ -20,7 +20,7 @@ from volnux.mixins import ObjectIdentityMixin
 from volnux.parser.operator import PipeType
 from volnux.parser.options import ResultEvaluationStrategy
 from volnux.parser.protocols import TaskType
-from volnux.pipeline import Pipeline
+from volnux.execution.pipeline import Pipeline
 from volnux.result import EventResult, ResultSet
 from volnux.result_evaluators import EventEvaluator, ResultEvaluationStrategies
 from volnux.signal.signals import (
@@ -156,6 +156,68 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         initial_state = ExecutionState(ExecutionStatus.PENDING)
         self._state_manager.create_state(self.state_id, initial_state)
 
+    @classmethod
+    async def create_context(
+        cls,
+        workflow_id: str,
+        workflow_name: str,
+        task_profiles: typing.Deque[TaskType],
+        pipeline: Pipeline,
+        metrics: ExecutionMetrics = None,
+        previous_context: typing.Optional["ExecutionContext"] = None,
+        next_context: typing.Optional["ExecutionContext"] = None,
+        parent_context: typing.Optional["ExecutionContext"] = None,
+        child_contexts: typing.List["ExecutionContext"] = None,
+    ) -> "ExecutionContext":
+        """
+        Creates an ExecutionContext instance in an asynchronous, thread-safe manner. This method wraps the
+        initialization logic to allow for non-blocking execution while ensuring thread synchronization when
+        creating the context. It enables efficient execution context creation, especially in concurrent
+        environments.
+
+        :param workflow_id: Unique identifier of the workflow.
+        :type workflow_id: str
+        :param workflow_name: Name of the workflow.
+        :type workflow_name: str
+        :param task_profiles: Queue of task profiles to be executed as part of this context.
+        :type task_profiles: typing.Deque[TaskType]
+        :param pipeline: Pipeline object managing the execution flow and dependencies.
+        :type pipeline: Pipeline
+        :param metrics: (Optional) Metrics object containing execution statistics and performance data.
+        :type metrics: ExecutionMetrics, optional
+        :param previous_context: (Optional) Reference to a previously executed ExecutionContext in the workflow chain.
+        :type previous_context: typing.Optional[ExecutionContext], optional
+        :param next_context: (Optional) Reference to the next ExecutionContext in the workflow chain.
+        :type next_context: typing.Optional[ExecutionContext], optional
+        :param parent_context: (Optional) Reference to the immediate parent ExecutionContext, if nested.
+        :type parent_context: typing.Optional[ExecutionContext], optional
+        :param child_contexts: (Optional) List of child ExecutionContexts derived from the current context.
+        :type child_contexts: typing.List[ExecutionContext], optional
+
+        :return: An instance of ExecutionContext constructed asynchronously.
+        :rtype: ExecutionContext
+        """
+
+        if child_contexts is None:
+            child_contexts = []
+
+        if not isinstance(child_contexts, (list, tuple)):
+            child_contexts = list(child_contexts)
+
+        context = await to_thread(
+            cls,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            task_profiles=task_profiles,
+            pipeline=pipeline,
+            metrics=metrics,
+            previous_context=previous_context,
+            next_context=next_context,
+            parent_context=parent_context,
+            child_contexts=child_contexts,
+        )
+        return context
+
     @property
     def state_id(self) -> str:
         return self.id
@@ -174,7 +236,9 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         return await self.get_state_manager().get_state_async(self.state_id)
 
-    def spawn_child(self, task_profiles: typing.Deque[TaskType]) -> "ExecutionContext":
+    async def spawn_child(
+        self, task_profiles: typing.Deque[TaskType]
+    ) -> "ExecutionContext":
         """
         Creates and returns a child ExecutionContext. The child inherits the same
         StateManager as the parent but is assigned a unique state_id. The parent-child
@@ -188,7 +252,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         :rtype: ExecutionContext
         """
         # Child inherit the same StateManager but get a unique state_id
-        child = ExecutionContext(
+        child = await ExecutionContext.create_context(
             task_profiles=task_profiles,
             pipeline=self.pipeline,
             parent_context=self,

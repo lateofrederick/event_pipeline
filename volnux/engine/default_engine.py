@@ -7,9 +7,8 @@ from volnux.execution.context import ExecutionContext
 from volnux.execution.state_manager import ExecutionState, ExecutionStatus
 from volnux.parser.operator import PipeType
 from volnux.parser.protocols import TaskType
-from volnux.pipeline import Pipeline
-
-from ...execution.utils import evaluate_context_execution_results
+from volnux.execution.pipeline import Pipeline
+from volnux.execution.utils import evaluate_context_execution_results
 from .base import (
     CheckPointConfig,
     CheckPointFrequency,
@@ -17,6 +16,7 @@ from .base import (
     EngineResult,
     TaskNode,
     WorkflowEngine,
+    SubgraphErrorStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         checkpoint_config: typing.Optional[CheckPointConfig] = None,
         enable_debug_logging: bool = False,
         strict_mode: bool = True,
+        parent_engine: typing.Optional["DefaultWorkflowEngine"] = None,
     ):
         """
         Initialize the default workflow engine.
@@ -66,11 +67,50 @@ class DefaultWorkflowEngine(WorkflowEngine):
         super().__init__(
             enable_checkpointing=enable_checkpointing,
             checkpoint_config=checkpoint_config,
+            parent_engine=parent_engine,
         )
         self._task_queue: typing.Deque[TaskNode] = deque()
         self._sink_queue: typing.Deque[TaskType] = deque()
         self.enable_debug_logging = enable_debug_logging
         self.strict_mode = strict_mode
+
+    async def spawn_sub_engine(
+        self,
+        root_task: TaskType,
+        pipeline: Pipeline,
+        error_strategy: SubgraphErrorStrategy = SubgraphErrorStrategy.TREAT_AS_FAILURE,
+    ) -> "DefaultWorkflowEngine":
+        """
+        Spawn a child engine for {} grouping or nested workflow execution.
+
+        The child:
+        - Inherits the parent's checkpoint manager (workflows share checkpoints)
+        - Gets automatic state isolation via ExecutionContext.spawn_child()
+        - Uses the specified error propagation strategy
+        """
+        child = DefaultWorkflowEngine(
+            enable_checkpointing=self._checkpointer is not None,
+            checkpoint_config=self.checkpoint_config,  # Shared checkpoint config
+            enable_debug_logging=self.enable_debug_logging,
+            strict_mode=self.strict_mode,
+            parent_engine=self,
+        )
+
+        # Inherit checkpointer (workflows share checkpoint backends)
+        if self._checkpointer:
+            child.enable_checkpointing(self._checkpointer, self._checkpoint_frequency)
+
+        child._error_strategy = error_strategy
+        self.child_engines.append(child)
+
+        if self.enable_debug_logging:
+            logger.debug(
+                f"[Engine:{self._engine_id}] Spawned child engine "
+                f"[{child._engine_id}] at depth {self.get_engine_depth() + 1} "
+                f"(error_strategy={error_strategy.value})"
+            )
+
+        return child
 
     @property
     def task_queue(self) -> typing.Deque[TaskNode]:
@@ -84,6 +124,60 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
     def get_name(self) -> str:
         return "DefaultIterativeEngine"
+
+    async def execute_subgraph(
+        self,
+        root_task: TaskType,
+        pipeline: Pipeline,
+        parent_context: Optional[ExecutionContext] = None,
+        error_strategy: SubgraphErrorStrategy = SubgraphErrorStrategy.TREAT_AS_FAILURE,
+    ) -> EngineResult:
+        """
+        Convenience method for executing a subgraph with a fresh sub-engine.
+
+        Common pattern: spawn → execute → handle errors → merge task counts.
+        """
+        sub_engine = await self.spawn_sub_engine(
+            root_task=root_task,
+            pipeline=pipeline,
+            error_strategy=error_strategy,
+        )
+
+        try:
+            result = await sub_engine.execute(root_task, pipeline)
+
+            # Merge task counts back to parent
+            self.tasks_processed += sub_engine.tasks_processed
+
+            if self.enable_debug_logging:
+                logger.debug(
+                    f"[Engine:{self._engine_id}] Sub-engine [{sub_engine._engine_id}] "
+                    f"completed: {result.status.value}, "
+                    f"processed {sub_engine.tasks_processed} tasks"
+                )
+
+            return result
+
+        except Exception as e:
+            # Handle sub-engine errors based on strategy
+            if error_strategy == SubgraphErrorStrategy.BUBBLE_UP:
+                raise
+            elif error_strategy == SubgraphErrorStrategy.ISOLATE:
+                logger.error(f"Sub-engine failed (isolated): {e}", exc_info=True)
+                # Return a synthetic success result to continue parent
+                return EngineResult(
+                    status=EngineExecutionResult.COMPLETED,
+                    final_context=None,
+                    tasks_processed=sub_engine.tasks_processed,
+                )
+            else:  # TREAT_AS_FAILURE
+                # Return failed status so parent can follow on_failure branch
+                return EngineResult(
+                    status=EngineExecutionResult.FAILED,
+                    final_context=sub_engine.final_context,
+                    error=e,
+                    tasks_processed=sub_engine.tasks_processed,
+                )
 
     async def execute(
         self,
@@ -145,7 +239,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     parallel_tasks = self._detect_parallel_tasks(executable_node.task)
 
                     # Build execution context
-                    execution_context = self._build_context(
+                    execution_context = await self._build_context(
                         task=executable_node.task,
                         pipeline=pipeline,
                         previous_context=executable_node.previous_context,
@@ -294,7 +388,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         return parallel_tasks if parallel_tasks else None
 
-    def _build_context(
+    async def _build_context(
         self,
         task: TaskType,
         pipeline: Pipeline,
@@ -310,31 +404,149 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Args:
             task: Primary task
             pipeline: Workflow pipeline
-            previous_context: Previous context for chaining
+            previous_context: Previous context for horizontal chaining (same level)
             parallel_tasks: Parallel task group if applicable
 
         Returns:
             Configured ExecutionContext
         """
-        context = ExecutionContext(
-            pipeline=pipeline,  # type: ignore
-            task_profiles=list(parallel_tasks) if parallel_tasks else task,  # type: ignore
-        )
+        task_profiles = list(parallel_tasks) if parallel_tasks else task
+
+        # Determine parent context for vertical linking (sub-engine → parent)
+        # Only the FIRST task in a subgraph gets a parent_context reference
+        parent_context = None
+        if self.parent_engine is not None and previous_context is None:
+            # This is the first task of a sub-engine (subgraph)
+            if self.parent_engine.final_context is None:
+                raise RuntimeError(
+                    "Sub-engine cannot create context: parent has no final_context. "
+                    "Parent must complete at least one task before {} block begins."
+                )
+            parent_context = self.parent_engine.final_context
+
+        # Create context with appropriate linking
+        if previous_context is None and parent_context is None:
+            # Root task of root engine — create workflow root context
+            context = await ExecutionContext.create_context(
+                pipeline=pipeline,
+                task_profiles=task_profiles,  # type: ignore
+                workflow_id=getattr(pipeline, "id", self._engine_id),
+                workflow_name=pipeline.__class__.__name__,
+            )
+            # Root context becomes pipeline's execution_context
+            pipeline.execution_context = context
+
+        else:
+            # Either a chained task or first task of subgraph
+            context = ExecutionContext(
+                pipeline=pipeline,
+                task_profiles=task_profiles,
+                previous_context=previous_context,  # Horizontal chain
+                parent_context=parent_context,  # Vertical link (only for subgraph entry)
+                workflow_id=(
+                    previous_context.workflow_id
+                    if previous_context
+                    else (
+                        parent_context.workflow_id
+                        if parent_context
+                        else self._engine_id
+                    )
+                ),
+                workflow_name=(
+                    previous_context.workflow_name
+                    if previous_context
+                    else (
+                        parent_context.workflow_name
+                        if parent_context
+                        else pipeline.__class__.__name__
+                    )
+                ),
+            )
+
+            # Horizontal linking (doubly-linked list)
+            if previous_context is not None:
+                previous_context.next_context = context
+
+        # Associate context with this engine
         context.set_engine(self)
 
-        if previous_context is None:
-            # First context becomes pipeline's root context
-            pipeline.execution_context = context
-        else:
-            # Collect sink nodes for deferred execution
-            if task.sink_node:
-                self.sink_queue.append(task.sink_node)
-
-            # Link context chain
-            context.previous_context = previous_context
-            previous_context.next_context = context
+        # Collect sink nodes for deferred execution
+        if task.sink_node:
+            self.sink_queue.append(task.sink_node)
 
         return context
+
+    # async def _build_context(
+    #     self,
+    #     task: TaskType,
+    #     pipeline: Pipeline,
+    #     previous_context: typing.Optional[ExecutionContext] = None,
+    #     parallel_tasks: typing.Optional[typing.Set[TaskType]] = None,
+    # ) -> ExecutionContext:
+    #     """
+    #     Create and chain execution context.
+    #
+    #     Context creation is the engine's responsibility, but execution,
+    #     metrics, and hooks are all handled by the context itself.
+    #
+    #     Args:
+    #         task: Primary task
+    #         pipeline: Workflow pipeline
+    #         previous_context: Previous context for chaining
+    #         parallel_tasks: Parallel task group if applicable
+    #
+    #     Returns:
+    #         Configured ExecutionContext
+    #     """
+    #     if self.is_root_engine():
+    #         context = await ExecutionContext.create_context(
+    #             workflow_id=self._engine_id,
+    #             workflow_name=pipeline.__name__,
+    #             pipeline=pipeline,
+    #             task_profiles=list(parallel_tasks) if parallel_tasks else task,  # type: ignore
+    #         )
+    #     else:
+    #         if self.parent_engine is None:
+    #             raise RuntimeError(
+    #                 "Internal error: nested subgraph engine has no parent engine "
+    #                 "reference. This should not happen — the parent engine must be "
+    #                 "set when a child engine is created from a {} block.\n\n"
+    #                 "This is likely a framework bug. Please report it with the "
+    #                 "workflow definition that triggered this error."
+    #             )
+    #
+    #         if self.parent_engine.final_context is None:
+    #             raise RuntimeError(
+    #                 "Cannot create a child execution context because the parent workflow "
+    #                 "has not completed any tasks yet.\n\n"
+    #                 "This subgraph is nested inside a parent workflow, but the events "
+    #                 "before this {} block either failed or did not execute. A child "
+    #                 "context must be spawned from a successfully completed parent task.\n\n"
+    #                 "Check the events immediately before this {} block in your Pointy-Lang "
+    #                 "file. Ensure they complete successfully before the subgraph begins."
+    #             )
+    #
+    #         previous_context = self.parent_engine.final_context
+    #
+    #         context = await previous_context.spawn_child(
+    #             task_profiles=list(parallel_tasks) if parallel_tasks else task  # type: ignore
+    #         )
+    #
+    #     context.set_engine(self)
+    #
+    #     if previous_context is None:
+    #         # First context becomes pipeline's root context
+    #         pipeline.execution_context = context
+    #     else:
+    #         # Collect sink nodes for deferred execution
+    #         if task.sink_node:
+    #             self.sink_queue.append(task.sink_node)
+    #
+    #         # Link context chain
+    #         context.previous_context = previous_context
+    #         previous_context.next_context = context
+    #
+    #     return context
 
     def _should_terminate(self, execution_state: ExecutionState) -> bool:
         """
@@ -385,7 +597,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
             True if a switch occurred, False otherwise
 
         Raises:
-            TaskSwitchingError: If target descriptor doesn't exist
+            TaskSwitchingError: If the target descriptor doesn't exist
         """
         switch_request = execution_state.get_switch_request()
 
@@ -461,7 +673,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         if self.enable_debug_logging:
             branch = "success" if result.success else "failure"
-            logger.debug(f"[Engine] Conditional branch: {branch}")
+            logger.debug(f"[Engine: {self._engine_id}] Conditional branch: {branch}")
 
         return next_task  # type: ignore
 
@@ -503,16 +715,20 @@ class DefaultWorkflowEngine(WorkflowEngine):
             return
 
         if self.enable_debug_logging:
-            logger.debug(f"[Engine] Processing {len(self._sink_queue)} sink nodes")
+            logger.debug(
+                f"[Engine: {self._engine_id}] Processing {len(self._sink_queue)} sink nodes"
+            )
 
         while self._sink_queue:
             sink_task = self._sink_queue.popleft()
 
             try:
                 # Create standalone context for sink node
-                context = ExecutionContext(
-                    pipeline=pipeline,  # type: ignore
-                    task_profiles=sink_task,  # type: ignore
+                context = await ExecutionContext.create_context(
+                    workflow_id=self._engine_id,
+                    workflow_name=pipeline.name,
+                    pipeline=pipeline,
+                    task_profiles=sink_task,
                 )
                 await context.dispatch()
 

@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/14-servicemonitor.yaml
 #
 # Prometheus Operator ServiceMonitor CRDs.
 # Requires the Prometheus Operator to be installed:

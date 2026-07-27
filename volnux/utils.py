@@ -2,10 +2,12 @@ import logging
 import socket
 import ssl
 import sys
+import threading
 import time
 import typing
 import uuid
 import warnings
+import subprocess
 from io import BytesIO
 
 try:
@@ -22,13 +24,14 @@ except ImportError:
     from io import StringIO
 
 from .constants import EMPTY
-from .exceptions import ImproperlyConfigured
+from .exceptions import ImproperlyConfigured, SubprocessTimeoutError
 from .typing import BatchProcessType
+from volnux.backends.object_id import TypedObjectId
 
 if typing.TYPE_CHECKING:
     from . import EventBase
     from .executors import BaseExecutor
-    from .pipeline import Pipeline
+    from .execution.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +62,36 @@ def _extend_recursion_depth(
     return limit
 
 
-def generate_unique_id(obj: object) -> str:
-    """
-    Generate unique identify for objects
-    :param obj: The object to generate the id for
-    :return: string
-    """
+def _do_assign(obj: object) -> str:
     pk = getattr(obj, "_id", None)
     if pk is None:
-        pk = f"{obj.__class__.__name__.lower()[:3]}-{str(uuid.uuid4())}"
-        setattr(obj, "_id", pk)
+        pk = TypedObjectId.generate(get_obj_klass_import_str(obj)).binary.decode()
+        try:
+            obj._id = pk
+        except AttributeError:
+            object.__setattr__(obj, "_id", pk)
     return pk
+
+
+def generate_unique_id(obj: object, lock: typing.Optional[threading.Lock]) -> str:
+    """
+    Generate and assign a unique identifier for an object using BSON ObjectId.
+
+    Safe in both sync and async contexts. ObjectId() is pure CPU work with a
+    nanosecond-scale threading.Lock — it does not block the event loop in any
+    meaningful way, consistent with how PyMongo itself handles ObjectId generation.
+
+    :param obj: The object to generate the ID for.
+    :param lock: Optional threading.Lock to guard against concurrent access
+                 from multiple threads (not needed for async-only code since
+                 asyncio is single-threaded).
+    :return: The unique ID string.
+    :raises AttributeError: If '_id' cannot be set on the object.
+    """
+    if lock is not None:
+        with lock:
+            return _do_assign(obj)
+    return _do_assign(obj)
 
 
 def validate_event_process_method(
@@ -433,3 +455,50 @@ def resolve_event_str_to_class(
     elif issubclass(event_str, EventBase):
         return event_str
     raise ValueError(f"Event '{event_str}' is not valid")
+
+
+def run_command(
+    cmd: typing.List[str],
+    *,
+    cwd: typing.Optional["Path"] = None,
+    timeout_ms: typing.Optional[int] = None,
+    timeout_s: typing.Optional[float] = None,
+) -> subprocess.CompletedProcess:
+    """
+    Run a subprocess command, capturing stdout and stderr.
+
+    Accepts timeout in **either** milliseconds (``timeout_ms``) or seconds
+    (``timeout_s``). Exactly one may be provided; ``timeout_ms`` takes
+    precedence if both are somehow supplied.
+
+    Args:
+        cmd: Full command list, e.g. ``["git", "clone", ...]``.
+        cwd:        Working directory for the subprocess.
+        timeout_ms: Timeout in milliseconds (used by the pypi loader).
+        timeout_s:  Timeout in seconds (used by the git loader).
+
+    Returns:
+        ``subprocess.CompletedProcess`` — the caller decides whether a
+        non-zero ``returncode`` is fatal.
+
+    Raises:
+        SubprocessTimeoutError: If the process does not complete within the
+            timeout. The caller is responsible for logging a context-specific
+            message (package name, URL, etc.) before handling this exception.
+    """
+    timeout_seconds: typing.Optional[float] = None
+    if timeout_ms is not None:
+        timeout_seconds = timeout_ms / 1000
+    elif timeout_s is not None:
+        timeout_seconds = float(timeout_s)
+
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        raise SubprocessTimeoutError(cmd, timeout_seconds or 0.0)

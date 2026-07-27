@@ -94,9 +94,9 @@ tracer = VolnuxTracer.initialize(config)
 ### 2. Patch Volnux Components
 
 ```python
-from volnux.otel.context_coordinator_instrumentation import patch_all_execution_components
-from volnux.otel.pipeline_signal_instrumentation import patch_all_pipeline_components
-from volnux.otel.engine_instrumentation import instrument_engine
+from volnux.otel.instrumentations.context_coordinator import patch_all_execution_components
+from volnux.otel.instrumentations.signal import patch_all_pipeline_components
+from volnux.otel.instrumentations.engine import instrument_engine
 
 # Patch all components at application startup
 patch_all_execution_components()  # ExecutionContext & Coordinator
@@ -110,7 +110,7 @@ original_engine = DefaultWorkflowEngine(enable_debug_logging=True)
 instrumented_engine = instrument_engine(original_engine)
 
 # Option 2: Use instrumented engine directly
-from volnux.otel.engine_instrumentation import InstrumentedDefaultWorkflowEngine
+from volnux.otel.instrumentations.engine import InstrumentedDefaultWorkflowEngine
 engine = InstrumentedDefaultWorkflowEngine(
     DefaultWorkflowEngine(),
     enable_debug_logging=True
@@ -123,8 +123,8 @@ engine = InstrumentedDefaultWorkflowEngine(
 # app_init.py
 import logging
 from volnux.otel.tracer_setup import VolnuxTracerConfig, VolnuxTracer
-from volnux.otel.context_coordinator_instrumentation import patch_all_execution_components
-from volnux.otel.pipeline_signal_instrumentation import patch_all_pipeline_components
+from volnux.otel.instrumentations.context_coordinator import patch_all_execution_components
+from volnux.otel.instrumentations.signal import patch_all_pipeline_components
 
 logger = logging.getLogger(__name__)
 
@@ -496,8 +496,8 @@ span.add_event("user_action", {"user.id": user_id})
 ```python
 # main.py
 from volnux.otel.tracer_setup import VolnuxTracerConfig, VolnuxTracer
-from volnux.otel.context_coordinator_instrumentation import patch_all_execution_components
-from volnux.otel.pipeline_signal_instrumentation import patch_all_pipeline_components
+from volnux.otel.instrumentations.context_coordinator import patch_all_execution_components
+from volnux.otel.instrumentations.signal import patch_all_pipeline_components
 from my_pipelines import DataProcessingPipeline
 
 def main():

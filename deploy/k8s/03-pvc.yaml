@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/03-pvc.yaml
 #
 # Persistent Volume Claims for Volnux infrastructure.
 #

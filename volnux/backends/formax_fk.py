@@ -366,7 +366,7 @@ class ForeignKeyField:
         reverse_name: Optional name for the reverse relation.
         on_delete: Action to perform when the referenced object is deleted.
         constraint: Constraint type for the foreign key relationship.
-                    - AUTO: Native if same database, software otherwise
+                    - AUTO: Native if the same database, software otherwise
                     - NATIVE: Database-level constraint only
                     - SOFTWARE: Software-level constraint only
                     - BOTH: Both native and software constraints

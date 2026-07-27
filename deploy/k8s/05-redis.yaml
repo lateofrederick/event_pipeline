@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/05-redis.yaml
 #
 # Two Redis instances with different roles and eviction policies:
 #

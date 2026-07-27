@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/09-otel-collector.yaml
 #
 # OpenTelemetry Collector — receives traces and metrics from all Volnux pods,
 # batches them, and exports to Tempo (traces) and Prometheus (metrics).

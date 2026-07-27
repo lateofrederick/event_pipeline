@@ -32,6 +32,7 @@ class LoadFromLocal(Event):
     name = "local"
 
     event_type = EventType.SYSTEM
+    checkpointing_enabled = False
 
     def _load_local_workflow(
         self, workflow_file: Path, registry: "WorkflowRegistry"

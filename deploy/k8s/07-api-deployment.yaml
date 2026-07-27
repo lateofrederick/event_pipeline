@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/07-api-deployment.yaml
 #
 # Volnux API Deployment.
 # Runs: REST API (FastAPI), TriggerEngine, RehydrationManager,

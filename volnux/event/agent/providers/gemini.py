@@ -126,9 +126,7 @@ class GeminiProviderAdapter(LLMProviderAdapterBase):
         #         "Never hardcode API keys in source code."
         #     )
 
-        return genai.Client(
-            api_key=""
-        )
+        return genai.Client(api_key="")
 
     async def complete(
         self,

@@ -1,5 +1,4 @@
 ---
-# deploy/kubernetes/06-rbac.yaml
 #
 # Service accounts and RBAC for Volnux API and Worker pods.
 #

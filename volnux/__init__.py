@@ -34,7 +34,7 @@ from .event import EventBase
 Event: TypeAlias = EventBase
 
 from .mixins.event import RetryPolicy, ExecutorInitializerConfig
-from .pipeline import BatchPipeline, Pipeline
+from .execution.pipeline import BatchPipeline, Pipeline
 from .result_evaluators import ResultEvaluationStrategies
 
 # hook all default signal handlers

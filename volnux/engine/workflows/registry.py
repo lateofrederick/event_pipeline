@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from volnux.event import EventBase
     from .workflow import WorkflowConfig
-    from volnux.pipeline import Pipeline, BatchPipeline
+    from volnux.execution.pipeline import Pipeline, BatchPipeline
 
 
 class WorkflowRegistry:
@@ -41,6 +41,7 @@ class WorkflowRegistry:
 
         self._ready = False
         self._loading = False
+        self._load_lock = asyncio.Lock()  # guards against concurrent loads
 
         # Cache directory for remote workflows
         self._cache_dir = cache_dir or Path.home() / ".volnux" / "workflow_cache"
@@ -141,7 +142,10 @@ class WorkflowRegistry:
 
         :return: None
         """
-        self._loading = True
+        async with self._load_lock:
+            if self._loading:
+                return
+            self._loading = True
 
         try:
             sources = list(self.combined_workflow_sources.values())
@@ -151,33 +155,32 @@ class WorkflowRegistry:
 
             params = {"cache_dir": self._cache_dir}
 
-            loop = asyncio.get_running_loop()
-            with ThreadPoolExecutor(max_workers=min(4, len(sources))) as executor:
-                futures = [
-                    loop.run_in_executor(
-                        executor, self.process_workflow_source, source, self, params
-                    )
+            results = await asyncio.gather(
+                *[
+                    self.process_workflow_source(source, self, params)
                     for source in sources
-                ]
+                ],
+                return_exceptions=True,
+            )
 
-                results = await asyncio.gather(*futures, return_exceptions=True)
-
-                for source, result in zip(sources, results):
-                    if isinstance(result, BaseException):
-                        logger.error(
-                            "Failed to load config from %s: %s",
-                            source.name,
-                            result,
-                            exc_info=True,
-                        )
-                    else:
-                        logger.debug("Successfully loaded config from %s", source.name)
-
-            if self._workflows:
-                self.make_ready()
+            for source, result in zip(sources, results):
+                if isinstance(result, BaseException):
+                    logger.error(
+                        "Failed to load config from %s: %s",
+                        source.name,
+                        result,
+                        exc_info=result,
+                    )
+                else:
+                    logger.debug("Successfully loaded config from %s", source.name)
 
         finally:
             self._loading = False
+
+            # Mark ready unconditionally — loading completed (even if nothing loaded).
+            # Callers should inspect _workflows to determine whether any configs
+            # are available, not treat an empty registry as "not ready".
+            self.make_ready()
 
     @staticmethod
     async def process_workflow_source(
@@ -216,7 +219,14 @@ class WorkflowRegistry:
             raise RegistryNotReady("Workflow registry is not ready yet.")
         pipelines = set()
         for workflow in self._workflows.values():
-            pipelines.add(workflow.get_pipeline_class())
+            try:
+                pipelines.add(workflow.get_pipeline_class())
+            except RuntimeError as exc:
+                logger.warning(
+                    "Skipping pipeline discovery for workflow '%s': %s",
+                    workflow.name,
+                    exc,
+                )
         return pipelines
 
     def get_batch_pipelines(self) -> Set[Type["BatchPipeline"]]:
@@ -231,11 +241,20 @@ class WorkflowRegistry:
             raise RegistryNotReady("Workflow registry is not ready yet.")
         batch_pipelines = set()
         for workflow in self._workflows.values():
-            batch_pipelines.add(workflow.get_batch_pipeline_class())
+            try:
+                batch_pipelines.add(workflow.get_batch_pipeline_class())
+            except RuntimeError as exc:
+                logger.warning(
+                    "Skipping batch pipeline discovery for workflow '%s': %s",
+                    workflow.name,
+                    exc,
+                )
         return batch_pipelines
 
 
-_workflow_registry = WorkflowRegistry(cache_dir=os.environ.get("WORKFLOWS_CACHE_DIR"))
+_workflow_registry = WorkflowRegistry(
+    cache_dir=os.environ.get("VOLNUX_WORKFLOWS_CACHE_DIR")
+)
 
 
 def get_workflow_registry() -> WorkflowRegistry:

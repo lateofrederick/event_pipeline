@@ -51,10 +51,6 @@ class ExternalCommunicationMixin:
                         options=["approve", "reject"],
                         timeout_hours=4,
                     )
-                    response = self.previous_result.filter(
-                        type="human_response"
-                    ).first()
-                    return {"approval_decision": response.content["decision"]}
 
         Example — waiting for an external async event::
 
@@ -64,10 +60,6 @@ class ExternalCommunicationMixin:
                     filter={"job_id": job_id},
                     timeout_hours=12,
                 )
-                result = self.previous_result.filter(
-                    type="ml.training.completed"
-                ).first()
-                return {"training_result": result.content}
 
         Then in process():
 
@@ -77,7 +69,8 @@ class ExternalCommunicationMixin:
                 approval_decision: str,   # injected from communicate()
                 **kwargs
             ):
-                if approval_decision == "reject":
+                result = await self.previous_result.filter(type="hitl").first()
+                if result.content["approval_decision"] == "reject":
                     return False, {"reason": "human_rejected"}
                 return True, finalise(order)
         """

@@ -429,7 +429,7 @@ class WindowedTrigger(TriggerBase):
     async def _arm_aggregator(self, aggregator: EventTrigger) -> None:
         """Install the write-only accumulation callback and start the aggregator."""
         aggregator.set_activation_callback(
-            self._make_aggregator_callback(aggregator.name)
+            self._make_aggregator_callback(aggregator.workflow_name)
         )
         try:
             await aggregator.run()
@@ -437,7 +437,7 @@ class WindowedTrigger(TriggerBase):
             logger.exception(
                 "WindowedTrigger '%s': failed to arm aggregator '%s'.",
                 self.trigger_id,
-                aggregator.name,
+                aggregator.workflow_name,
             )
 
     def _make_aggregator_callback(

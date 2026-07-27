@@ -143,6 +143,10 @@ class TriggerBase(ABC):
         """Get the timestamp of the last activation (ISO format string)."""
         return self.state.last_fired
 
+    def update_workflow_params(self, params: Dict[str, Any]):
+        """Update the workflow parameters."""
+        self.workflow_params.update(params)
+
     async def initialize(self):
         """
         Persist initial state to a database.
@@ -284,7 +288,11 @@ class TriggerBase(ABC):
             trigger_id=self.trigger_id,
             activated_at=str_to_datetime(self.last_fired),
             activation_source=self.get_activation_source(),
-            workflow_params={**self.workflow_params, **activation_data},
+            workflow_params={
+                **self.workflow_params,
+                **activation_data,
+                "__trigger_metadata__": self.metadata,
+            },
             metadata=dict(self.metadata),
         )
 
