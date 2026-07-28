@@ -208,6 +208,50 @@ def translate_task_retried(
     )
 
 
+def translate_execution_failed(
+    execution_context: Any = None, state: Any = None, **_: Any
+) -> GovernanceEvent:
+    # event_execution_failed is emitted by ExecutionContext.failed() at the
+    # execution level (it marks the whole run FAILED via the state manager); the
+    # `state` arg is ExecutionStatus.FAILED. It fires mid-run, before the
+    # unconditional pipeline_execution_end (which maps to COMPLETED), so the
+    # backend projector's terminal-state freeze keeps the run FAILED rather than
+    # letting the later COMPLETED overwrite it.
+    return GovernanceEvent(
+        event_type=EventType.EXECUTION_FAILED,
+        execution_id=_execution_id(execution_context),
+        workflow_id=_workflow_id(execution_context),
+        workflow_name=_workflow_name(execution_context),
+        payload={"state": _safe_str(state)},
+    )
+
+
+def translate_execution_paused(
+    execution_context: Any = None, state: Any = None, **_: Any
+) -> GovernanceEvent:
+    # event_execution_paused is emitted by ExecutionContext.paused() with
+    # state=ExecutionStatus.PAUSED; a non-terminal transition on the run.
+    return GovernanceEvent(
+        event_type=EventType.EXECUTION_PAUSED,
+        execution_id=_execution_id(execution_context),
+        workflow_id=_workflow_id(execution_context),
+        workflow_name=_workflow_name(execution_context),
+    )
+
+
+def translate_execution_resumed(
+    execution_context: Any = None, state: Any = None, **_: Any
+) -> GovernanceEvent:
+    # event_execution_resumed is emitted by ExecutionContext.resumed(); the run
+    # goes back to RUNNING.
+    return GovernanceEvent(
+        event_type=EventType.EXECUTION_RESUMED,
+        execution_id=_execution_id(execution_context),
+        workflow_id=_workflow_id(execution_context),
+        workflow_name=_workflow_name(execution_context),
+    )
+
+
 class SignalGovernanceReporter:
     """Connect lifecycle signals to a ``GovernanceEventStream``.
 
@@ -264,16 +308,24 @@ class SignalGovernanceReporter:
     def _build_registrations(self) -> List[Tuple[Any, Any]]:
         """Pair each wired signal with the handler that translates it.
 
-        Only signals with an unambiguous payload are wired here:
+        Wired signals and their mappings:
 
         * pipeline run: start / end (completed) / stop (cancelled) /
           shutdown (aborted);
+        * execution state transitions: failed / paused / resumed. Despite the
+          ``event_execution_*`` names, these are emitted by ``ExecutionContext``
+          at the *execution* level (``failed()``/``paused()``/``resumed()``)
+          with the target ``state`` in the payload, so they map to the
+          execution-level FAILED/PAUSED/RESUMED events. Wiring ``failed`` also
+          corrects the run status: a failed run still fires the unconditional
+          ``pipeline_execution_end`` (COMPLETED), but ``failed`` fires first and
+          the projector freezes on the terminal FAILED.
         * task: start / end (completed) / retry.
 
-        The ``event_execution_failed``/``paused``/``resumed``/``cancelled``/
-        ``aborted`` signals carry ``task_profiles`` + a ``state`` object whose
-        semantics need confirming against their emission sites before they can
-        be mapped correctly, so they are intentionally left unwired for now.
+        ``event_execution_cancelled``/``aborted`` are deliberately *not* wired:
+        the pipeline-level ``pipeline_stop``/``pipeline_shutdown`` already report
+        those same run endings (STOPPED / aborted-FAILED), so wiring the
+        event-level twins would only duplicate them.
         """
         from volnux.signal import signals as sig
 
@@ -282,6 +334,9 @@ class SignalGovernanceReporter:
             (sig.pipeline_execution_end, self._on_execution_end),
             (sig.pipeline_stop, self._on_execution_stopped),
             (sig.pipeline_shutdown, self._on_execution_aborted),
+            (sig.event_execution_failed, self._on_execution_failed),
+            (sig.event_execution_paused, self._on_execution_paused),
+            (sig.event_execution_resumed, self._on_execution_resumed),
             (sig.event_execution_start, self._on_task_started),
             (sig.event_execution_end, self._on_task_completed),
             (sig.event_execution_retry, self._on_task_retried),
@@ -300,6 +355,15 @@ class SignalGovernanceReporter:
 
     def _on_execution_aborted(self, **kwargs: Any) -> None:
         self._emit(translate_execution_aborted(**kwargs))
+
+    def _on_execution_failed(self, **kwargs: Any) -> None:
+        self._emit(translate_execution_failed(**kwargs))
+
+    def _on_execution_paused(self, **kwargs: Any) -> None:
+        self._emit(translate_execution_paused(**kwargs))
+
+    def _on_execution_resumed(self, **kwargs: Any) -> None:
+        self._emit(translate_execution_resumed(**kwargs))
 
     def _on_task_started(self, **kwargs: Any) -> None:
         self._emit(translate_task_started(**kwargs))
