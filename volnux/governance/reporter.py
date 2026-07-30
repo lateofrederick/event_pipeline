@@ -252,6 +252,29 @@ def translate_execution_resumed(
     )
 
 
+def translate_hitl_requested(
+    execution_context: Any = None, request: Any = None, **_: Any
+) -> GovernanceEvent:
+    # hitl_requested fires when a task suspends for human input. The suspension
+    # request carries the prompt/options and its own request_id (the key the
+    # engine resumes on); those travel in the payload so the platform can create
+    # a request record and, on answer, publish back to the response channel.
+    return GovernanceEvent(
+        event_type=EventType.HITL_REQUESTED,
+        execution_id=_execution_id(execution_context),
+        workflow_id=_workflow_id(execution_context),
+        workflow_name=_workflow_name(execution_context),
+        task_id=_safe_str(getattr(request, "task_id", None)),
+        payload={
+            "request_id": _safe_str(getattr(request, "request_id", None)),
+            "title": _safe_str(getattr(request, "title", None)),
+            "description": _safe_str(getattr(request, "description", None)),
+            "options": list(getattr(request, "options", None) or []),
+            "timeout_hours": getattr(request, "timeout_hours", None),
+        },
+    )
+
+
 class SignalGovernanceReporter:
     """Connect lifecycle signals to a ``GovernanceEventStream``.
 
@@ -340,6 +363,7 @@ class SignalGovernanceReporter:
             (sig.event_execution_start, self._on_task_started),
             (sig.event_execution_end, self._on_task_completed),
             (sig.event_execution_retry, self._on_task_retried),
+            (sig.hitl_requested, self._on_hitl_requested),
         ]
 
     # -- Signal handlers: translate, then publish (isolated) ----------------
@@ -364,6 +388,9 @@ class SignalGovernanceReporter:
 
     def _on_execution_resumed(self, **kwargs: Any) -> None:
         self._emit(translate_execution_resumed(**kwargs))
+
+    def _on_hitl_requested(self, **kwargs: Any) -> None:
+        self._emit(translate_hitl_requested(**kwargs))
 
     def _on_task_started(self, **kwargs: Any) -> None:
         self._emit(translate_task_started(**kwargs))
