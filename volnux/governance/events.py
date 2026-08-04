@@ -1,17 +1,33 @@
 """The governance event contract.
 
-This module is deliberately dependency-free: it imports nothing from the engine
-and nothing from the governance model layer. It is the shared vocabulary that
-crosses the process boundary between the engine (producer) and the platform
-backend (consumer), so it must stay a plain, JSON-serializable data structure
-that either side can depend on without pulling in the other.
+A ``GovernanceEvent`` is a single fact the engine reports for the platform to
+project (an execution started, a task completed, a node beat). It is a
+transport-agnostic message: it mixes in the engine's messaging integration and
+is delivered through whatever backend the deployment has provisioned (Redis,
+Postgres, in-memory, ...), keyed by ``get_schema_name()``. There is no Redis or
+any other transport hard-wired here.
+
+The pattern mirrors ``volnux.backends.saga._dlq.DeadLetterEntry``: a model that
+is both persistable (``KeyValueStoreIntegrationMixin``) and
+publishable/queueable (``MessagingBackendIntegrationMixin``). The reporter
+enqueues events with ``GovernanceEvent.enqueue(event)`` and a consumer drains
+them with ``GovernanceEvent.dequeue()`` over the same configured backend.
+
+Serialisation note: ``payload`` is carried as a JSON string rather than a nested
+dict. The event's structured payload (status, error, node metrics, HITL prompt,
+...) is JSON-encoded by the producer and decoded by the consumer via the
+``payload_dict`` / ``with_payload`` helpers. Keeping the field a scalar string
+keeps the model flat and avoids depending on nested-container coercion in the
+model layer.
 """
 
 import json
-import time
-import uuid
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+from formax import BaseModel
+
+from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+from volnux.mixins.messaging import MessagingBackendIntegrationMixin
 
 
 class EventType:
@@ -19,9 +35,8 @@ class EventType:
 
     Names are namespaced ``"<subject>.<verb>"`` so a consumer can route on the
     subject prefix (``execution.*``, ``task.*``, ...) without matching every
-    leaf. The comments record which side emits each type; the engine only ever
-    publishes the "engine emits" ones, but the full vocabulary lives here so the
-    consumer has a single authoritative list to project from.
+    leaf. The engine only publishes the "engine emits" ones; the full vocabulary
+    lives here so the consumer has a single authoritative list to project from.
     """
 
     # --- Execution lifecycle (engine emits) --------------------------------
@@ -48,114 +63,49 @@ class EventType:
     NODE_DECOMMISSIONED = "node.decommissioned"
 
 
-@dataclass(frozen=True)
-class GovernanceEvent:
-    """A single fact the engine reports for the platform to project.
+# The queue/channel identity for governance events, shared by the engine
+# producer and the platform consumer.
+GOVERNANCE_SCHEMA = "volnux:governance:events"
 
-    Attributes:
-        event_id: Unique id for this event. Used by the consumer for
-            idempotent projection — a Redis consumer group may redeliver an
-            entry after a crash, and deduping on ``event_id`` makes that safe.
-        event_type: One of the ``EventType`` constants.
-        occurred_at: Unix timestamp (seconds) when the fact happened, set by
-            the producer. This is the authoritative ordering key *within* a
-            correlation id; the stream entry id orders events globally.
-        workflow_id: The workflow the fact relates to, if any.
-        workflow_name: Human-readable workflow name, for convenience/logging.
-        execution_id: The runtime execution the fact relates to, if any. This
-            is the correlation key that ties tasks and HITL events back to
-            their execution.
-        task_id: The task/event within the execution, for ``task.*`` events.
-        sequence: Optional per-execution monotonic counter. Lets the consumer
-            order same-millisecond events and detect gaps; ``None`` when the
-            producer does not track one.
-        payload: Event-specific data (status, error message, node metrics, HITL
-            prompt, ...). Must be JSON-serialisable.
+
+class GovernanceEvent(
+    KeyValueStoreIntegrationMixin, MessagingBackendIntegrationMixin, BaseModel
+):
+    """A single governance fact, delivered over the provisioned messaging backend.
+
+    Fields are declared plainly (no in-model defaults) so construction stays
+    predictable across backends; the reporter fills every field, using empty
+    strings for correlation ids that do not apply to a given event and ``-1``
+    for an untracked sequence.
     """
 
     event_type: str
-    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    occurred_at: float = field(default_factory=time.time)
-    workflow_id: Optional[str] = None
-    workflow_name: Optional[str] = None
-    execution_id: Optional[str] = None
-    task_id: Optional[str] = None
-    sequence: Optional[int] = None
-    payload: Dict[str, Any] = field(default_factory=dict)
-
-    def to_stream_fields(self) -> Dict[str, str]:
-        """Flatten to the string→string field map a Redis stream entry stores.
-
-        ``None`` correlation fields are omitted rather than written as empty
-        strings, so the consumer can distinguish "not applicable" from "blank".
-        The payload is JSON-encoded under a single ``payload`` field to keep the
-        entry flat while preserving nested structure.
-        """
-        fields: Dict[str, str] = {
-            "event_id": self.event_id,
-            "event_type": self.event_type,
-            "occurred_at": repr(self.occurred_at),
-            "payload": json.dumps(self.payload, separators=(",", ":")),
-        }
-        if self.workflow_id is not None:
-            fields["workflow_id"] = self.workflow_id
-        if self.workflow_name is not None:
-            fields["workflow_name"] = self.workflow_name
-        if self.execution_id is not None:
-            fields["execution_id"] = self.execution_id
-        if self.task_id is not None:
-            fields["task_id"] = self.task_id
-        if self.sequence is not None:
-            fields["sequence"] = str(self.sequence)
-        return fields
+    event_id: str
+    occurred_at: float
+    execution_id: str
+    task_id: str
+    workflow_id: str
+    workflow_name: str
+    sequence: int
+    payload: str
 
     @classmethod
-    def from_stream_fields(cls, fields: Dict[str, str]) -> "GovernanceEvent":
-        """Reconstruct an event from a Redis stream field map.
+    def get_schema_name(cls) -> str:
+        return GOVERNANCE_SCHEMA
 
-        Tolerant by design: a missing or malformed ``payload`` yields ``{}``
-        rather than raising, and unknown extra fields are ignored, so a
-        consumer built against an older contract still reads newer entries.
-        """
-        raw_payload = fields.get("payload")
+    def payload_dict(self) -> Dict[str, Any]:
+        """Decode the JSON ``payload`` back into a dict, tolerating garbage."""
+        if not self.payload:
+            return {}
         try:
-            payload = json.loads(raw_payload) if raw_payload else {}
-            if not isinstance(payload, dict):
-                payload = {}
+            decoded = json.loads(self.payload)
         except (ValueError, TypeError):
-            payload = {}
-
-        occurred_at = fields.get("occurred_at")
-        sequence = fields.get("sequence")
-
-        return cls(
-            event_type=fields.get("event_type", ""),
-            event_id=fields.get("event_id", ""),
-            occurred_at=_to_float(occurred_at, default=0.0),
-            workflow_id=fields.get("workflow_id"),
-            workflow_name=fields.get("workflow_name"),
-            execution_id=fields.get("execution_id"),
-            task_id=fields.get("task_id"),
-            sequence=_to_int(sequence),
-            payload=payload,
-        )
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
 
 
-def _to_float(value: Optional[str], *, default: float) -> float:
-    """Parse a float field, falling back to ``default`` on missing/garbage."""
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _to_int(value: Optional[str]) -> Optional[int]:
-    """Parse an optional int field, returning ``None`` on missing/garbage."""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return None
+def encode_payload(payload: Dict[str, Any]) -> str:
+    """JSON-encode an event payload for the wire, compactly and deterministically."""
+    if not payload:
+        return ""
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
