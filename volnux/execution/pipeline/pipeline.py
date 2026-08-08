@@ -31,7 +31,7 @@ from volnux.import_utils import import_string
 from volnux.mixins import ObjectIdentityMixin, ScheduleMixin
 from volnux.parser.operator import PipeType
 from volnux.parser.protocols import TaskType
-from volnux.pipeline_wrapper import PipelineWrapper
+from volnux.execution.pipeline.wrapper import PipelineWrapper
 from volnux.signal.signals import (
     SoftSignal,
     batch_pipeline_finished,

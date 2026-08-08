@@ -1,116 +1,108 @@
 import asyncio
-import copy
-import json
+import collections
+import fnmatch
 import logging
-import threading
-import typing
-from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional, Type, Union
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Type
 
 from volnux.backends.messaging.base import (
     PubSubCapabilityMixin,
     PushPopCapabilityMixin,
+    AsyncSubscriptionContext,
     QueueSide,
+    Record,
+    Message,
 )
+
+if TYPE_CHECKING:
+    from volnux.backends.stores.inmemory import InMemoryKeyValueStoreBackend
 
 logger = logging.getLogger(__name__)
 
 
-def _serialise(value: Any) -> str:
-    """Serialise Python objects to JSON strings."""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, default=str)
+class _AsyncDeque:
 
+    def __init__(self):
+        self._deque: collections.deque = collections.deque()
+        self._lock = asyncio.Lock()
+        self._not_empty = asyncio.Event()
 
-def _deserialise(raw: str) -> Any:
-    """Deserialise JSON strings back to Python objects."""
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return raw
+    async def push(self, value: str, side: QueueSide) -> int:
+        async with self._lock:
+            if side == QueueSide.RIGHT:
+                self._deque.append(value)
+            else:
+                self._deque.appendleft(value)
+            self._not_empty.set()
+        return len(self._deque)
+
+    async def pop(
+        self, side: QueueSide, timeout: Optional[float] = None
+    ) -> Optional[str]:
+        if not self._deque:
+            if timeout is None:
+                return None  # Non-blocking immediate return
+
+            # timeout=0 means wait forever per Volnux contract
+            wait_time = None if timeout == 0 else timeout
+            try:
+                await asyncio.wait_for(self._not_empty.wait(), timeout=wait_time)
+            except asyncio.TimeoutError:
+                return None
+
+        async with self._lock:
+            if not self._deque:
+                self._not_empty.clear()
+                return None
+
+            val = self._deque.popleft() if side == QueueSide.LEFT else self._deque.pop()
+            if not self._deque:
+                self._not_empty.clear()
+            return val
+
+    def length(self) -> int:
+        return len(self._deque)
+
+    def range(self, start: int, stop: int) -> List[str]:
+        q_list = list(self._deque)
+        if stop == -1:
+            stop = len(q_list)
+        else:
+            stop = stop + 1
+        return q_list[start:stop]
 
 
 class InMemoryPubSubMixin(PubSubCapabilityMixin):
-    """
-    In-memory pub/sub implementation for InMemoryKeyValueStoreBackend.
-
-    Uses thread-safe queues to broadcast messages to subscribers within the
-    same process. This is suitable for testing, single-process applications,
-    and scenarios where cross-process communication is not required.
-
-    Contract
-    --------
-    - All operations are async (wrapped with asyncio.to_thread where needed)
-    - Subscribers within the same process receive messages
-    - Messages do NOT propagate across processes (in-memory only)
-    - Pattern matching uses fnmatch (similar to Redis glob patterns)
-    """
 
     def __post_init_pubsub__(self):
-        """Initialize pub/sub data structures. Call from __init__."""
-        if not hasattr(self, "_pubsub_channels"):
-            # channel -> set of subscriber queues
-            self._pubsub_channels: Dict[str, set] = defaultdict(set)
-            # pattern -> set of subscriber queues
-            self._pubsub_patterns: Dict[str, set] = defaultdict(set)
-            self._pubsub_lock = threading.RLock()
+        if not hasattr(self, "_pubsub_lock"):
+            self._pubsub_channels: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
+            self._pubsub_patterns: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
+            self._pubsub_lock = asyncio.Lock()
 
-    async def publish(self, channel: str, message: Any) -> int:
-        """
-        Publish a message to a channel.
-
-        Broadcasts to all subscribers matching the exact channel name
-        and to subscribers whose patterns match the channel.
-        """
+    async def publish(self, channel: str, record: Record) -> int:
         if not hasattr(self, "_pubsub_lock"):
             self.__post_init_pubsub__()
 
-        payload = _serialise(message)
+        # Delegates to KeyValueStoreBackendBase._serialize_record
+        payload = self._serialize_record(record)  # type: ignore[attr-unresolved]
         receivers = 0
 
-        # Offload synchronous operations to thread pool
-        await asyncio.to_thread(self._publish_sync, channel, payload, receivers)
-
-        # Count receivers
-        with self._pubsub_lock:
-            # Exact channel subscribers
-            receivers += len(self._pubsub_channels.get(channel, set()))
-
-            # Pattern subscribers
-            import fnmatch
-
-            for pattern, queues in self._pubsub_patterns.items():
-                if fnmatch.fnmatch(channel, pattern):
-                    receivers += len(queues)
-
-        logger.debug("Published to %s — %d receiver(s)", channel, receivers)
-        return receivers
-
-    def _publish_sync(self, channel: str, payload: str, receivers: int) -> None:
-        """Synchronous publish logic executed in thread pool."""
-        import fnmatch
-
-        with self._pubsub_lock:
-            # Send to exact channel subscribers
-            for queue in self._pubsub_channels.get(channel, set()):
+        async with self._pubsub_lock:
+            for q in self._pubsub_channels.get(channel, set()):
                 try:
-                    queue.put_nowait(
-                        {
-                            "type": "message",
-                            "channel": channel,
-                            "data": payload,
-                        }
+                    q.put_nowait(
+                        {"type": "message", "channel": channel, "data": payload}
                     )
-                except:
-                    pass  # Subscriber queue full or closed
+                    receivers += 1
+                except asyncio.QueueFull:
+                    pass  # Backpressure: drop if subscriber is too slow
 
-            # Send to pattern subscribers
             for pattern, queues in self._pubsub_patterns.items():
                 if fnmatch.fnmatch(channel, pattern):
-                    for queue in queues:
+                    for q in queues:
                         try:
-                            queue.put_nowait(
+                            q.put_nowait(
                                 {
                                     "type": "pmessage",
                                     "channel": channel,
@@ -118,338 +110,211 @@ class InMemoryPubSubMixin(PubSubCapabilityMixin):
                                     "data": payload,
                                 }
                             )
-                        except:
+                            receivers += 1
+                        except asyncio.QueueFull:
                             pass
 
-    def subscribe(self, *channels: str) -> "InMemorySubscriptionContext":
-        """Subscribe to one or more exact channel names."""
+        return receivers
+
+    def subscribe(
+        self, *channels: str, record_class: Type[Record]
+    ) -> "InMemorySubscriptionContext":
         if not hasattr(self, "_pubsub_lock"):
             self.__post_init_pubsub__()
         return InMemorySubscriptionContext(
             backend=self,
             channels=list(channels),
             patterns=[],
+            record_class=record_class,
         )
 
-    def psubscribe(self, *patterns: str) -> "InMemorySubscriptionContext":
-        """Subscribe using glob patterns (fnmatch-style)."""
+    def psubscribe(
+        self, *patterns: str, record_class: Type[Record]
+    ) -> "InMemorySubscriptionContext":
         if not hasattr(self, "_pubsub_lock"):
             self.__post_init_pubsub__()
         return InMemorySubscriptionContext(
             backend=self,
             channels=[],
             patterns=list(patterns),
+            record_class=record_class,
         )
 
 
-class InMemorySubscriptionContext:
-    """
-    Async context manager for in-memory subscriptions.
-
-    Creates a queue for receiving messages, registers it with the backend's
-    channel/pattern maps, and yields an async iterator of messages.
-    """
+class InMemorySubscriptionContext(AsyncSubscriptionContext):
 
     def __init__(
         self,
         backend: "InMemoryKeyValueStoreBackend",
         channels: List[str],
         patterns: List[str],
+        record_class: Type[Record],
     ):
         self.backend = backend
         self.channels = channels
         self.patterns = patterns
-        self._queue: Optional[asyncio.Queue] = None
-        self._sync_queue: Optional[typing.Any] = (
-            None  # threading.Queue for sync operations
-        )
+        self.record_class = record_class
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
 
     async def __aenter__(self) -> "InMemorySubscriptionContext":
-        """Register subscription and create message queue."""
-        import queue
-
-        # Create both async and sync queues
-        self._queue = asyncio.Queue(maxsize=1000)
-        self._sync_queue = queue.Queue(maxsize=1000)
-
-        # Register in thread pool
-        await asyncio.to_thread(self._register_sync)
-
-        logger.debug(
-            "Subscribed to channels=%s patterns=%s", self.channels, self.patterns
-        )
+        async with self.backend._pubsub_lock:
+            for c in self.channels:
+                self.backend._pubsub_channels[c].add(self._queue)
+            for p in self.patterns:
+                self.backend._pubsub_patterns[p].add(self._queue)
         return self
 
-    def _register_sync(self):
-        """Synchronous registration logic."""
-        with self.backend._pubsub_lock:
-            for channel in self.channels:
-                self.backend._pubsub_channels[channel].add(self._sync_queue)
-            for pattern in self.patterns:
-                self.backend._pubsub_patterns[pattern].add(self._sync_queue)
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        async with self.backend._pubsub_lock:
+            for c in self.channels:
+                self.backend._pubsub_channels[c].discard(self._queue)
+            for p in self.patterns:
+                self.backend._pubsub_patterns[p].discard(self._queue)
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Unsubscribe and cleanup."""
-        await asyncio.to_thread(self._unregister_sync)
-
-        # Clear queue
-        if self._queue:
-            while not self._queue.empty():
-                try:
-                    self._queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
-    def _unregister_sync(self):
-        """Synchronous unregistration logic."""
-        with self.backend._pubsub_lock:
-            for channel in self.channels:
-                self.backend._pubsub_channels[channel].discard(self._sync_queue)
-                if not self.backend._pubsub_channels[channel]:
-                    del self.backend._pubsub_channels[channel]
-
-            for pattern in self.patterns:
-                self.backend._pubsub_patterns[pattern].discard(self._sync_queue)
-                if not self.backend._pubsub_patterns[pattern]:
-                    del self.backend._pubsub_patterns[pattern]
-
-    def __aiter__(self):
-        """Return self as async iterator."""
-        return self
-
-    async def __anext__(self):
-        """
-        Yield the next message from the subscription queue.
-
-        Bridges between sync queue (where publishers write) and async iterator.
-        """
-        import queue
-
-        while True:
+        # Drain leftover messages to prevent memory leaks
+        while not self._queue.empty():
             try:
-                # Check sync queue in thread pool
-                msg = await asyncio.to_thread(self._sync_queue.get, timeout=0.1)
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
-                if msg["type"] in ("message", "pmessage"):
-                    return {
-                        "channel": msg["channel"],
-                        "pattern": msg.get("pattern"),
-                        "data": _deserialise(msg["data"]),
-                    }
-            except queue.Empty:
-                # Small sleep to prevent busy-wait
-                await asyncio.sleep(0.01)
-            except Exception as exc:
-                logger.error("Error receiving message: %s", exc)
-                raise StopAsyncIteration
+    def __aiter__(self) -> "InMemorySubscriptionContext":
+        # NOTE: is synchronous (`def`) for native `async for` compatibility.
+        # The async iteration logic lives in `__anext__`.
+        return self
+
+    async def __anext__(self) -> Message:
+        msg = await self._queue.get()
+
+        return Message(
+            channel=msg["channel"],
+            pattern=msg.get("pattern"),
+            data=self.backend._deserialise_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
+            raw=msg,
+        )
 
 
 class InMemoryPushPopMixin(PushPopCapabilityMixin):
-    """
-    In-memory queue implementation for InMemoryKeyValueStoreBackend.
-
-    Uses Python's `collections.deque` for efficient FIFO/LIFO operations.
-    All operations are thread-safe and async-compatible.
-
-    Contract
-    --------
-    - Thread-safe operations via RLock
-    - Async-compatible via asyncio.to_thread wrappers
-    - Blocking pop uses asyncio.Event for signaling
-    - All operations are in-process only (not distributed)
-    """
 
     def __post_init_queues__(self):
-        """Initialize queue data structures. Call from __init__."""
-        if not hasattr(self, "_queues"):
-            # key -> deque
-            self._queues: Dict[str, deque] = {}
-            # key -> asyncio.Event for blocking pop signaling
-            self._queue_events: Dict[str, asyncio.Event] = {}
-            self._queue_lock = threading.RLock()
+        if not hasattr(self, "_queues_lock"):
+            self._queues: Dict[str, _AsyncDeque] = {}
+            self._queues_lock = asyncio.Lock()
+
+    async def _get_or_create_queue(self, key: str) -> _AsyncDeque:
+        async with self._queues_lock:
+            if key not in self._queues:
+                self._queues[key] = _AsyncDeque()
+            return self._queues[key]
 
     async def push(
-        self,
-        key: str,
-        *values: Any,
-        side: QueueSide = QueueSide.RIGHT,
+        self, key: str, *values: Any, side: QueueSide = QueueSide.RIGHT
     ) -> int:
-        """Push one or more values onto a queue."""
-        if not hasattr(self, "_queue_lock"):
+        if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
 
-        payloads = [_serialise(v) for v in values]
+        q = await self._get_or_create_queue(key)
+        payloads = [self._serialize_record(v) for v in values]  # type: ignore[attr-unresolved]
 
-        # Offload to thread pool
-        length = await asyncio.to_thread(self._push_sync, key, payloads, side)
-
-        # Signal waiting consumers
-        if key in self._queue_events:
-            self._queue_events[key].set()
-
-        logger.debug(
-            "%sPUSH %s — queue length now %d",
-            "L" if side == QueueSide.LEFT else "R",
-            key,
-            length,
-        )
+        length = 0
+        for p in payloads:
+            length = await q.push(p, side)
         return length
-
-    def _push_sync(self, key: str, payloads: List[str], side: QueueSide) -> int:
-        """Synchronous push logic."""
-        with self._queue_lock:
-            if key not in self._queues:
-                self._queues[key] = deque()
-
-            q = self._queues[key]
-            for payload in payloads:
-                if side == QueueSide.LEFT:
-                    q.appendleft(payload)
-                else:
-                    q.append(payload)
-
-            return len(q)
 
     async def pop(
         self,
         key: str,
+        record_class: Type[Record],
         timeout: Optional[float] = None,
         side: QueueSide = QueueSide.LEFT,
     ) -> Optional[Any]:
-        """Pop a single value from a queue."""
-        if not hasattr(self, "_queue_lock"):
+        if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
 
-        if timeout is None:
-            # Non-blocking pop
-            raw = await asyncio.to_thread(self._pop_sync, key, side)
-            return _deserialise(raw) if raw is not None else None
+        async with self._queues_lock:
+            q = self._queues.get(key)
 
-        # Blocking pop with timeout
-        start_time = asyncio.get_event_loop().time()
-        timeout_remaining = float(timeout) if timeout > 0 else None
-
-        while True:
-            # Try non-blocking pop first
-            raw = await asyncio.to_thread(self._pop_sync, key, side)
-            if raw is not None:
-                return _deserialise(raw)
-
-            # Check timeout
-            if timeout_remaining is not None:
-                elapsed = asyncio.get_event_loop().time() - start_time
-                if elapsed >= timeout:
-                    return None
-                timeout_remaining = timeout - elapsed
-
-            # Wait for signal or timeout
-            if key not in self._queue_events:
-                self._queue_events[key] = asyncio.Event()
-
-            try:
-                if timeout_remaining is not None:
-                    await asyncio.wait_for(
-                        self._queue_events[key].wait(),
-                        timeout=min(0.1, timeout_remaining),
-                    )
-                else:
-                    # Infinite timeout - wait indefinitely but check periodically
-                    await asyncio.wait_for(self._queue_events[key].wait(), timeout=0.1)
-            except asyncio.TimeoutError:
-                if timeout_remaining is not None:
-                    continue
-                # For infinite timeout, just continue
-                pass
-
-            # Clear event for next round
-            self._queue_events[key].clear()
-
-    def _pop_sync(self, key: str, side: QueueSide) -> Optional[str]:
-        """Synchronous pop logic."""
-        with self._queue_lock:
-            if key not in self._queues or len(self._queues[key]) == 0:
+        if not q:
+            if timeout is None:
                 return None
+            await asyncio.sleep(timeout)
+            return None
 
-            q = self._queues[key]
-            try:
-                if side == QueueSide.LEFT:
-                    return q.popleft()
-                else:
-                    return q.pop()
-            except IndexError:
-                return None
+        raw = await q.pop(side, timeout)
+        return self._deserialise_record(raw, record_class) if raw is not None else None  # type: ignore[attr-unresolved]
 
     async def pop_many(
         self,
-        *keys: str,
-        timeout: float = 0,
+        key: str,
+        record_class: Type[Record],
+        limit: Optional[int] = None,
+        timeout: Optional[float] = None,
         side: QueueSide = QueueSide.LEFT,
-    ) -> Optional[tuple[str, Any]]:
-        """Block until any of the given queues has a value, then pop it."""
-        if not keys:
-            raise ValueError("pop_many() requires at least one key")
-
-        if not hasattr(self, "_queue_lock"):
+    ) -> List[Record]:
+        """
+        Block until the queue has data, then drain a batch of items.
+        """
+        if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
 
-        start_time = asyncio.get_event_loop().time()
+        async with self._queues_lock:
+            q = self._queues.get(key)
 
+        if not q and timeout is None:
+            return []
+
+        if not q:
+            q = await self._get_or_create_queue(key)
+
+        if q.length() == 0:
+            if timeout is None:
+                return []  # Non-blocking immediate return
+
+            # Use the underlying _AsyncDeque's pop with timeout just to wait for the signal,
+            # but we don't want to consume the item yet if we are going to drain.
+            # Actually, it's easier to just use the _not_empty event directly if exposed,
+            # or just do a blocking pop for the first item.
+            first_item_raw = await q.pop(side, timeout=timeout)
+            if first_item_raw is None:
+                return []  # Timeout expired
+
+            # We got the first item!
+            results = [self._deserialise_record(first_item_raw, record_class)]  # type: ignore[attr-unresolved]
+        else:
+            results = []
+
+        # Since this is in-memory, draining is instantaneous.
+        items_popped = 1
         while True:
-            # Try popping from each key
-            for key in keys:
-                raw = await asyncio.to_thread(self._pop_sync, key, side)
-                if raw is not None:
-                    return key, _deserialise(raw)
+            if limit is not None and items_popped >= limit:
+                break
 
-            # Check timeout
-            if timeout > 0:
-                elapsed = asyncio.get_event_loop().time() - start_time
-                if elapsed >= timeout:
-                    return None
+            # Non-blocking pop for subsequent items
+            raw = await q.pop(side, timeout=None)
+            if raw is None:
+                break
 
-            # Wait a bit before retrying
-            await asyncio.sleep(0.01)
+            results.append(self._deserialise_record(raw, record_class))  # type: ignore[attr-unresolved]
+            items_popped += 1
+
+        return results
 
     async def queue_length(self, key: str) -> int:
-        """Return the number of items in a queue."""
-        if not hasattr(self, "_queue_lock"):
+        if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
-
-        return await asyncio.to_thread(self._queue_length_sync, key)
-
-    def _queue_length_sync(self, key: str) -> int:
-        """Synchronous queue length logic."""
-        with self._queue_lock:
-            if key not in self._queues:
-                return 0
-            return len(self._queues[key])
+        async with self._queues_lock:
+            q = self._queues.get(key)
+        return q.length() if q else 0
 
     async def queue_range(
-        self,
-        key: str,
-        start: int = 0,
-        stop: int = -1,
-    ) -> List[Any]:
-        """Return a slice of the queue without removing items."""
-        if not hasattr(self, "_queue_lock"):
+        self, key: str, record_class: Type[Record], start: int = 0, stop: int = -1
+    ) -> List[Record]:
+        if not hasattr(self, "_queues_lock"):
             self.__post_init_queues__()
+        async with self._queues_lock:
+            q = self._queues.get(key)
+        if not q:
+            return []
 
-        raws = await asyncio.to_thread(self._queue_range_sync, key, start, stop)
-        return [_deserialise(r) for r in raws]
-
-    def _queue_range_sync(self, key: str, start: int, stop: int) -> List[str]:
-        """Synchronous queue range logic."""
-        with self._queue_lock:
-            if key not in self._queues:
-                return []
-
-            q = self._queues[key]
-            q_list = list(q)
-
-            # Handle negative indices
-            if stop == -1:
-                stop = len(q_list)
-            else:
-                stop = stop + 1  # Make it inclusive
-
-            return q_list[start:stop]
+        raws = q.range(start, stop)
+        return [self._deserialise_record(r) for r in raws]  # type: ignore[attr-unresolved]

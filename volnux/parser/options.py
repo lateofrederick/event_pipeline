@@ -132,7 +132,7 @@ class Options(BaseModel):
                     option["extras"] = {}
                 option["extras"][field_name] = value
 
-        return cls.loads(option, _format="dict")
+        return cls.loads(option, _format="dict")  # type: ignore
 
     def has_retry_policy(self) -> bool:
         """Check if retry policy is configured."""

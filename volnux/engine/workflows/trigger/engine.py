@@ -35,8 +35,9 @@ from typing import (
 from datetime import datetime, timezone
 
 from .state import TriggerStateRecord
-from volnux.engine.workflows.workflow import WorkflowExecutionError
-from volnux.exceptions import WorkflowNotfound
+from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotFound
+
+# from volnux.exceptions import WorkflowNotfound
 from .triggers import TriggerBase, TriggerLifecycle, TriggerActivation, TriggerType
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ class WorkflowConfigExecutor(BaseWorkflowConfigExecutor):
         params = {k: v for k, v in params.items() if k != "run_type"}
 
         try:
-            result = config.run_workflow(params=params, run_type=run_type)
+            result = await config.run_workflow(params=params, run_type=run_type)
 
             logger.info(f"Workflow {workflow_name} completed successfully")
             return result
@@ -221,7 +222,7 @@ class TriggerEngine:
             trigger: instance of the trigger
         Raises:
             WorkflowExecutionError: if no trigger executor was provided
-            WorkflowNotfound: Exception when workflow is not found
+            WorkflowNotFound: Exception when workflow is not found
             ValueError: Trigger already registered
         """
         if trigger.trigger_id in self.triggers:
@@ -233,7 +234,7 @@ class TriggerEngine:
             trigger.workflow_name
         )
         if workflow is None:
-            raise WorkflowNotfound(
+            raise WorkflowNotFound(
                 f"Workflow with name '{trigger.workflow_name}' was not found"
             )
 

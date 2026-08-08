@@ -125,6 +125,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     parent_context: typing.Optional["ExecutionContext"] = None
     child_contexts: typing.List["ExecutionContext"] = field(default_factory=list)
 
+    _context_lock: asyncio.Lock = field(
+        default_factory=lambda: asyncio.Lock()
+    )  # Protects concurrent append ops
+
     _state_manager: typing.ClassVar[typing.Optional["StateManager"]] = None
 
     # Weak reference to the engine (not persisted)
@@ -259,7 +263,9 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             workflow_id=self.workflow_id,
             workflow_name=self.workflow_name,
         )
-        self.child_contexts.append(child)  # Link Down
+
+        async with self._context_lock:
+            self.child_contexts.append(child)  # Link Down
         return child
 
     @property
@@ -317,7 +323,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state_manager.create_state(self.state_id, initial_state)
             self.__class__._state_manager = state_manager
             return state_manager
-        return self._state_manager
+        return self._state_manager  # type: ignore
 
     def update_status(self, new_status: "ExecutionStatus") -> None:
         self.get_state_manager().update_status(self.state_id, new_status)

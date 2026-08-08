@@ -8,6 +8,7 @@ from volnux.execution.state_manager import ExecutionState, ExecutionStatus
 from volnux.parser.operator import PipeType
 from volnux.parser.protocols import TaskType
 from volnux.execution.pipeline import Pipeline
+from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 from volnux.execution.utils import evaluate_context_execution_results
 from .base import (
     CheckPointConfig,
@@ -129,7 +130,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         self,
         root_task: TaskType,
         pipeline: Pipeline,
-        parent_context: Optional[ExecutionContext] = None,
+        # parent_context: Optional[ExecutionContext] = None,
         error_strategy: SubgraphErrorStrategy = SubgraphErrorStrategy.TREAT_AS_FAILURE,
     ) -> EngineResult:
         """
@@ -235,6 +236,9 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     logger.debug(f"[Engine] Processing task: {executable_node.task}")
 
                 try:
+                    if isinstance(executable_node.task, TaskNode):
+                        pass
+
                     # Detect parallelism
                     parallel_tasks = self._detect_parallel_tasks(executable_node.task)
 
@@ -287,7 +291,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
                     # Schedule the next task (prepend for LIFO depth-first)
                     if next_task:
-                        self._task_queue.appendleft(
+                        self.task_queue.appendleft(
                             TaskNode(next_task, execution_context)
                         )
 
@@ -396,79 +400,68 @@ class DefaultWorkflowEngine(WorkflowEngine):
         parallel_tasks: typing.Optional[typing.Set[TaskType]] = None,
     ) -> ExecutionContext:
         """
-        Create and chain execution context.
+        Create and chain execution context for root or sub-engine workflows.
 
-        Context creation is the engine's responsibility, but execution,
-        metrics, and hooks are all handled by the context itself.
-
-        Args:
-            task: Primary task
-            pipeline: Workflow pipeline
-            previous_context: Previous context for horizontal chaining (same level)
-            parallel_tasks: Parallel task group if applicable
-
-        Returns:
-            Configured ExecutionContext
+        - Root Engine (Entry Node): Creates root ExecutionContext & sets pipeline.execution_context.
+        - Sub-Engine (Entry Node): Spawns VERTICALLY from parent_engine.final_context.
+        - Subsequent Nodes (Peer Nodes): Chains HORIZONTALLY from previous_context.
         """
         task_profiles = list(parallel_tasks) if parallel_tasks else task
 
-        # Determine parent context for vertical linking (sub-engine → parent)
-        # Only the FIRST task in a subgraph gets a parent_context reference
-        parent_context = None
-        if self.parent_engine is not None and previous_context is None:
-            # This is the first task of a sub-engine (subgraph)
-            if self.parent_engine.final_context is None:
-                raise RuntimeError(
-                    "Sub-engine cannot create context: parent has no final_context. "
-                    "Parent must complete at least one task before {} block begins."
+        if previous_context is None:
+            # --- ENTRY NODE OF THIS ENGINE / SUB-ENGINE ---
+            if self.is_root_engine():
+                # ROOT ENGINE ENTRY: Create root context & set fractal tree root
+                context = await ExecutionContext.create_context(
+                    pipeline=pipeline,
+                    task_profiles=task_profiles,  # type: ignore
+                    workflow_id=getattr(pipeline, "id", self._engine_id),  # type: ignore
+                    workflow_name=pipeline.__class__.__name__,
                 )
-            parent_context = self.parent_engine.final_context
+                # Immutable fractal root — assigned ONLY by the root engine
+                pipeline.execution_context = context
 
-        # Create context with appropriate linking
-        if previous_context is None and parent_context is None:
-            # Root task of root engine — create workflow root context
+            else:
+                # SUB-ENGINE ENTRY: Validate parent state and spawn VERTICALLY
+                if self.parent_engine is None:
+                    raise RuntimeError(
+                        "Internal error: nested subgraph engine has no parent engine "
+                        "reference. The parent engine must be set when a child engine "
+                        "is created from a {} block."
+                    )
+
+                if self.parent_engine.final_context is None:
+                    raise RuntimeError(
+                        "Sub-engine cannot create context: parent has no final_context. "
+                        "Parent must complete at least one task before {} block begins."
+                    )
+
+                parent_ctx = self.parent_engine.final_context
+
+                # VERTICAL LINK: Spawns child subtree root off parent's final_context
+                context = await parent_ctx.spawn_child(
+                    task_profiles=task_profiles  # type: ignore
+                )
+
+        else:
+            # --- SUBSEQUENT NODES WITHIN THE SAME ENGINE (HORIZONTAL PEERS) ---
+            # HORIZONTAL LINK: Peer creation on the same execution depth layer
             context = await ExecutionContext.create_context(
                 pipeline=pipeline,
                 task_profiles=task_profiles,  # type: ignore
-                workflow_id=getattr(pipeline, "id", self._engine_id),
-                workflow_name=pipeline.__class__.__name__,
-            )
-            # Root context becomes pipeline's execution_context
-            pipeline.execution_context = context
-
-        else:
-            # Either a chained task or first task of subgraph
-            context = ExecutionContext(
-                pipeline=pipeline,
-                task_profiles=task_profiles,
-                previous_context=previous_context,  # Horizontal chain
-                parent_context=parent_context,  # Vertical link (only for subgraph entry)
-                workflow_id=(
-                    previous_context.workflow_id
-                    if previous_context
-                    else (
-                        parent_context.workflow_id
-                        if parent_context
-                        else self._engine_id
-                    )
-                ),
-                workflow_name=(
-                    previous_context.workflow_name
-                    if previous_context
-                    else (
-                        parent_context.workflow_name
-                        if parent_context
-                        else pipeline.__class__.__name__
-                    )
-                ),
+                previous_context=previous_context,
+                parent_context=previous_context.parent_context,  # Retain sub-engine parent ref
+                workflow_id=previous_context.workflow_id,
+                workflow_name=previous_context.workflow_name,
             )
 
-            # Horizontal linking (doubly-linked list)
-            if previous_context is not None:
-                previous_context.next_context = context
-
-        # Associate context with this engine
+        # HORIZONTAL DOUBLY-LINKED CHAINING & REGISTRATION
         context.set_engine(self)
+
+        if previous_context is not None:
+            # Wire horizontal peer links (Node 0 <-> Node 1 <-> Node 2)
+            context.previous_context = previous_context
+            previous_context.next_context = context
 
         # Collect sink nodes for deferred execution
         if task.sink_node:

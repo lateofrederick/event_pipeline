@@ -1,5 +1,7 @@
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -67,7 +69,7 @@ _LOADER_REGISTRY: Dict[RegistrySource, Type["Event"]] = {
     RegistrySource.LOCAL: LoadFromLocal,
     RegistrySource.PYPI: LoadFromPyPi,
     RegistrySource.GIT: LoadFromGit,
-    RegistrySource.EVENTHUB: LoadFromEventHub,
+    RegistrySource.HUB: LoadFromEventHub,
 }
 
 
@@ -194,4 +196,6 @@ class WorkflowSource:
                 content=f"Failed to load workflow source '{self.name}': {exc}",
                 task_id=self.name,
                 workflow_id=self.name,
+                process_id=os.getpid(),  # type: ignore
+                creation_time=time.time(),  # type: ignore
             )

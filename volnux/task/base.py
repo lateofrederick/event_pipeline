@@ -12,7 +12,7 @@ class TaskBase(ObjectIdentityMixin):
     def __init__(
         self, *args: typing.Any, **kwargs: typing.Dict[str, typing.Any]
     ) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore
+        super().__init__()  # type: ignore
 
         # options specified in pointy scripts for tasks are kept here
         self.options: typing.Optional[Options] = None
@@ -177,7 +177,7 @@ class TaskBase(ObjectIdentityMixin):
 
     def get_root(self) -> TaskType:
         if self.parent_node is None:
-            node = self
+            node = typing.cast(object, self)
             node = typing.cast(TaskType, node)
             return node
         return self.parent_node.get_root()
@@ -235,7 +235,7 @@ class TaskBase(ObjectIdentityMixin):
         self,
     ) -> typing.Deque[TaskType]:
         parallel_tasks: typing.Deque[TaskType] = deque()
-        task = self
+        task = typing.cast(object, self)
         task = typing.cast(TaskType, task)
         while task and task.condition_node.on_success_pipe == PipeType.PARALLELISM:
             parallel_tasks.append(task)

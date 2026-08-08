@@ -1,25 +1,20 @@
-import sys
 import logging
 import typing
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING, Union, ForwardRef
-from formax import Attrib, MiniAnnotated, MISSING, ValidationError
+from formax import Attrib, MiniAnnotated, MISSING
 from formax.typing import evaluate_forward_ref
 
 from volnux.import_utils import import_string
 from volnux.utils import get_obj_klass_import_str
 from volnux.exceptions import ObjectProtectedError
+from .utils import formax_null_validator
 
 if TYPE_CHECKING:
     from volnux.mixins import KeyValueStoreIntegrationMixin
 
 logger = logging.getLogger(__name__)
-
-
-def formax_null_validator(instance, value):
-    if value is None:
-        raise ValidationError("Field cannot be null")
 
 
 class OnDelete(str, Enum):

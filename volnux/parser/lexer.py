@@ -6,7 +6,16 @@ logger = logging.getLogger(__name__)
 
 
 class PointyLexer(object):
-    directives = ("recursive-depth", "mode")
+    directives = (
+        "recursive-depth",
+        "mode",
+        "trigger",
+        "descriptor",
+        "source",
+        "version",
+        "author",
+        "description",
+    )
 
     reserved = {
         "true": "BOOLEAN",

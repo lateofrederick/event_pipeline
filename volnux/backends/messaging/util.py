@@ -1,9 +1,17 @@
 import logging
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
 from volnux.backends.messaging.base import PubSubCapabilityMixin, PushPopCapabilityMixin
 
 logger = logging.getLogger(__name__)
+
+
+# Dedicated thread pool for long-running blocking commands such as (BLPOP, SUBSCRIBE.listen)
+# This prevents blocking the default asyncio.to_thread pool.
+_BLOCKING_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1000, thread_name_prefix="volnux-messaging-block"
+)
 
 
 def supports_pubsub(backend: Any) -> bool:

@@ -9,8 +9,7 @@ from .checkpoint_config import CheckPointConfig, CheckPointFrequency
 from volnux.execution.pipeline import Pipeline
 from volnux.parser.protocols import TaskType
 from volnux.execution.context import ExecutionContext
-
-# from volnux.execution.rehydrator.checkpoint import AutoCheckPointer
+from volnux.execution.rehydrator.checkpoint_manager import VolnuxCheckPointManager
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +74,7 @@ class WorkflowEngine(ABC):
             SubgraphErrorStrategy.TREAT_AS_FAILURE
         )
 
-        self._checkpointer: typing.Optional["AutoCheckPointer"] = None
+        self._checkpointer: typing.Optional[VolnuxCheckPointManager] = None
         self.checkpoint_config: typing.Optional[CheckPointConfig] = None
 
         if enable_checkpointing:
@@ -183,7 +182,7 @@ class WorkflowEngine(ABC):
 
     def enable_checkpointing(
         self,
-        checkpointer: "AutoCheckPointer",
+        checkpointer: "VolnuxCheckPointManager",
         checkpoint_frequency: "CheckPointFrequency" = CheckPointFrequency.PER_TASK,
     ):
         """

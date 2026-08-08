@@ -1,5 +1,4 @@
 """
-volnux/server/lifecycle.py
 
 start_api_server — starts the Volnux API process.
 

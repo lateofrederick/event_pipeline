@@ -3,7 +3,7 @@ import traceback
 from typing import Union, Dict, Any
 
 from volnux.result import EventResult
-from volnux.pipeline import Pipeline
+from volnux.execution.pipeline import Pipeline
 from .snapshot import QueueTaskTemplate
 
 if typing.TYPE_CHECKING:
@@ -62,7 +62,7 @@ class StateSerializer:
 
     @staticmethod
     def serialise_queue_task(
-        task_position: int, task_node: TaskNode
+        task_position: int, task_node: "TaskNode"
     ) -> QueueTaskTemplate:
         return {
             "position_in_queue": task_position,

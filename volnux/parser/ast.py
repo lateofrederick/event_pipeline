@@ -85,6 +85,9 @@ class ASTNode(ABC):
     def accept(self, visitor: "ASTVisitor"):
         pass
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.__class__.__name__})"
+
 
 class ExpressionNode(ASTNode, ABC):
     pass
@@ -273,7 +276,7 @@ class PipelineGroupingNode(ASTNode):
     """AST for expression chain. One expression chain only"""
 
     expressions: typing.List[ASTNode]
-    grouping_strategy: "GroupingStrategy" = None
+    grouping_strategy: typing.Optional["GroupingStrategy"] = None
     # Options attached to a grouped expression are attribute lists (list[AttributeNode])
     options: typing.Optional[typing.List["AttributeNode"]] = None
 

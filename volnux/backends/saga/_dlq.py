@@ -1,22 +1,49 @@
-from typing import Any, Callable, Dict, List
-from formax import BaseModel
+from typing import Any, Union, Dict, List, Optional
+from formax import BaseModel, MiniAnnotated, Attrib
 
+from volnux.config import VolnuxConfig
+from volnux.backends.storage_route import StorageRoute
 from volnux.mixins.messaging import MessagingBackendIntegrationMixin
-from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+
+project_config = VolnuxConfig.get_instance()
 
 
-class DeadLetterEntry(
-    KeyValueStoreIntegrationMixin, MessagingBackendIntegrationMixin, BaseModel
-):
+class DeadLetterEntry(MessagingBackendIntegrationMixin, BaseModel):
     saga_id: str
     saga_name: str
-    timestamp: float
+    timestamp: Union[float, int]
     failed_step_index: int
     failed_step_name: str
     original_error: str
     compensation_failures: List[Dict[str, Any]]
     steps_state: List[Dict[str, Any]]
 
+    # project identifier
+    workflow_id: Optional[str]
+    node_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: project_config.get("NODE_ID"))
+    ]
+    project_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: project_config.get("PROJECT_ID"))
+    ]
+
     @classmethod
-    def get_schema_name(cls) -> str:
-        return "volnux:saga:dlq"
+    def get_storage_route(cls) -> StorageRoute:
+        return StorageRoute(
+            components=["volnux", "{project_id}", "{node_id}", "saga", "dlq"],
+            routing_keys=lambda: {
+                "project_id": project_config.get("PROJECT_ID"),
+                "node_id": project_config.get("NODE_ID"),
+            },
+        )
+
+    @classmethod
+    def get_backend_config(cls) -> Dict[str, Any]:
+        return {
+            "ENGINE": "volnux.backends.stores.redis.RedisStoreBackend",
+            "CONNECTOR_CONFIG": {
+                "host": "localhost",
+                "port": 34443,
+                "database": 0,
+            },
+        }

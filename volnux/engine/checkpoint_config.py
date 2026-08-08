@@ -6,7 +6,7 @@ from formax import BaseModel, MiniAnnotated, Attrib, InitStrategy
 class CheckPointFrequency(str, Enum):
     PER_TASK = "per_task"  # Before each task execution
     PERIODIC = "periodic"  # Only on timer (from checkpointer)
-    ON_STATE_CHANGE = "on_state_change"  # On status changes
+    ON_STATE_CHANGE = "on_state_change"  # On status change
 
 
 class CheckPointPolicyConfig(BaseModel):

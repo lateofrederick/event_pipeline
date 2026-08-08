@@ -67,7 +67,7 @@ class LoadFromLocal(Event):
 
         return loading_status, None
 
-    def process(
+    async def process(
         self, workflow_dir: Path, registry: "WorkflowRegistry"
     ) -> typing.Tuple[bool, typing.Any]:
         if not workflow_dir.exists():

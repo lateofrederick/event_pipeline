@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 BackendType = Literal["local", "celery"]
+
 _TASK_COUNTER = itertools.count(1)  # Thread-safe monotonic counter
 
 __all__ = [

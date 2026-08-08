@@ -26,10 +26,6 @@ from volnux.exceptions import (
     SerializationError,
 )
 from volnux.backends.connectors.postgres import PostgresConnector
-from volnux.backends.messaging.stores.postgres import (
-    PostgresPubSubMixin,
-    PostgresPushPopMixin,
-)
 
 logger = logging.getLogger("volnux.backends.postgres")
 
@@ -42,8 +38,6 @@ T = TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 
 
 class PostgresStoreBackend(
-    PostgresPubSubMixin,
-    PostgresPushPopMixin,
     YoyoMigrationsMixin,
     KeyValueStoreBackendBase,
 ):
@@ -80,6 +74,8 @@ class PostgresStoreBackend(
         >>> workflow = backend.get("volnux_Workflow", "wf_1", Workflow)
         >>> active = backend.filter("volnux_Workflow", Workflow, status="active")
     """
+
+    NAMESPACE_SEPARATOR = "_"
 
     connector_klass = PostgresConnector
 

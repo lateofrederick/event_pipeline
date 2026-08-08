@@ -97,10 +97,6 @@ class SagaStep:
             the action and its compensation.
         timeout: Optional per-invocation timeout in seconds applied to
             both the action and its compensation.
-
-    Runtime state fields (``status``, ``attempts``, ``error``,
-    ``started_at``, ``completed_at``) are populated during execution
-    and are excluded from ``__init__``.
     """
 
     name: str

@@ -50,7 +50,7 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
     @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:
         return {
-            "ENGINE": "volnux.backends.stores.sqlite_store.SqliteStoreBackend",
+            "ENGINE": "volnux.backends.stores.sqlite.SqliteStoreBackend",
             "CONNECTOR_CONFIG": {
                 "database": "volnux.db",
             },

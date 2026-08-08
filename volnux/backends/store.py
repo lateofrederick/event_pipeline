@@ -35,7 +35,8 @@ from .connection import BackendConnectorBase
 from volnux.exceptions import SerializationError
 
 if TYPE_CHECKING:
-    from .formax_fk import OnDelete
+    from .fields import OnDelete
+    from .storage_route import StorageRoute
     from volnux.result.stream import Q, ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 
 class YoyoMigrationsMixin:
+
+    connector: Any
 
     @staticmethod
     def decompose_field_type(
@@ -66,7 +69,10 @@ class YoyoMigrationsMixin:
         raise NotImplementedError
 
     def create_schema(
-        self, schema_name: str, record_class: Type["KeyValueStoreIntegrationMixin"]
+        self,
+        schema_name: str,
+        record_class: Type["KeyValueStoreIntegrationMixin"],
+        **kwargs,
     ) -> None:
         raise NotImplementedError
 
@@ -109,8 +115,8 @@ class YoyoMigrationsMixin:
         if not os.listdir(migrations_dir):
             return 0
 
-        self._validate_migrations_dir(migrations_dir)
-        return self.run_migrations(migrations_dir=migrations_dir, dry_run=dry_run)
+        self._validate_migrations_dir(migrations_dir)  # type: ignore
+        return self.run_migrations(migrations_dir=migrations_dir, dry_run=dry_run)  # type: ignore
 
     def _get_migration_backend(self) -> typing.Any:
         return get_backend(self.connector.get_uri())
@@ -501,7 +507,7 @@ class KeyValueStoreBackendBase(abc.ABC):
             if hasattr(self, "connector") and self.connector is not None:
                 self.connector.disconnect()
 
-    def __eq__(self, other: "KeyValueStoreBackendBase"):
+    def __eq__(self, other: Any) -> bool:
         """Equality check for backend instances."""
         return isinstance(other, self.__class__) and self.connector == other.connector
 
@@ -663,6 +669,36 @@ class KeyValueStoreBackendBase(abc.ABC):
     def execute_query(self, query: str, *args, **kwargs) -> Any:
         """Execute a query against the backend."""
         raise NotImplementedError("Backend does not support execute_query.")
+
+    def resolve_physical_target(
+        self, info: "StorageRoute", overrides: Optional[Dict[str, str]] = None
+    ) -> str:
+        """
+        Resolves the physical schema.
+        Accepts optional overrides for administrative cross-tenant reads.
+        """
+        context = {}
+        if info.routing_keys:
+            if callable(info.routing_keys):
+                context = info.routing_keys()
+            else:
+                context = info.routing_keys.copy()  # Prevent mutation of static dicts
+
+            if overrides:
+                context.update(overrides)
+
+        resolved_components = []
+        for comp in info.components:
+            if comp.startswith("{") and comp.endswith("}"):
+                key = comp[1:-1]
+                val = context.get(key)
+                if val is not None:
+                    resolved_components.append(str(val))
+                # If val is None, the component is dropped (e.g., standalone saga)
+            else:
+                resolved_components.append(comp)
+
+        return self.NAMESPACE_SEPARATOR.join(resolved_components)
 
     @abc.abstractmethod
     def exists(self, schema_name: str, record_key: str) -> bool:

@@ -940,7 +940,7 @@ class BatchPipeline(ObjectIdentityMixin, ScheduleMixin, InternalMetadataMixin):
 
     @staticmethod
     def _pipeline_executor(
-        pipeline: Pipeline,
+        pipeline: "Pipeline",
         focus_on_signals: typing.List[str],
         signals_queue: mp.Queue,
     ):

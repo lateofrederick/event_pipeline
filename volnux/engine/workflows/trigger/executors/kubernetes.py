@@ -72,6 +72,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from .base import BaseWorkflowConfigExecutor
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["KubernetesWorkflowExecutor"]
@@ -81,18 +83,6 @@ _RESULT_KEY_PREFIX = "volnux:k8s-job:result"
 _ERROR_KEY_PREFIX = "volnux:k8s-job:error"
 _PARAMS_KEY_PREFIX = "volnux:k8s-job:params"
 _KEY_TTL_SECONDS = 3600  # 1 hour — long enough for any reasonable job
-
-
-# ── Base class import (deferred to avoid circular imports) ─────────────────────
-try:
-    from .base import BaseWorkflowConfigExecutor
-except ImportError:
-    BaseWorkflowConfigExecutor = object  # type: ignore[assignment,misc]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# KubernetesWorkflowExecutor
-# ══════════════════════════════════════════════════════════════════════════════
 
 
 class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
@@ -114,8 +104,8 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
     In-cluster (from within a K8s pod):
         executor = KubernetesWorkflowExecutor(
             workflow_registry = ...,
-            namespace         = "volnux",
-            image             = "your-registry/volnux-engine:2.0.0",
+            namespace = "volnux",
+            image = "your-registry/volnux-engine:2.0.0",
         )
 
     Out-of-cluster (local dev, kube_config_file provided):
@@ -251,8 +241,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         # Initialise Kubernetes clients (synchronous — done once at construction)
         self._batch_client, self._core_client = self._init_k8s_clients(kube_config_file)
 
-    # ── Public execute interface ───────────────────────────────────────────────
-
     async def execute(
         self,
         workflow_name: str,
@@ -279,7 +267,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             WorkflowExecutionError: If the Job fails, is deleted, or times out.
             ValueError:             If workflow_name is not registered.
         """
-        from volnux.exceptions import WorkflowExecutionError
 
         execution_id = _new_execution_id()
         job_name = _make_job_name(workflow_name, execution_id)
@@ -299,12 +286,11 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         loop = asyncio.get_event_loop()
 
         try:
-            # ── Step 1: Store params in Redis ──────────────────────────────────
+
             # Avoids environment variable size limits for large param payloads.
             # Key expires after _KEY_TTL_SECONDS whether the job reads it or not.
             await self._write_params_to_redis(params_key, params)
 
-            # ── Step 2: Create the Kubernetes Job ─────────────────────────────
             job = self._build_job_spec(
                 workflow_name=workflow_name,
                 job_name=job_name,
@@ -322,13 +308,11 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             )
             logger.debug("K8s Job %r created — execution_id=%s", job_name, execution_id)
 
-            # ── Step 3: Poll until the Job reaches a terminal state ────────────
             await self._poll_job_status(
                 job_name=job_name,
                 execution_id=execution_id,
             )
 
-            # ── Step 4: Read result from Redis ────────────────────────────────
             result = await self._read_result_from_redis(
                 result_key=result_key,
                 error_key=error_key,
@@ -361,12 +345,10 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             ) from exc
 
         finally:
-            # ── Step 5: Clean up — always runs, regardless of outcome ──────────
+            # Clean up — always runs, regardless of outcome
             self._pending.pop(execution_id, None)
             await self._delete_job(job_name)
             await self._delete_redis_keys(params_key, result_key, error_key)
-
-    # ── Cancellation ───────────────────────────────────────────────────────────
 
     async def delete_job(self, job_name: str) -> bool:
         """
@@ -382,8 +364,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             True if the Job was found and deleted, False otherwise.
         """
         return await self._delete_job(job_name, propagation="Foreground")
-
-    # ── Observability ──────────────────────────────────────────────────────────
 
     async def get_active_jobs(self) -> Dict[str, Any]:
         """
@@ -438,8 +418,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         """
         return dict(self._pending)
 
-    # ── Internal — polling ─────────────────────────────────────────────────────
-
     async def _poll_job_status(
         self,
         job_name: str,
@@ -454,7 +432,7 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         Raises:
             WorkflowExecutionError: If the Job failed, was deleted, or timed out.
         """
-        from volnux.exceptions import WorkflowExecutionError
+
         from kubernetes.client import ApiException
 
         loop = asyncio.get_event_loop()
@@ -533,8 +511,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
                 return condition.message[:500]
         return status.conditions[-1].message or "no message"
 
-    # ── Internal — Redis transport ─────────────────────────────────────────────
-
     async def _write_params_to_redis(
         self, params_key: str, params: Dict[str, Any]
     ) -> None:
@@ -566,8 +542,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         The pod writes to exactly one of result_key or error_key before exiting.
         Both are checked and deleted to prevent stale reads.
         """
-        import json
-        from volnux.exceptions import WorkflowExecutionError
 
         try:
             import redis.asyncio as aioredis
@@ -632,8 +606,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
         except Exception as exc:
             logger.warning("Failed to delete Redis keys %s: %s", keys, exc)
 
-    # ── Internal — Job spec construction ──────────────────────────────────────
-
     def _build_job_spec(
         self,
         workflow_name: str,
@@ -661,7 +633,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
                 "Install with: pip install 'volnux[kubernetes]'"
             )
 
-        # ── Environment variables ──────────────────────────────────────────────
         # Pass only non-sensitive, non-large values as env vars.
         # Secrets come from env_secret_name (envFrom).
         # Params come from Redis via VOLNUX_JOB_PARAMS_KEY.
@@ -692,13 +663,11 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
                 )
             )
 
-        # ── Resource requirements ──────────────────────────────────────────────
         resources = k8s.V1ResourceRequirements(
             requests=self._resource_requests or None,
             limits=self._resource_limits or None,
         )
 
-        # ── Container ─────────────────────────────────────────────────────────
         # The entrypoint.sh handles the "worker" role — initialises the engine
         # from the image's baked-in project and runs the workflow via CLI.
         # volnux-job-runner is a purpose-built slim entrypoint that:
@@ -715,12 +684,10 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             command=["volnux-job-runner"],
         )
 
-        # ── Tolerations ───────────────────────────────────────────────────────
         tolerations = None
         if self._tolerations:
             tolerations = [k8s.V1Toleration(**t) for t in self._tolerations]
 
-        # ── Pod spec ──────────────────────────────────────────────────────────
         pod_spec = k8s.V1PodSpec(
             containers=[container],
             restart_policy="Never",  # Job handles retry via backoff_limit
@@ -729,7 +696,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             tolerations=tolerations,
         )
 
-        # ── Labels for pod selection ───────────────────────────────────────────
         # All label values must be ≤ 63 characters.
         pod_labels = {
             "app": "volnux",
@@ -737,7 +703,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             "execution-id": execution_id[:63],
         }
 
-        # ── Job ───────────────────────────────────────────────────────────────
         return k8s.V1Job(
             api_version="batch/v1",
             kind="Job",
@@ -762,8 +727,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
                 parallelism=1,
             ),
         )
-
-    # ── Internal — Job deletion ────────────────────────────────────────────────
 
     async def _delete_job(
         self,
@@ -807,8 +770,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             logger.warning("Unexpected error deleting K8s Job %r: %s", job_name, exc)
             return False
 
-    # ── Internal — K8s client initialisation ──────────────────────────────────
-
     @staticmethod
     def _init_k8s_clients(kube_config_file: Optional[str]):
         """
@@ -846,11 +807,6 @@ class KubernetesWorkflowExecutor(BaseWorkflowConfigExecutor):
             ) from exc
 
         return k8s.BatchV1Api(), k8s.CoreV1Api()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# volnux-job-runner entrypoint (embedded in the container image)
-# ══════════════════════════════════════════════════════════════════════════════
 
 
 def job_runner_main() -> None:
@@ -905,7 +861,6 @@ def job_runner_main() -> None:
 
         r = aioredis.Redis.from_url(redis_url)
 
-        # ── Read params from Redis ─────────────────────────────────────────────
         raw_params = await r.get(params_key)
         if raw_params is None:
             _die(
@@ -914,7 +869,6 @@ def job_runner_main() -> None:
         params = json.loads(raw_params)
         print(f"[volnux-job-runner] Starting workflow {workflow_name!r}", flush=True)
 
-        # ── Initialise engine (once, per pod lifetime) ─────────────────────────
         from volnux.setup import initialise_workflows
 
         engine = initialise_workflows(project_dir)
@@ -932,7 +886,6 @@ def job_runner_main() -> None:
             await r.aclose()
             sys.exit(1)
 
-        # ── Execute the workflow ───────────────────────────────────────────────
         try:
             result = await config.run_workflow_async(
                 params=params,
@@ -963,9 +916,6 @@ def job_runner_main() -> None:
         await r.aclose()
 
     asyncio.run(_run())
-
-
-# ── Utilities ──────────────────────────────────────────────────────────────────
 
 
 def _new_execution_id() -> str:

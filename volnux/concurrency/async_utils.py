@@ -3,6 +3,7 @@ import contextvars
 import functools
 import sys
 import typing
+import inspect
 
 
 async def to_thread(
@@ -57,6 +58,6 @@ async def as_coroutine(
     :return: The result of the executed callable, delivered as a coroutine.
     :rtype: typing.Any
     """
-    if asyncio.iscoroutinefunction(fn):
+    if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
     return to_thread(fn, *args, **kwargs)

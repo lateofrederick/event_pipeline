@@ -33,7 +33,7 @@ class RedisStoreBackend(
         >>>
         >>> # Pub/sub operations
         >>> await backend.publish("events:user", {"action": "created", "id": "user_1"})
-        >>> async with backend.subscribe("events:user") as messages:
+        >>> async with backend.subscribe("events:user", EventClass) as messages:
         ...     async for msg in messages:
         ...         print(msg["data"])
         >>>
@@ -41,6 +41,8 @@ class RedisStoreBackend(
         >>> await backend.push("tasks", task_1, task_2, side=QueueSide.RIGHT)
         >>> task = await backend.pop("tasks", side=QueueSide.LEFT)
     """
+
+    NAMESPACE_SEPARATOR = ":"
 
     connector_klass = RedisConnector
 
@@ -124,7 +126,7 @@ class RedisStoreBackend(
             self._ensure_connected()
             serialized = self._serialize_record(record)
 
-            with self.connector.get_pipeline(transaction=True) as pipe:
+            with self.connector.get_pipeline(transaction=True) as pipe:  # type: ignore[attr-unresolved]
                 pipe.hset(schema_name, record_key, serialized)
                 if ttl is not None:
                     pipe.expire(schema_name, ttl)
@@ -162,7 +164,7 @@ class RedisStoreBackend(
             self._ensure_connected()
             serialized = self._serialize_record(record)
 
-            with self.connector.get_pipeline(transaction=True) as pipe:
+            with self.connector.get_pipeline(transaction=True) as pipe:  # type: ignore[attr-unresolved]
                 pipe.hset(schema_name, record_key, serialized)
                 pipe.execute()
 

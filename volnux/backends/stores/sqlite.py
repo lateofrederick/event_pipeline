@@ -30,7 +30,7 @@ from volnux.exceptions import (
 )
 
 if TYPE_CHECKING:
-    from ..formax_fk import OnDelete
+    from ..fields import OnDelete
     from volnux.result.stream import ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
@@ -52,6 +52,8 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         >>> user = backend.get("users", UserModel, "user_1")
         >>> active_users = backend.filter("users", UserModel, status="active")
     """
+
+    NAMESPACE_SEPARATOR = "_"
 
     connector_klass = SqliteConnector
 
@@ -149,7 +151,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
     def create_schema(
         self,
         schema_name: str,
-        record_class: "KeyValueStoreIntegrationMixin",
+        record_class: Type["KeyValueStoreIntegrationMixin"],
         _creating: Optional[set] = None,
     ) -> None:
         """Create a schema (table) based on a record's structure.
@@ -179,7 +181,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         _creating.add(schema_name)
 
         try:
-            from ..formax_fk import OnDelete
+            from ..fields import OnDelete
 
             fields = ["id TEXT PRIMARY KEY"]
             fk_constraints: List[str] = []
@@ -279,99 +281,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             logger.error(f"Error creating schema '{schema_name}': {e}")
             raise SqlOperationError(f"Error creating schema: {e}") from e
 
-    # def create_schema(
-    #     self, schema_name: str, record_class: Type["KeyValueStoreIntegrationMixin"]
-    # ) -> None:
-    #     """Create a schema (table) based on a record's structure.
-    #
-    #     Args:
-    #         schema_name: The name of the schema to create.
-    #         record_class: A sample record to derive the schema from.
-    #
-    #     Raises:
-    #         ObjectExistError: If schema exists and if_not_exists is False.
-    #         SqlOperationError: If schema creation fails.
-    #     """
-    #     self._ensure_connected()
-    #
-    #     try:
-    #         foreign_key_constraints: Set[str] = set()
-    #         fields = ["id TEXT PRIMARY KEY"]
-    #
-    #         record_type_hints = get_type_hints(record_class)
-    #
-    #         # Add fields from record annotations
-    #         for field_name, field_type in record_type_hints.items():
-    #
-    #             if field_name.startswith("_"):
-    #                 continue  # Skip private fields
-    #
-    #             field_type, attrib = self.decompose_field_type(field_type)
-    #
-    #             sql_type = self._map_python_type_to_sql(field_type)
-    #             is_optional = self._is_optional_field(field_type)
-    #
-    #             # check that the field annotation is a foreign key
-    #             metadata = attrib.metadata if attrib else {}
-    #             is_unique = metadata.get("unique", False)
-    #             has_native_fk = metadata.get("has_native_fk", False)
-    #             on_delete = metadata.get("on_delete", OnDelete.DO_NOTHING)
-    #
-    #             if has_native_fk:
-    #                 on_delete_sql = {
-    #                     OnDelete.CASCADE: "CASCADE",
-    #                     OnDelete.SET_NULL: "SET NULL",
-    #                     OnDelete.SET_DEFAULT: "SET DEFAULT",
-    #                     OnDelete.PROTECT: "NO ACTION",  # Database will raise an error
-    #                     OnDelete.DO_NOTHING: "NO ACTION",
-    #                 }.get(on_delete, "NO ACTION")
-    #
-    #                 target_model: Optional["KeyValueStoreIntegrationMixin"] = (
-    #                     metadata.get("target_model")
-    #                 )
-    #                 if target_model is None:
-    #                     raise ValueError(
-    #                         f"Target model not specified for foreign key '{field_name}'"
-    #                     )
-    #
-    #                 # This point the target model may not have been created yet, so we have to issue a create request for the target model
-    #                 # However, we have to check that the target model does reference the current model.
-    #                 # if it does that is a recursive dependency and we have to raise error
-    #
-    #                 field_name = f"{field_name}_object_id"
-    #                 sql_type = "TEXT"
-    #                 foreign_key_constraints.add(
-    #                     f"FOREIGN KEY ({field_name}) REFERENCES {target_model.get_schema_name()}(id)"
-    #                 )
-    #
-    #             field_def = f"{field_name} {sql_type}"
-    #             if not is_optional:
-    #                 field_def += " NOT NULL"
-    #             elif is_unique:
-    #                 field_def += " UNIQUE"
-    #             elif has_native_fk:
-    #                 pass
-    #
-    #             fields.append(field_def)
-    #
-    #         # Add a special column for the serialized record state
-    #         # fields.append("_record_state BLOB NOT NULL")
-    #
-    #         # Create table
-    #         fields_str = ", ".join(fields)
-    #         create_table_sql = (
-    #             f"CREATE TABLE IF NOT EXISTS {schema_name} ({fields_str})"
-    #         )
-    #
-    #         self.execute_query(create_table_sql, fetch_method=None)
-    #
-    #         self._invalidate_schema_cache(schema_name)
-    #         logger.info(f"Created schema '{schema_name}' with {len(fields)} fields")
-    #
-    #     except sqlite3.Error as e:
-    #         logger.error(f"Error creating schema '{schema_name}': {e}")
-    #         raise SqlOperationError(f"Error creating schema: {e}")
-
     def drop_schema(self, schema_name: str) -> None:
         """Drop a schema (table) from the database.
 
@@ -428,7 +337,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         nullable: bool,
     ) -> None:
         """Create a foreign key constraint between two tables."""
-        from ..formax_fk import OnDelete
+        from ..fields import OnDelete
 
         on_delete_sql = {
             OnDelete.CASCADE: "CASCADE",

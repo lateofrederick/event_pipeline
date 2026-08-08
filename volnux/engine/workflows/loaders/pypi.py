@@ -11,6 +11,7 @@ from volnux.event.base import EventType
 from ..source import SourceCredentials
 from volnux.exceptions import SubprocessTimeoutError
 from volnux.utils import run_command
+from volnux.concurrency.async_utils import to_thread
 from volnux.manifest.utils import build_authenticated_url, redact_credentials
 
 
@@ -56,7 +57,7 @@ class LoadFromPyPi(Event):
     event_type = EventType.SYSTEM
     checkpointing_enabled = False
 
-    def process(
+    async def process(
         self,
         location: Union[str, Path],
         registry: "WorkflowRegistry",
@@ -116,7 +117,9 @@ class LoadFromPyPi(Event):
         cmd = self._build_pip_command(package_spec, credentials, index_url)
 
         try:
-            result = run_command(cmd, timeout_ms=timeout)
+            result = await to_thread(
+                run_command, cmd=cmd, timeout_ms=timeout
+            )  # run_command(cmd, timeout_ms=timeout)
         except SubprocessTimeoutError as exc:
             logger.error(
                 "LoadFromPyPi: pip timed out after %.1fs for %r.",
@@ -144,7 +147,7 @@ class LoadFromPyPi(Event):
         package_spec: str,
         credentials: Optional[SourceCredentials],
         index_url: Optional[str],
-    ) -> List[str]:
+    ) -> List[Union[str, bytes]]:
         """
         Build the ``pip install`` command.
 

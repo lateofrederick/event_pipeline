@@ -9,6 +9,7 @@ import uuid
 import warnings
 import subprocess
 from io import BytesIO
+from pathlib import Path
 
 try:
     import resource
@@ -65,7 +66,7 @@ def _extend_recursion_depth(
 def _do_assign(obj: object) -> str:
     pk = getattr(obj, "_id", None)
     if pk is None:
-        pk = TypedObjectId.generate(get_obj_klass_import_str(obj)).binary.decode()
+        pk = str(TypedObjectId.generate(get_obj_klass_import_str(obj)))
         try:
             obj._id = pk
         except AttributeError:

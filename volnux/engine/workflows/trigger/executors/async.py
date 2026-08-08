@@ -43,16 +43,16 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from .base import BaseWorkflowConfigExecutor
+
+if TYPE_CHECKING:
+    from volnux.engine.workflows import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["AsyncTaskWorkflowExecutor"]
-
-
-# ── Task record ────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -62,16 +62,11 @@ class _TaskRecord:
     execution_id: str
     workflow_name: str
     task: asyncio.Task
-    started_at: float = field(default_factory=time.monotonic)
+    started_at: Union[float, int] = field(default_factory=lambda: time.monotonic())
 
     @property
     def task_id(self) -> str:
         return f"{self.workflow_name}-{self.execution_id}"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# AsyncTaskWorkflowExecutor
-# ══════════════════════════════════════════════════════════════════════════════
 
 
 class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
@@ -143,8 +138,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
         self._completed_count: int = 0
         self._failed_count: int = 0
 
-    # ── Public execute interface ───────────────────────────────────────────────
-
     async def execute(
         self,
         workflow_name: str,
@@ -167,7 +160,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
             WorkflowExecutionError: On failure, timeout, or cancellation.
             ValueError:             If workflow_name is not registered.
         """
-        from volnux.exceptions import WorkflowExecutionError
 
         execution_id = self._new_execution_id()
 
@@ -211,7 +203,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
             execution_id: Unique ID for this execution.
                           Use with ``cancel_execution()`` or ``get_stats()``.
         """
-        from volnux.exceptions import WorkflowExecutionError
 
         execution_id = self._new_execution_id()
 
@@ -241,8 +232,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
             execution_id,
         )
         return execution_id
-
-    # ── Cancellation ───────────────────────────────────────────────────────────
 
     async def cancel_execution(self, execution_id: str) -> bool:
         """
@@ -321,8 +310,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
         logger.info("cancel_all — cancelled %d execution(s)", cancelled)
         return cancelled
 
-    # ── Observability ──────────────────────────────────────────────────────────
-
     def get_stats(self) -> Dict[str, Any]:
         """
         Return a snapshot of executor state for health monitoring.
@@ -378,8 +365,6 @@ class AsyncTaskWorkflowExecutor(BaseWorkflowConfigExecutor):
         # This is a private attribute but stable across CPython versions.
         # The alternative — tracking _active_count ourselves — is cleaner:
         return max(0, self._max_concurrent - self._active_count())
-
-    # ── Internal ───────────────────────────────────────────────────────────────
 
     async def _run(
         self,

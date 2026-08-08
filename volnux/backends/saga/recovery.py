@@ -1,11 +1,15 @@
 import logging
 import time
 from typing import Optional, List, Dict, Any
-from formax import BaseModel
+from formax import BaseModel, MiniAnnotated, Attrib
 
+from volnux.config import VolnuxConfig
+from volnux.backends.storage_route import StorageRoute
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 logger = logging.getLogger(__name__)
+
+project_config = VolnuxConfig.get_instance()
 
 
 class SagaRecoveryState(KeyValueStoreIntegrationMixin, BaseModel):
@@ -21,9 +25,18 @@ class SagaRecoveryState(KeyValueStoreIntegrationMixin, BaseModel):
     created_at: float
     updated_at: float
 
+    node_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: project_config.get("NODE_ID"))
+    ]
+    project_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: project_config.get("PROJECT_ID"))
+    ]
+
     @classmethod
-    def get_schema_name(cls) -> str:
-        return "volnux_saga_recovery"
+    def get_storage_route(cls) -> StorageRoute:
+        return StorageRoute(
+            components=["volnux", "saga", "recovery"],
+        )
 
 
 class SagaRecoveryManager:

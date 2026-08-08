@@ -1,6 +1,4 @@
 """
-volnux/executors/celery_workflow.py
-
 CeleryWorkflowExecutor — dispatches workflow execution to Celery workers.
 
 Architecture
@@ -67,14 +65,17 @@ D7. `revoke()` is implemented.
     implementations.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, TYPE_CHECKING
+
+from .base import BaseWorkflowConfigExecutor
+
+if TYPE_CHECKING:
+    from volnux.engine.workflows import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,8 @@ class CeleryWorkflowExecutor(BaseWorkflowConfigExecutor):
         def ready(self):
             self.executor = CeleryWorkflowExecutor(
                 workflow_registry = self._workflow_registry,
-                celery_app        = celery_app,
-                queue             = "volnux_workflows",
+                celery_app = celery_app,
+                queue = "volnux_workflows",
             )
 
     Cancellation

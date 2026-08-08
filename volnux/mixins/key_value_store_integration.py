@@ -25,7 +25,7 @@ from formax import Attrib
 from formax.typing import get_type_hints, evaluate_forward_ref
 
 from volnux.backends.store import KeyValueStoreBackendBase
-from volnux.backends.formax_fk import OnDelete
+from volnux.backends.fields import OnDelete
 from volnux.exceptions import (
     ObjectExistError,
     ObjectProtectedError,
@@ -33,6 +33,7 @@ from volnux.exceptions import (
     ImproperlyConfigured,
     SerializationError,
 )
+from volnux.backends.storage_route import StorageRoute
 from volnux.import_utils import import_string
 from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.utils import get_obj_klass_import_str
@@ -425,10 +426,14 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         """
         if cls._backend_store is None:
             cls._initialize_backend()
-        return cls._backend_store
+        return cls._backend_store  # type: ignore
 
     def change_storage_backend(self, backend: "KeyValueStoreIntegrationMixin"):
         pass
+
+    @classmethod
+    def get_storage_route(cls) -> StorageRoute:
+        return StorageRoute(components=["volnux", cls.__name__])
 
     @classmethod
     def get_schema_name(cls) -> str:
@@ -439,7 +444,8 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         Returns:
             The schema name to use for backend storage.
         """
-        return f"volnux_{cls.__name__}"
+        backend = cls.get_backend()
+        return cls.get_storage_route().resolve(backend)
 
     def _is_loaded_from_backend(self) -> bool:
         """Check if this instance was loaded from the backend.
