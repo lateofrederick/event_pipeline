@@ -1,10 +1,13 @@
 """Tests for the signal -> governance-event reporter.
 
-The translators are pure and are tested directly with lightweight stand-in
-objects (a fake pipeline / execution context / task event), which is all the
-real signal payloads expose that the reporter reads. The reporter's wiring
-(connect/disconnect, exception isolation) is tested against fake signals so a
-live engine and Redis are not needed.
+Most wired signals are registered from a table and share two generic
+translators, so the mapping itself (which signal produces which event type, and
+with what fixed payload) is the thing worth asserting; it is driven through the
+handlers the reporter actually connects, rather than by calling translators
+directly, so the table and the closures are covered too.
+
+The reporter's wiring (connect/disconnect, exception isolation) is tested
+against fake signals, so no live engine is needed.
 """
 
 import pytest
@@ -12,107 +15,169 @@ import pytest
 from volnux.governance.events import EventType, GovernanceEvent
 from volnux.governance.reporter import (
     SignalGovernanceReporter,
-    translate_execution_aborted,
-    translate_execution_end,
-    translate_execution_start,
-    translate_execution_stopped,
-    translate_task_completed,
+    translate_execution_failed,
+    translate_hitl_requested,
     translate_task_retried,
-    translate_task_started,
+)
+from volnux.governance.sampling import EventSampler
+
+from .conftest import (
+    ExplodingPublisher,
+    FakePipeline,
+    FakeSignal,
+    FakeSuspensionRequest,
+    FakeTask,
+    RecordingPublisher,
 )
 
 
-# --- Stand-ins for the live engine objects the signals carry ----------------
+def handlers_for(reporter):
+    """Map each wired signal's attribute name to the handler it is given."""
+    from volnux.signal import signals as sig
+
+    by_id = {id(getattr(sig, name)): name for name in dir(sig)}
+    return {
+        by_id.get(id(signal), "?"): handler
+        for signal, handler in reporter._build_registrations()
+    }
 
 
-class FakePipeline:
-    def __init__(self, pid, workflow_id=None, workflow_name=None):
-        self.id = pid
-        self.workflow_id = workflow_id
-        self.workflow_name = workflow_name
+@pytest.fixture
+def wired(publisher):
+    """A reporter plus its handlers, keyed by signal name."""
+    reporter = SignalGovernanceReporter(publisher)
+    return reporter, publisher, handlers_for(reporter)
 
 
-class FakeContext:
-    def __init__(self, pipeline, workflow_id="wf-1", workflow_name="Customer ETL"):
-        self.pipeline = pipeline
-        self.workflow_id = workflow_id
-        self.workflow_name = workflow_name
+# --- The signal -> event-type table -----------------------------------------
 
 
-class FakeEvent:
-    def __init__(self, name=None, id=None):
-        self.name = name
-        self.id = id
+def test_every_wired_signal_is_registered_once(wired):
+    _reporter, _publisher, handlers = wired
+
+    assert set(handlers) == {
+        "pipeline_execution_start",
+        "pipeline_execution_end",
+        "pipeline_stop",
+        "pipeline_shutdown",
+        "event_execution_failed",
+        "event_execution_paused",
+        "event_execution_resumed",
+        "event_execution_start",
+        "event_execution_end",
+        "event_execution_retry",
+        "hitl_requested",
+    }
 
 
-# --- Translators ------------------------------------------------------------
+@pytest.mark.parametrize(
+    "signal_name, expected_type, expected_payload",
+    [
+        ("pipeline_execution_end", EventType.EXECUTION_COMPLETED, {}),
+        ("pipeline_stop", EventType.EXECUTION_STOPPED, {"reason": "cancelled"}),
+        # A shutdown ended the run ABORTED; the platform records that as a
+        # failed execution but keeps the reason so the two remain tellable apart.
+        ("pipeline_shutdown", EventType.EXECUTION_FAILED, {"reason": "aborted"}),
+        ("event_execution_paused", EventType.EXECUTION_PAUSED, {}),
+        ("event_execution_resumed", EventType.EXECUTION_RESUMED, {}),
+    ],
+)
+def test_execution_signals_map_to_their_event_type(
+    wired, context, signal_name, expected_type, expected_payload
+):
+    _reporter, publisher, handlers = wired
 
+    handlers[signal_name](execution_context=context)
 
-def test_execution_start_uses_pipeline_id_as_execution_id():
-    event = translate_execution_start(
-        pipeline=FakePipeline("run-1", "wf-1", "Customer ETL")
-    )
-
-    assert event.event_type == EventType.EXECUTION_STARTED
+    event = publisher.sent[0]
+    assert isinstance(event, GovernanceEvent)
+    assert event.event_type == expected_type
+    assert event.payload == expected_payload
     assert event.execution_id == "run-1"
     assert event.workflow_id == "wf-1"
     assert event.workflow_name == "Customer ETL"
+    assert event.task_id is None
 
 
-def test_execution_end_reads_pipeline_id_through_the_context():
-    context = FakeContext(FakePipeline("run-1"))
+def test_execution_start_reads_the_pipeline_it_is_handed_directly(wired, pipeline):
+    # pipeline_execution_start sends the run as `pipeline`; every other signal
+    # sends an ExecutionContext. Both must correlate to the same id.
+    _reporter, publisher, handlers = wired
 
-    event = translate_execution_end(execution_context=context)
+    handlers["pipeline_execution_start"](pipeline=pipeline)
 
-    assert event.event_type == EventType.EXECUTION_COMPLETED
+    event = publisher.sent[0]
+    assert event.event_type == EventType.EXECUTION_STARTED
     assert event.execution_id == "run-1"
-    assert event.workflow_id == "wf-1"
 
 
-def test_stopped_and_aborted_carry_distinct_reasons():
-    context = FakeContext(FakePipeline("run-1"))
+def test_execution_id_is_the_pipeline_id_through_the_context(wired, context):
+    _reporter, publisher, handlers = wired
+    context.pipeline = FakePipeline(pid="run-99")
 
-    stopped = translate_execution_stopped(execution_context=context)
-    aborted = translate_execution_aborted(execution_context=context)
+    handlers["pipeline_execution_end"](execution_context=context)
 
-    assert stopped.event_type == EventType.EXECUTION_STOPPED
-    assert stopped.payload == {"reason": "cancelled"}
-    assert aborted.event_type == EventType.EXECUTION_FAILED
-    assert aborted.payload == {"reason": "aborted"}
+    assert publisher.sent[0].execution_id == "run-99"
 
 
-def test_task_events_carry_task_id_from_event_name():
-    context = FakeContext(FakePipeline("run-1"))
+@pytest.mark.parametrize(
+    "signal_name, expected_type",
+    [
+        ("event_execution_start", EventType.TASK_STARTED),
+        ("event_execution_end", EventType.TASK_COMPLETED),
+    ],
+)
+def test_task_signals_carry_the_task_name(
+    wired, context, task, signal_name, expected_type
+):
+    _reporter, publisher, handlers = wired
 
-    started = translate_task_started(
-        event=FakeEvent(name="ExtractCustomerData"), execution_context=context
+    handlers[signal_name](execution_context=context, event=task)
+
+    event = publisher.sent[0]
+    assert event.event_type == expected_type
+    assert event.task_id == "ExtractCustomerData"
+    assert event.execution_id == "run-1"
+
+
+def test_task_id_falls_back_to_the_event_id_when_unnamed(wired, context):
+    _reporter, publisher, handlers = wired
+
+    handlers["event_execution_start"](
+        execution_context=context, event=FakeTask(name=None, id="task-42")
     )
-    completed = translate_task_completed(
-        event=FakeEvent(name="ExtractCustomerData"), execution_context=context
-    )
 
-    assert started.event_type == EventType.TASK_STARTED
-    assert started.task_id == "ExtractCustomerData"
-    assert started.execution_id == "run-1"
-    assert completed.event_type == EventType.TASK_COMPLETED
-    assert completed.task_id == "ExtractCustomerData"
+    assert publisher.sent[0].task_id == "task-42"
 
 
-def test_task_id_falls_back_to_event_id_when_unnamed():
-    context = FakeContext(FakePipeline("run-1"))
+def test_fixed_payloads_are_not_shared_between_events(wired, context):
+    # The table's payload literals are reused on every fire; mutating one
+    # event's payload must not leak into the next.
+    _reporter, publisher, handlers = wired
 
-    event = translate_task_started(
-        event=FakeEvent(name=None, id="task-42"), execution_context=context
-    )
+    handlers["pipeline_stop"](execution_context=context)
+    publisher.sent[0].payload["reason"] = "tampered"
+    handlers["pipeline_stop"](execution_context=context)
 
-    assert event.task_id == "task-42"
+    assert publisher.sent[1].payload == {"reason": "cancelled"}
 
 
-def test_retry_prefers_explicit_task_id_and_records_attempt_data():
-    context = FakeContext(FakePipeline("run-1"))
+# --- The translators that carry real logic ----------------------------------
 
+
+def test_execution_failed_records_the_state(context):
+    # event_execution_failed fires mid-run, before the unconditional
+    # pipeline_execution_end (which maps to COMPLETED); the projector's terminal
+    # freeze is what keeps the run FAILED, so this must report FAILED.
+    event = translate_execution_failed(execution_context=context, state="ERRORED")
+
+    assert event.event_type == EventType.EXECUTION_FAILED
+    assert event.payload == {"state": "ERRORED"}
+
+
+def test_retry_prefers_the_explicit_task_id_and_records_attempt_data(context):
     event = translate_task_retried(
-        event=FakeEvent(name="fallback"),
+        event=FakeTask(name="fallback"),
         execution_context=context,
         task_id="Enrich",
         retry_count=2,
@@ -125,52 +190,97 @@ def test_retry_prefers_explicit_task_id_and_records_attempt_data():
     assert event.payload == {"retry_count": 2, "max_attempts": 3, "backoff": 1.5}
 
 
-def test_translators_degrade_to_none_ids_rather_than_raising():
-    # Missing/renamed attributes must not blow up a signal handler.
-    event = translate_execution_start(pipeline=object())
+def test_retry_falls_back_to_the_event_name(context):
+    event = translate_task_retried(
+        event=FakeTask(name="Enrich"), execution_context=context, retry_count=1
+    )
 
+    assert event.task_id == "Enrich"
+
+
+def test_hitl_carries_the_prompt_and_the_engine_request_id(context):
+    # request_id is the key the engine resumes on, so it must survive intact.
+    event = translate_hitl_requested(
+        execution_context=context, request=FakeSuspensionRequest()
+    )
+
+    assert event.event_type == EventType.HITL_REQUESTED
+    assert event.task_id == "ApproveTransfer"
+    assert event.payload == {
+        "request_id": "req-77",
+        "title": "Approve $47,500 transfer?",
+        "description": "Needs a human",
+        "options": ["approve", "reject"],
+        "timeout_hours": 24,
+    }
+
+
+def test_hitl_tolerates_a_request_missing_optional_attributes(context):
+    event = translate_hitl_requested(execution_context=context, request=object())
+
+    assert event.payload["request_id"] is None
+    assert event.payload["options"] == []
+
+
+# --- Degradation and isolation ----------------------------------------------
+
+
+def test_missing_attributes_degrade_to_none_rather_than_raising(wired):
+    # A renamed or absent engine attribute must not blow up a signal handler,
+    # and must not leave a stringified placeholder behind.
+    _reporter, publisher, handlers = wired
+
+    handlers["pipeline_execution_start"](pipeline=object())
+
+    event = publisher.sent[0]
     assert event.execution_id is None
     assert event.workflow_id is None
+    assert event.workflow_name is None
 
 
-# --- Reporter wiring --------------------------------------------------------
+def test_a_raising_translator_never_reaches_the_engine(wired, context):
+    _reporter, publisher, handlers = wired
+
+    class ExplodingRequest:
+        task_id = "x"
+
+        @property
+        def options(self):
+            raise RuntimeError("attribute blew up")
+
+    # Must not propagate: the signal handler runs on the execution path.
+    handlers["hitl_requested"](execution_context=context, request=ExplodingRequest())
+
+    assert publisher.sent == []
 
 
-class FakeSignal:
-    """Records connect/disconnect the way SoftSignal would be driven."""
+def test_a_raising_publisher_never_reaches_the_engine(context):
+    reporter = SignalGovernanceReporter(ExplodingPublisher())
+    handlers = handlers_for(reporter)
 
-    def __init__(self, name):
-        self.name = name
-        self.listeners = []
-
-    def connect(self, sender, listener):
-        self.listeners.append(listener)
-
-    def disconnect(self, sender, listener):
-        if listener in self.listeners:
-            self.listeners.remove(listener)
+    handlers["pipeline_execution_end"](execution_context=context)
 
 
-class RecordingStream:
-    def __init__(self):
-        self.published = []
+def test_each_event_gets_its_own_identity_and_timestamp(wired, context):
+    _reporter, publisher, handlers = wired
 
-    def publish(self, event):
-        self.published.append(event)
-        return "1-0"
+    for _ in range(5):
+        handlers["pipeline_execution_end"](execution_context=context)
+
+    assert len({event.event_id for event in publisher.sent}) == 5
+    assert all(event.occurred_at > 0 for event in publisher.sent)
 
 
-class ExplodingStream:
-    def publish(self, event):
-        raise RuntimeError("redis is down")
+# --- Install / uninstall ----------------------------------------------------
 
 
 @pytest.fixture
-def wired_reporter(monkeypatch):
-    """A reporter whose signals are fakes, so install/emit can be driven."""
-    stream = RecordingStream()
-    reporter = SignalGovernanceReporter(stream)
-
+def fake_wiring(publisher, monkeypatch):
+    """A reporter whose signals are fakes, so install/uninstall can be driven."""
+    reporter = SignalGovernanceReporter(publisher)
+    # Resolve the real handlers before patching, or the replacement would
+    # re-enter itself.
+    by_name = handlers_for(reporter)
     signals = {
         "start": FakeSignal("pipeline_execution_start"),
         "end": FakeSignal("pipeline_execution_end"),
@@ -179,28 +289,29 @@ def wired_reporter(monkeypatch):
         reporter,
         "_build_registrations",
         lambda: [
-            (signals["start"], reporter._on_execution_start),
-            (signals["end"], reporter._on_execution_end),
+            (signals["start"], by_name["pipeline_execution_start"]),
+            (signals["end"], by_name["pipeline_execution_end"]),
         ],
     )
-    return reporter, stream, signals
+    return reporter, publisher, signals
 
 
-def test_install_connects_and_is_idempotent(wired_reporter):
-    reporter, _stream, signals = wired_reporter
+def test_install_connects_and_is_idempotent(fake_wiring):
+    reporter, _publisher, signals = fake_wiring
 
     reporter.install()
-    reporter.install()  # second call must not double-connect
+    reporter.install()  # a second call must not double-connect
 
     assert reporter.installed is True
     assert len(signals["start"].listeners) == 1
     assert len(signals["end"].listeners) == 1
 
 
-def test_uninstall_disconnects(wired_reporter):
-    reporter, _stream, signals = wired_reporter
+def test_uninstall_disconnects_and_is_idempotent(fake_wiring):
+    reporter, _publisher, signals = fake_wiring
 
     reporter.install()
+    reporter.uninstall()
     reporter.uninstall()
 
     assert reporter.installed is False
@@ -208,29 +319,51 @@ def test_uninstall_disconnects(wired_reporter):
     assert signals["end"].listeners == []
 
 
-def test_emitting_a_signal_publishes_a_translated_event(wired_reporter):
-    reporter, stream, signals = wired_reporter
+def test_an_installed_reporter_is_held_by_a_strong_reference(fake_wiring):
+    # SoftSignal holds listeners weakly; without this registry an installed
+    # reporter could be collected and silently stop reporting.
+    from volnux.governance import reporter as reporter_module
+
+    reporter, _publisher, _signals = fake_wiring
+
+    reporter.install()
+    assert reporter in reporter_module._installed_reporters
+
+    reporter.uninstall()
+    assert reporter not in reporter_module._installed_reporters
+
+
+def test_a_connected_listener_publishes_a_translated_event(fake_wiring, pipeline):
+    reporter, publisher, signals = fake_wiring
     reporter.install()
 
-    # Drive the signal the way SoftSignal.emit would call the listener.
+    # Drive the listener the way SoftSignal.emit would.
     listener = signals["start"].listeners[0]
-    listener(signal=signals["start"], sender=object(), pipeline=FakePipeline("run-1"))
+    listener(signal=signals["start"], sender=object(), pipeline=pipeline)
 
-    assert len(stream.published) == 1
-    assert stream.published[0].event_type == EventType.EXECUTION_STARTED
-    assert stream.published[0].execution_id == "run-1"
+    assert len(publisher.sent) == 1
+    assert publisher.sent[0].event_type == EventType.EXECUTION_STARTED
+    assert publisher.sent[0].execution_id == "run-1"
 
-
-def test_publish_failure_is_swallowed(monkeypatch):
-    reporter = SignalGovernanceReporter(ExplodingStream())
-
-    # A failing publish must not propagate — the engine cannot be harmed.
-    reporter._emit(GovernanceEvent(event_type=EventType.EXECUTION_STARTED))
+    reporter.uninstall()
 
 
-def test_emit_none_is_a_noop():
-    reporter = SignalGovernanceReporter(RecordingStream())
+# --- Sampling integration ---------------------------------------------------
 
-    reporter._emit(None)
 
-    assert reporter._stream.published == []
+def test_telemetry_is_held_back_until_a_terminal_event(context, task):
+    publisher = RecordingPublisher()
+    reporter = SignalGovernanceReporter(publisher, sampler=EventSampler(capacity=4))
+    handlers = handlers_for(reporter)
+
+    for _ in range(20):
+        handlers["event_execution_start"](execution_context=context, event=task)
+
+    assert publisher.sent == []  # task.started is telemetry, so it is sampled
+
+    handlers["pipeline_execution_end"](execution_context=context)
+
+    # The run's reservoir is flushed first, then the terminal event itself.
+    assert len(publisher.sent) == 5
+    assert publisher.sent[-1].event_type == EventType.EXECUTION_COMPLETED
+    assert all(isinstance(event, GovernanceEvent) for event in publisher.sent)

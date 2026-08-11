@@ -1,105 +1,116 @@
-"""Contract tests for :class:`GovernanceEvent` serialisation.
+"""Contract tests for :class:`GovernanceEvent`.
 
-These are pure (no Redis): they lock down the wire shape that crosses the
-engine/backend boundary, since both sides depend on it staying stable.
+These lock down the wire shape that crosses the engine/backend boundary, since
+both sides depend on it staying stable: the platform vendors its own copy of
+this contract and projects whatever arrives. They are pure — no transport, no
+provisioned backend.
 """
 
-from volnux.governance.events import EventType, GovernanceEvent
+from volnux.governance.events import GOVERNANCE_SCHEMA, EventType, GovernanceEvent
 
 
-def test_new_event_fills_id_and_timestamp():
-    event = GovernanceEvent(event_type=EventType.EXECUTION_STARTED)
-
-    assert event.event_type == "execution.started"
-    assert event.event_id  # a uuid string
-    assert event.occurred_at > 0
-    assert event.payload == {}
+# --- Vocabulary -------------------------------------------------------------
 
 
-def test_round_trip_preserves_all_fields():
-    event = GovernanceEvent(
-        event_type=EventType.TASK_COMPLETED,
-        event_id="evt-1",
-        occurred_at=1_700_000_000.5,
-        workflow_id="wf-1",
-        workflow_name="Customer ETL",
-        execution_id="exec-1",
-        task_id="ExtractCustomerData",
-        sequence=3,
-        payload={"status": "completed", "rows": 12847, "nested": {"a": 1}},
-    )
-
-    restored = GovernanceEvent.from_stream_fields(event.to_stream_fields())
-
-    assert restored == event
+def test_event_types_are_namespaced_by_subject():
+    # Consumers route on the subject prefix, so the "<subject>.<verb>" shape is
+    # part of the contract, not a naming preference.
+    assert EventType.EXECUTION_STARTED.startswith("execution.")
+    assert EventType.TASK_COMPLETED.startswith("task.")
+    assert EventType.HITL_REQUESTED.startswith("hitl.")
+    assert EventType.NODE_HEARTBEAT.startswith("node.")
 
 
-def test_none_correlation_fields_are_omitted_not_blanked():
-    # A node heartbeat has no workflow/execution/task correlation.
-    event = GovernanceEvent(
+def test_schema_name_is_the_shared_queue_identity():
+    # Producer and consumer must agree on this exact string or nothing is
+    # delivered; it is keyed off the model, not configured per deployment.
+    assert GovernanceEvent.get_schema_name() == GOVERNANCE_SCHEMA
+    assert GOVERNANCE_SCHEMA == "volnux:governance:events"
+
+
+# --- Field handling ---------------------------------------------------------
+
+
+def test_all_fields_round_trip(make_event):
+    event = make_event()
+
+    assert event.event_type == EventType.TASK_COMPLETED
+    assert event.event_id == "evt-1"
+    assert event.occurred_at == 1_700_000_000.5
+    assert event.execution_id == "run-1"
+    assert event.task_id == "ExtractCustomerData"
+    assert event.workflow_id == "wf-1"
+    assert event.workflow_name == "Customer ETL"
+    assert event.sequence == 3
+    assert event.payload == {"status": "completed"}
+
+
+def test_absent_correlation_stays_none(make_event):
+    # A node heartbeat belongs to no run. "Not applicable" must survive as None
+    # and never be coerced to the string "None" or flattened to a sentinel the
+    # consumer could mistake for a real id.
+    event = make_event(
         event_type=EventType.NODE_HEARTBEAT,
-        payload={"node_id": "node-a", "current_load": 6},
+        execution_id=None,
+        task_id=None,
+        workflow_id=None,
+        workflow_name=None,
+        sequence=None,
+        payload={"node_id": "node-a"},
     )
 
-    fields = event.to_stream_fields()
+    assert event.execution_id is None
+    assert event.task_id is None
+    assert event.workflow_id is None
+    assert event.workflow_name is None
+    assert event.sequence is None
 
-    assert "workflow_id" not in fields
-    assert "execution_id" not in fields
-    assert "task_id" not in fields
-    assert "sequence" not in fields
-    # Reconstruction keeps them None.
-    restored = GovernanceEvent.from_stream_fields(fields)
-    assert restored.workflow_id is None
+
+def test_payload_keeps_nested_structure(make_event):
+    payload = {
+        "status": "completed",
+        "rows": 12847,
+        "nested": {"a": 1, "b": [1, 2, 3]},
+        "empty": None,
+        "flag": True,
+        "ratio": 1.5,
+    }
+
+    event = make_event(payload=payload)
+
+    assert event.payload == payload
+
+
+def test_empty_payload_is_allowed(make_event):
+    # Most lifecycle events carry no payload at all.
+    assert make_event(payload={}).payload == {}
+
+
+def test_project_id_is_populated_from_config(make_event):
+    # Governance events are tied to the project that produced them.
+    assert make_event().project_id == "test-project"
+
+
+# --- Serialisation ----------------------------------------------------------
+
+
+def test_json_round_trip_preserves_the_payload(make_event):
+    event = make_event(
+        payload={"prompt": "Approve?", "options": ["approve", "reject"], "n": 3}
+    )
+
+    restored = GovernanceEvent.loads(event.dump("json"), "json")
+
+    assert restored.payload == event.payload
+    assert restored.event_type == event.event_type
+    assert restored.execution_id == event.execution_id
+
+
+def test_json_round_trip_preserves_absent_correlation(make_event):
+    event = make_event(execution_id=None, task_id=None, sequence=None)
+
+    restored = GovernanceEvent.loads(event.dump("json"), "json")
+
     assert restored.execution_id is None
+    assert restored.task_id is None
     assert restored.sequence is None
-
-
-def test_payload_survives_as_json():
-    event = GovernanceEvent(
-        event_type=EventType.HITL_REQUESTED,
-        payload={
-            "prompt": "Approve $47,500 transfer?",
-            "options": ["approve", "reject"],
-        },
-    )
-
-    fields = event.to_stream_fields()
-
-    # Stored flat: payload is a single JSON string field.
-    assert isinstance(fields["payload"], str)
-    assert GovernanceEvent.from_stream_fields(fields).payload == event.payload
-
-
-def test_from_stream_fields_tolerates_malformed_payload():
-    restored = GovernanceEvent.from_stream_fields(
-        {"event_type": "task.failed", "event_id": "e", "payload": "{not json"}
-    )
-
-    assert restored.payload == {}
-    assert restored.event_type == "task.failed"
-
-
-def test_from_stream_fields_tolerates_non_object_payload():
-    # A JSON array is valid JSON but not a governance payload; coerce to {}.
-    restored = GovernanceEvent.from_stream_fields(
-        {"event_type": "task.failed", "payload": "[1, 2, 3]"}
-    )
-
-    assert restored.payload == {}
-
-
-def test_from_stream_fields_defaults_missing_numbers():
-    restored = GovernanceEvent.from_stream_fields({"event_type": "execution.started"})
-
-    assert restored.occurred_at == 0.0
-    assert restored.sequence is None
-    assert restored.payload == {}
-
-
-def test_from_stream_fields_ignores_unknown_extra_fields():
-    # A newer producer may add fields an older consumer does not know about.
-    restored = GovernanceEvent.from_stream_fields(
-        {"event_type": "execution.started", "some_future_field": "x"}
-    )
-
-    assert restored.event_type == "execution.started"
