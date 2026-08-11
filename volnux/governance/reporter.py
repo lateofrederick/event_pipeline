@@ -3,9 +3,10 @@
 The engine already fires a rich set of ``volnux.signal.signals`` at every
 lifecycle boundary: a pipeline run starting and ending, each task starting,
 finishing and retrying, and a task suspending for human input. This module
-subscribes to those signals, translates each into a governance event's fields,
-and hands them to a ``GovernanceEventPublisher`` that delivers them off the hot
-path over whatever messaging backend the deployment has provisioned.
+subscribes to those signals, translates each into a validated
+``GovernanceEvent``, and hands it to a ``GovernanceEventPublisher`` that delivers
+it off the hot path over whatever messaging backend the deployment has
+provisioned.
 
 Three properties are load-bearing and deliberate:
 
@@ -14,10 +15,11 @@ Three properties are load-bearing and deliberate:
   signals simply have no listener and the engine behaves exactly as it does
   standalone.
 
-* **Non-blocking and exception-isolated.** Translation is cheap and pure; the
-  actual send is deferred to the publisher's background thread, so a slow or
-  failing transport never disturbs a running workflow. Failures are logged and
-  swallowed; reporting is observational.
+* **Non-blocking and exception-isolated.** Translation is cheap and happens
+  inside ``_emit``'s guard, so a validation failure is logged and dropped rather
+  than raised into the run; the actual send is deferred to the publisher's
+  background thread, so a slow or failing transport never disturbs a running
+  workflow. Reporting is observational.
 
 * **Retained for the process lifetime.** The signal system holds listeners by
   *weak reference*. On ``install`` the reporter registers itself in a module-level
@@ -39,11 +41,15 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from .events import EventType
+from volnux.config import VolnuxConfig
+
+from .events import EventType, GovernanceEvent
 from .publisher import GovernanceEventPublisher
 from .sampling import EventSampler
 
 logger = logging.getLogger(__name__)
+
+volnux_config = VolnuxConfig.get_instance()
 
 
 # Strong references to every installed reporter. ``SoftSignal`` holds its
@@ -111,138 +117,97 @@ def _task_id(event: Any) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Translators: signal payload -> governance event fields (a plain dict)
+# Translators: signal payload -> a validated GovernanceEvent
 #
-# One pure function per wired signal. They build no model and touch no backend,
-# so they are trivially unit-testable; the status of a terminal execution event
-# is taken from *which signal fired* rather than read from the async state
-# manager, which keeps these synchronous and unambiguous.
+# Most wired signals differ only in which event type they map to and whether
+# they carry a fixed payload, so they are expressed as table rows in
+# ``_build_registrations`` and share the two generic translators below. Only the
+# three signals whose payload is derived from the signal's own arguments need a
+# function of their own.
+#
+# Translators touch no backend and are pure apart from the id/timestamp stamped
+# in ``_event``; the status of a terminal execution event is taken from *which
+# signal fired* rather than read from the async state manager, which keeps these
+# synchronous and unambiguous.
 # ---------------------------------------------------------------------------
 
 
-def _fields(
+def _source(**kwargs: Any) -> Any:
+    """The run object a signal delivered, whatever it chose to call it.
+
+    ``pipeline_execution_start`` sends the pipeline as ``pipeline``; every other
+    wired signal sends an ``ExecutionContext`` as ``execution_context``.
+    ``_pipeline_of`` normalises the two, so resolving the name is all that is
+    needed here.
+    """
+    return kwargs.get("execution_context") or kwargs.get("pipeline")
+
+
+def _event(
     event_type: str,
+    source: Any,
     *,
-    execution_id: Optional[str] = None,
     task_id: Optional[str] = None,
-    workflow_id: Optional[str] = None,
-    workflow_name: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    return {
-        "event_type": event_type,
-        "execution_id": execution_id,
-        "task_id": task_id,
-        "workflow_id": workflow_id,
-        "workflow_name": workflow_name,
-        "payload": payload or {},
-    }
+) -> GovernanceEvent:
+    """Build a validated event from a signal's source object.
 
+    Identity and time are stamped here rather than declared as model defaults:
+    formax evaluates ``default_factory`` once when the class is created, so an
+    in-model default would give every event in the process the same id.
 
-def translate_execution_start(pipeline: Any = None, **_: Any) -> Dict[str, Any]:
-    return _fields(
-        EventType.EXECUTION_STARTED,
-        execution_id=_execution_id(pipeline),
-        workflow_id=_workflow_id(pipeline),
-        workflow_name=_workflow_name(pipeline),
+    ``node_id`` and ``project_id`` are filled here for the same reason. They are
+    constant for the life of the process, so a snapshot would in fact be
+    correct, but resolving them explicitly keeps provenance out of the model's
+    evaluation order and makes it assertable. ``get_node_id`` always returns a
+    value (the config generates one when the environment does not supply it);
+    ``PROJECT_ID`` is guaranteed present, because the model's own factory would
+    have failed at import if it were not.
+
+    Correlation fields that do not apply stay ``None`` — the model declares them
+    ``Optional`` precisely so this function never has to invent a sentinel.
+    """
+    return GovernanceEvent(
+        event_type=event_type,
+        event_id=str(uuid.uuid4()),
+        occurred_at=time.time(),
+        execution_id=_execution_id(source),
+        workflow_id=_workflow_id(source),
+        workflow_name=_workflow_name(source),
+        task_id=task_id,
+        sequence=None,
+        payload=payload or {},
+        node_id=volnux_config.get_node_id(),
+        project_id=volnux_config.get("PROJECT_ID"),
     )
 
 
-def translate_execution_end(execution_context: Any = None, **_: Any) -> Dict[str, Any]:
-    return _fields(
-        EventType.EXECUTION_COMPLETED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-    )
+def translate_execution(
+    event_type: str, payload: Optional[Dict[str, Any]] = None, **kwargs: Any
+) -> GovernanceEvent:
+    """Execution-level signals: correlation only, plus an optional fixed payload."""
+    # Copy so the table's payload literal is never shared between events.
+    return _event(event_type, _source(**kwargs), payload=dict(payload) if payload else None)
 
 
-def translate_execution_stopped(
-    execution_context: Any = None, **_: Any
-) -> Dict[str, Any]:
-    # pipeline_stop fires when the run ended in the CANCELLED state.
-    return _fields(
-        EventType.EXECUTION_STOPPED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-        payload={"reason": "cancelled"},
-    )
-
-
-def translate_execution_aborted(
-    execution_context: Any = None, **_: Any
-) -> Dict[str, Any]:
-    # pipeline_shutdown fires when the run ended in the ABORTED state; the
-    # platform records it as a failed execution and keeps the reason.
-    return _fields(
-        EventType.EXECUTION_FAILED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-        payload={"reason": "aborted"},
+def translate_task(event_type: str, **kwargs: Any) -> GovernanceEvent:
+    """Task-level signals: correlation plus the task the signal names."""
+    return _event(
+        event_type, _source(**kwargs), task_id=_task_id(kwargs.get("event"))
     )
 
 
 def translate_execution_failed(
     execution_context: Any = None, state: Any = None, **_: Any
-) -> Dict[str, Any]:
+) -> GovernanceEvent:
     # event_execution_failed is emitted by ExecutionContext.failed() at the
     # execution level. It fires mid-run, before the unconditional
     # pipeline_execution_end (which maps to COMPLETED), so the backend
     # projector's terminal-state freeze keeps the run FAILED.
-    return _fields(
+    return _event(
         EventType.EXECUTION_FAILED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
+        execution_context,
         payload={"state": _safe_str(state)},
-    )
-
-
-def translate_execution_paused(
-    execution_context: Any = None, state: Any = None, **_: Any
-) -> Dict[str, Any]:
-    return _fields(
-        EventType.EXECUTION_PAUSED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-    )
-
-
-def translate_execution_resumed(
-    execution_context: Any = None, state: Any = None, **_: Any
-) -> Dict[str, Any]:
-    return _fields(
-        EventType.EXECUTION_RESUMED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-    )
-
-
-def translate_task_started(
-    event: Any = None, execution_context: Any = None, **_: Any
-) -> Dict[str, Any]:
-    return _fields(
-        EventType.TASK_STARTED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-        task_id=_task_id(event),
-    )
-
-
-def translate_task_completed(
-    event: Any = None, execution_context: Any = None, **_: Any
-) -> Dict[str, Any]:
-    return _fields(
-        EventType.TASK_COMPLETED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
-        task_id=_task_id(event),
     )
 
 
@@ -254,13 +219,11 @@ def translate_task_retried(
     max_attempts: Any = None,
     backoff: Any = None,
     **_: Any,
-) -> Dict[str, Any]:
+) -> GovernanceEvent:
     resolved_task_id = _safe_str(task_id) or _task_id(event)
-    return _fields(
+    return _event(
         EventType.TASK_RETRIED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
+        execution_context,
         task_id=resolved_task_id,
         payload={
             "retry_count": retry_count,
@@ -272,14 +235,12 @@ def translate_task_retried(
 
 def translate_hitl_requested(
     execution_context: Any = None, request: Any = None, **_: Any
-) -> Dict[str, Any]:
+) -> GovernanceEvent:
     # The suspension request carries the prompt/options and its own request_id
     # (the key the engine resumes on); those travel in the payload.
-    return _fields(
+    return _event(
         EventType.HITL_REQUESTED,
-        execution_id=_execution_id(execution_context),
-        workflow_id=_workflow_id(execution_context),
-        workflow_name=_workflow_name(execution_context),
+        execution_context,
         task_id=_safe_str(getattr(request, "task_id", None)),
         payload={
             "request_id": _safe_str(getattr(request, "request_id", None)),
@@ -376,75 +337,81 @@ class SignalGovernanceReporter:
         """
         from volnux.signal import signals as sig
 
-        return [
-            (sig.pipeline_execution_start, self._on_execution_start),
-            (sig.pipeline_execution_end, self._on_execution_end),
-            (sig.pipeline_stop, self._on_execution_stopped),
-            (sig.pipeline_shutdown, self._on_execution_aborted),
-            (sig.event_execution_failed, self._on_execution_failed),
-            (sig.event_execution_paused, self._on_execution_paused),
-            (sig.event_execution_resumed, self._on_execution_resumed),
-            (sig.event_execution_start, self._on_task_started),
-            (sig.event_execution_end, self._on_task_completed),
-            (sig.event_execution_retry, self._on_task_retried),
-            (sig.hitl_requested, self._on_hitl_requested),
+        # Signals that need only correlation and (sometimes) a fixed payload.
+        # pipeline_stop fires when the run ended CANCELLED; pipeline_shutdown
+        # when it ended ABORTED, which the platform records as a failed
+        # execution while keeping the reason.
+        execution_signals = (
+            (sig.pipeline_execution_start, EventType.EXECUTION_STARTED, None),
+            (sig.pipeline_execution_end, EventType.EXECUTION_COMPLETED, None),
+            (sig.pipeline_stop, EventType.EXECUTION_STOPPED, {"reason": "cancelled"}),
+            (sig.pipeline_shutdown, EventType.EXECUTION_FAILED, {"reason": "aborted"}),
+            (sig.event_execution_paused, EventType.EXECUTION_PAUSED, None),
+            (sig.event_execution_resumed, EventType.EXECUTION_RESUMED, None),
+        )
+        task_signals = (
+            (sig.event_execution_start, EventType.TASK_STARTED),
+            (sig.event_execution_end, EventType.TASK_COMPLETED),
+        )
+
+        registrations: List[Tuple[Any, Any]] = [
+            (signal, self._handler(translate_execution, event_type, payload))
+            for signal, event_type, payload in execution_signals
         ]
+        registrations += [
+            (signal, self._handler(translate_task, event_type))
+            for signal, event_type in task_signals
+        ]
+        # Signals whose payload is derived from their own arguments.
+        registrations += [
+            (sig.event_execution_failed, self._handler(translate_execution_failed)),
+            (sig.event_execution_retry, self._handler(translate_task_retried)),
+            (sig.hitl_requested, self._handler(translate_hitl_requested)),
+        ]
+        return registrations
 
     # -- Signal handlers: translate, then hand off (isolated) ---------------
 
-    def _on_execution_start(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_start(**kwargs))
+    def _handler(self, translate: Any, *bound: Any) -> Any:
+        """Build the listener a signal is connected to.
 
-    def _on_execution_end(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_end(**kwargs))
+        Each call closes over its own ``translate``/``bound``, so table-driven
+        registration cannot fall foul of late binding. The returned closure is
+        kept alive by ``self._registrations`` (and the reporter itself by
+        ``_installed_reporters``), which matters because the signal system holds
+        its listeners weakly.
+        """
 
-    def _on_execution_stopped(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_stopped(**kwargs))
+        def handle(**kwargs: Any) -> None:
+            self._emit(translate, *bound, **kwargs)
 
-    def _on_execution_aborted(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_aborted(**kwargs))
+        return handle
 
-    def _on_execution_failed(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_failed(**kwargs))
+    def _emit(self, translate: Any, *args: Any, **kwargs: Any) -> None:
+        """Translate, sample, and hand off to the publisher (non-blocking).
 
-    def _on_execution_paused(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_paused(**kwargs))
-
-    def _on_execution_resumed(self, **kwargs: Any) -> None:
-        self._emit(translate_execution_resumed(**kwargs))
-
-    def _on_task_started(self, **kwargs: Any) -> None:
-        self._emit(translate_task_started(**kwargs))
-
-    def _on_task_completed(self, **kwargs: Any) -> None:
-        self._emit(translate_task_completed(**kwargs))
-
-    def _on_task_retried(self, **kwargs: Any) -> None:
-        self._emit(translate_task_retried(**kwargs))
-
-    def _on_hitl_requested(self, **kwargs: Any) -> None:
-        self._emit(translate_hitl_requested(**kwargs))
-
-    def _emit(self, fields: Optional[Dict[str, Any]]) -> None:
-        """Stamp identity/time, sample, and hand off to the publisher (non-blocking).
+        Translation happens *inside* the guard rather than at the call site: the
+        translator now builds a validated ``GovernanceEvent``, so it can raise,
+        and reporting must never raise into the engine. A bad event is logged and
+        dropped while the run continues.
 
         With a sampler, critical events pass straight through while telemetry is
         held back for the publisher's periodic reservoir flush; without one, every
         event goes straight to the publisher.
         """
-        if fields is None:
-            return
-        fields.setdefault("event_id", str(uuid.uuid4()))
-        fields.setdefault("occurred_at", time.time())
         try:
+            event = translate(*args, **kwargs)
+            if event is None:
+                return
             if self._sampler is None:
-                self._publisher.submit(fields)
+                self._publisher.submit(event)
             else:
-                for event in self._sampler.offer(fields):
-                    self._publisher.submit(event)
+                for sampled in self._sampler.offer(event):
+                    self._publisher.submit(sampled)
         except Exception:  # noqa: BLE001 - reporting must never raise into the engine
             logger.exception(
-                "Failed to submit governance event %s", fields.get("event_type")
+                "Failed to emit governance event from %s",
+                getattr(translate, "__name__", translate),
             )
 
 
