@@ -28,7 +28,6 @@ dependencies = [
     "asgiref>=3.11.0",
     "cloudpickle>=3.0.0",
     "redis>=5.2.1",
-    "pymongo>=4.6.0",   # bson.ObjectId backs TypedObjectId (volnux/backends/object_id.py)
     "cryptography>=41.0.0",
     "grpcio>=1.60.0",
     "grpcio-tools<=1.70.0",   # >=1.60.0
