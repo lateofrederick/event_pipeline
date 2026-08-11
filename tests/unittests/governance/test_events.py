@@ -86,9 +86,21 @@ def test_empty_payload_is_allowed(make_event):
     assert make_event(payload={}).payload == {}
 
 
-def test_project_id_is_populated_from_config(make_event):
-    # Governance events are tied to the project that produced them.
-    assert make_event().project_id == "test-project"
+def test_provenance_is_populated_from_config(make_event):
+    # Governance events are tied to the project that produced them, and name the
+    # mesh node that emitted them.
+    from volnux.config import VolnuxConfig
+
+    event = make_event()
+
+    assert event.project_id == "test-project"
+    assert event.node_id == VolnuxConfig.get_instance().get_node_id()
+
+
+def test_node_id_is_always_available(make_event):
+    # The config generates a node id when the environment supplies none, so this
+    # can never be blank — unlike PROJECT_ID it needs no deployment step.
+    assert make_event().node_id
 
 
 # --- Serialisation ----------------------------------------------------------

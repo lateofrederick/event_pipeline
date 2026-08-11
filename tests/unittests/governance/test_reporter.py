@@ -261,6 +261,20 @@ def test_a_raising_publisher_never_reaches_the_engine(context):
     handlers["pipeline_execution_end"](execution_context=context)
 
 
+def test_every_event_carries_its_provenance(wired, context):
+    # Where the fact came from: the emitting mesh node and the owning project.
+    from volnux.config import VolnuxConfig
+
+    _reporter, publisher, handlers = wired
+    config = VolnuxConfig.get_instance()
+
+    handlers["pipeline_execution_end"](execution_context=context)
+
+    event = publisher.sent[0]
+    assert event.node_id == config.get_node_id()
+    assert event.project_id == config.get("PROJECT_ID")
+
+
 def test_each_event_gets_its_own_identity_and_timestamp(wired, context):
     _reporter, publisher, handlers = wired
 
