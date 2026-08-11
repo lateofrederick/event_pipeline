@@ -25,7 +25,7 @@ import random
 import threading
 from typing import Any, Dict, List, Optional
 
-from .events import EventType
+from .events import EventType, GovernanceEvent
 
 # Governance state — always delivered, never sampled. Task completions/failures
 # are here (not sampled) so the projector always sees every trace's terminal
@@ -121,32 +121,32 @@ class EventSampler:
         self._reservoirs: Dict[Any, ReservoirSampler] = {}
         self._lock = threading.Lock()
 
-    def offer(self, fields: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def offer(self, event: GovernanceEvent) -> List[GovernanceEvent]:
         """Feed one event in; return the events to deliver *now*.
 
         Critical events are returned immediately (a terminal one first flushes
         its execution's telemetry). Telemetry events return nothing now — they
         wait in the reservoir until ``drain``.
         """
-        event_type = fields.get("event_type", "")
+        event_type = event.event_type
         with self._lock:
             if event_type in self._critical:
                 if event_type in _TERMINAL:
-                    return self._drain_key(self._key(fields)) + [fields]
-                return [fields]
+                    return self._drain_key(self._key(event)) + [event]
+                return [event]
 
-            key = self._key(fields)
+            key = self._key(event)
             reservoir = self._reservoirs.get(key)
             if reservoir is None:
                 reservoir = ReservoirSampler(self._capacity, self._rng)
                 self._reservoirs[key] = reservoir
-            reservoir.offer(fields)
+            reservoir.offer(event)
             return []
 
-    def drain(self) -> List[Dict[str, Any]]:
+    def drain(self) -> List[GovernanceEvent]:
         """Flush every reservoir's sample (called periodically) and reset."""
         with self._lock:
-            out: List[Dict[str, Any]] = []
+            out: List[GovernanceEvent] = []
             for reservoir in self._reservoirs.values():
                 out.extend(reservoir.drain())
             self._reservoirs.clear()
@@ -155,15 +155,14 @@ class EventSampler:
     # -- internals ----------------------------------------------------------
 
     @staticmethod
-    def _key(fields: Dict[str, Any]) -> Any:
+    def _key(event: GovernanceEvent) -> Any:
         """Group telemetry so each execution (or node) gets its own fair sample."""
-        execution_id = fields.get("execution_id")
-        if execution_id:
-            return ("exec", execution_id)
-        node_id = (fields.get("payload") or {}).get("node_id")
-        subject = (fields.get("event_type") or "").split(".", 1)[0]
+        if event.execution_id:
+            return ("exec", event.execution_id)
+        node_id = (event.payload or {}).get("node_id")
+        subject = (event.event_type or "").split(".", 1)[0]
         return ("node", node_id or subject)
 
-    def _drain_key(self, key: Any) -> List[Dict[str, Any]]:
+    def _drain_key(self, key: Any) -> List[GovernanceEvent]:
         reservoir = self._reservoirs.pop(key, None)
         return reservoir.drain() if reservoir else []
