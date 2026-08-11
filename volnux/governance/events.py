@@ -13,21 +13,19 @@ publishable/queueable (``MessagingBackendIntegrationMixin``). The reporter
 enqueues events with ``GovernanceEvent.enqueue(event)`` and a consumer drains
 them with ``GovernanceEvent.dequeue()`` over the same configured backend.
 
-Serialisation note: ``payload`` is carried as a JSON string rather than a nested
-dict. The event's structured payload (status, error, node metrics, HITL prompt,
-...) is JSON-encoded by the producer and decoded by the consumer via the
-``payload_dict`` / ``with_payload`` helpers. Keeping the field a scalar string
-keeps the model flat and avoids depending on nested-container coercion in the
-model layer.
+The structured ``payload`` (status, error, node metrics, HITL prompt, ...) is a
+plain mapping and stays one the whole way across: producers build a dict,
+consumers read a dict, and the model layer handles coercion and serialisation.
 """
 
-import json
-from typing import Any, Dict
-
-from formax import BaseModel
-
+from typing import Any, Dict, Optional
+from formax import BaseModel, Attrib, MiniAnnotated
 from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 from volnux.mixins.messaging import MessagingBackendIntegrationMixin
+from volnux.config import VolnuxConfig
+
+
+volnux_config = VolnuxConfig.get_instance()
 
 
 class EventType:
@@ -73,39 +71,31 @@ class GovernanceEvent(
 ):
     """A single governance fact, delivered over the provisioned messaging backend.
 
-    Fields are declared plainly (no in-model defaults) so construction stays
-    predictable across backends; the reporter fills every field, using empty
-    strings for correlation ids that do not apply to a given event and ``-1``
-    for an untracked sequence.
+    ``event_type``, ``event_id`` and ``occurred_at`` are always present — every
+    event has an identity and a time. The correlation fields are ``Optional``
+    because they genuinely do not apply to every event: a ``node.heartbeat``
+    belongs to no execution, and only ``task.*`` events name a task. ``None``
+    means "not applicable" and is distinct from a blank value, so the consumer
+    never has to tell a real id from a sentinel.
+
+    ``node_id`` and ``project_id`` say *where* the fact came from: which mesh
+    node emitted it and which project it belongs to. Both are constant for the
+    life of the process, so the declared factories are only a fallback — the
+    reporter fills them per event from the same config.
     """
 
     event_type: str
     event_id: str
     occurred_at: float
-    execution_id: str
-    task_id: str
-    workflow_id: str
-    workflow_name: str
-    sequence: int
-    payload: str
+    execution_id: Optional[str]
+    task_id: Optional[str]
+    workflow_id: Optional[str]
+    workflow_name: Optional[str]
+    sequence: Optional[int]
+    payload: Dict[str, Any]
+    node_id: MiniAnnotated[str, Attrib(default_factory=lambda: volnux_config.get_node_id())]
+    project_id: MiniAnnotated[str, Attrib(default_factory=lambda: volnux_config.get('PROJECT_ID'))]
 
     @classmethod
     def get_schema_name(cls) -> str:
         return GOVERNANCE_SCHEMA
-
-    def payload_dict(self) -> Dict[str, Any]:
-        """Decode the JSON ``payload`` back into a dict, tolerating garbage."""
-        if not self.payload:
-            return {}
-        try:
-            decoded = json.loads(self.payload)
-        except (ValueError, TypeError):
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
-
-
-def encode_payload(payload: Dict[str, Any]) -> str:
-    """JSON-encode an event payload for the wire, compactly and deterministically."""
-    if not payload:
-        return ""
-    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
