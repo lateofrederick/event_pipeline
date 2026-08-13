@@ -1,14 +1,14 @@
 import logging
 from typing import Type, cast, TYPE_CHECKING
 
-from .formax_fk import OnDelete
+from .fields import OnDelete
 
 if TYPE_CHECKING:
     from .store import YoyoMigrationsMixin
     from volnux.backends.store import KeyValueStoreBackendBase
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
     from volnux.backends.stores.postgres import PostgresStoreBackend
-    from volnux.backends.stores.sqlite_store import SqliteStoreBackend
+    from volnux.backends.stores.sqlite import SqliteStoreBackend
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +168,15 @@ def _create_native_fk_constraint(
     source_backend.connector.execute_query(ddl)
 
 
-def migrate_models(*models: Type["KeyValueStoreIntegrationMixin"]) -> None:
+def migrate_models(
+    *models: Type["KeyValueStoreIntegrationMixin"], dry_run=False
+) -> None:
     """
     Migrates models to the database by creating the necessary tables and constraints.
 
     Args:
         *models: Variable number of KeyValueStoreIntegrationMixin subclasses to migrate.
+        dry_run: If True, print logs
 
     Raises:
         TypeError: If any model is not a subclass of KeyValueStoreIntegrationMixin.
@@ -188,7 +191,8 @@ def migrate_models(*models: Type["KeyValueStoreIntegrationMixin"]) -> None:
 
     for model in models:
         try:
-            model_backend = model.get_backend()
+            model_backend = cast(object, model.get_backend())
+            model_backend = cast(YoyoMigrationsMixin, model_backend)
         except Exception as e:
             logger.error("Failed to get backend for %s: %s", model.__name__, e)
             continue
@@ -200,7 +204,9 @@ def migrate_models(*models: Type["KeyValueStoreIntegrationMixin"]) -> None:
             )
             continue
 
-        num_applied = model_backend.ensure_schema(model.get_schema_name(), model)
+        num_applied = model_backend.ensure_schema(
+            model.get_schema_name(), model, dry_run=dry_run
+        )
 
         if num_applied > 0:
             logger.info("Applied %d migrations to %s.", num_applied, model.__name__)

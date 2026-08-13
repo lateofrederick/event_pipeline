@@ -1,5 +1,4 @@
 import logging
-from enum import Enum
 from typing import (
     Any,
     Awaitable,
@@ -8,38 +7,39 @@ from typing import (
     Optional,
     Type,
     TypeVar,
-    Union,
     TYPE_CHECKING,
-    cast,
 )
 
-from .key_value_store_integration import KeyValueStoreIntegrationMixin
+from .connection import BackendConnectionIntegrationMixin
 from volnux.concurrency.async_utils import as_coroutine
-from volnux.backends.messaging.util import require_pubsub, require_pushpop
+from volnux.backends.messaging.base import QueueSide, StreamOffset, StreamEntry
+from volnux.backends.messaging.decorators import (
+    ensure_pubsub,
+    ensure_pushpop,
+    ensure_streaming,
+)
 
 if TYPE_CHECKING:
     from volnux.backends.messaging.base import (
         PubSubCapabilityMixin,
         PushPopCapabilityMixin,
+        StreamCapabilityMixin,
     )
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="MessagingBackendIntegrationMixin")
 
-
-class QueueSide(str, Enum):
-    """Directional sides for queue push/pop operations."""
-
-    LEFT = "LEFT"
-    RIGHT = "RIGHT"
+B = TypeVar(
+    "B", "PushPopCapabilityMixin", "StreamCapabilityMixin", "PubSubCapabilityMixin"
+)
 
 
 class MessagingNotSupportedError(NotImplementedError):
     """Raised when the configured backend does not implement MessagingBackendMixin."""
 
 
-class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
+class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     """
     Mixin providing messaging and queue backend integration for implementations that support Pub/Sub
     and push/pop queue operations.
@@ -54,38 +54,27 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
     """
 
     @classmethod
-    def _ensure_pub_sub_supported(cls) -> "PubSubCapabilityMixin":
-        backend = cls.get_backend()
-
-        require_pubsub(backend, cls.__name__)
-        return backend  # type: ignore
-
-    @classmethod
-    def _ensure_push_pop_supported(cls) -> "PushPopCapabilityMixin":
-        backend = cls.get_backend()
-
-        require_pushpop(backend, cls.__name__)
-        return backend  # type:ignore
-
-    @classmethod
-    async def publish(cls, record: T) -> int:
+    @ensure_pubsub
+    async def publish(cls, backend: B, record: T) -> int:
         """
         Publishes a given record to the appropriate channel using the backend system.
 
+        :param backend:
         :param record: The record to be published.
         :type record: T
         :return: The number of subscribers that received the published record.
         :rtype: int
         """
-        backend = cls._ensure_pub_sub_supported()
         return await backend.publish(
             channel=cls.get_schema_name(),
             record=record,
         )
 
     @classmethod
+    @ensure_pubsub
     async def subscribe(
         cls: Type[T],
+        backend: B,
         callback: Callable[[T], Awaitable[None]],
     ) -> None:
         """
@@ -95,20 +84,20 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         a new record is published to the channel, the provided callback is triggered with the record
         as an argument.
 
+        :param backend:
         :param callback: A callable that accepts an instance of the class as input and returns
                          an awaitable object. It will be invoked for each record received on
                          the channel.
         :type callback: Callable[[T], Awaitable[None]]
         """
-        backend = cls._ensure_pub_sub_supported()
-
         async with backend.subscribe(cls.get_schema_name(), record_class=cls) as pub:
             async for record in pub:
                 await as_coroutine(callback, record)
 
     @classmethod
+    @ensure_pubsub
     async def psubscribe(
-        cls, *patterns: str, callback: Callable[[T], Awaitable[None]]
+        cls, backend: B, *patterns: str, callback: Callable[[T], Awaitable[None]]
     ) -> None:
         """
         Subscribes to a set of patterns on the backend and listens for matching messages in a
@@ -116,6 +105,7 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         messages are published to channels that match specified patterns. The callback function
         is invoked with each matching record.
 
+        :param backend:
         :param patterns: A variable number of string arguments representing the patterns to
             subscribe to. These patterns should adhere to the backend's supported pattern
             syntax.
@@ -124,30 +114,31 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         :return: This method does not return any value.
         """
         pattern_set = {cls.get_schema_name(), *patterns}
-        backend = cls._ensure_pub_sub_supported()
         async with backend.psubscribe(*pattern_set, record_class=cls) as pub:
             async for record in pub:
                 await as_coroutine(callback, record)
 
     @classmethod
+    @ensure_pushpop
     async def push(
         cls,
-        *instances: Union[T, Any],
+        backend: B,
+        *instances: Any,
         side: QueueSide = QueueSide.RIGHT,
     ) -> int:
         """
         Pushes multiple instances to the queue on the specified side. This method is
         asynchronous and interacts with a backend to perform the operation.
 
+        :param backend:
         :param instances: One or more instances to be added to the queue.
-        :type instances: Union[T, Any]
+        :type instances: Any
         :param side: The side of the queue where the instances should be pushed.
                      Possible values are defined in the QueueSide enumeration.
         :return: The total number of instances in the queue after the operation is
                  complete.
         :rtype: int
         """
-        backend = cls._ensure_push_pop_supported()
         return await backend.push(
             cls.get_schema_name(),
             *instances,
@@ -155,8 +146,10 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         )
 
     @classmethod
+    @ensure_pushpop
     async def pop(
         cls: Type[T],
+        backend: B,
         *,
         timeout: Optional[float] = None,
         side: QueueSide = QueueSide.LEFT,
@@ -167,6 +160,7 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         provided and no item is available within the specified time, the operation
         will return `None`.
 
+        :param backend:
         :param timeout: Optional; the maximum time in seconds to wait for an item to
                         become available in the queue before returning `None`.
                         If not provided, it waits indefinitely.
@@ -178,7 +172,6 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
                  without any available item.
         :rtype: Optional[T]
         """
-        backend = cls._ensure_push_pop_supported()
         return await backend.pop(
             cls.get_schema_name(),
             record_class=cls,
@@ -187,13 +180,15 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         )
 
     @classmethod
+    @ensure_pushpop
     async def pop_many(
         cls: Type[T],
+        backend: B,
         *,
         limit: int,
         timeout: Optional[float] = None,
         side: QueueSide = QueueSide.LEFT,
-    ) -> List[Optional[T]]:
+    ) -> List[T]:
         """
         Retrieve and remove multiple items from the queue with specified conditions.
 
@@ -201,17 +196,21 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         removing them as a batch. The operation can optionally block until the desired
         criteria are met or the timeout expires, depending on the implementation.
 
+        Capability compliance is enforced declaratively using method decorators:
+        - @ensure_pubsub: Ephemeral broadcast messaging
+        - @ensure_pushpop: Destructive FIFO queue operations
+        - @ensure_stream: Persistent, replayable, append-only log operations
+
+        :param backend:
         :param limit: The maximum number of items to retrieve and remove from the queue.
         :param timeout: The optional maximum time, in seconds, to wait before giving
             up the operation. If not provided, the method will default to implementation-specific
             behavior of immediate return or blocking indefinitely.
         :param side: Specifies the side of the queue from which items should be retrieved
             and removed. Defaults to ``QueueSide.LEFT`` if not provided.
-        :return: A list containing the retrieved items from the queue. The element
-            type corresponds to the queue's item type. If retrieval fails or no items
-            are present during the operation, the resulting list may contain ``None`` values.
+        :return: A list containing the items retrieved from the queue, in pop order.
+            Empty if the timeout expired before any item arrived.
         """
-        backend = cls._ensure_push_pop_supported()
         return await backend.pop_many(
             cls.get_schema_name(),
             record_class=cls,
@@ -221,22 +220,23 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         )
 
     @classmethod
-    async def enqueue(cls, instance: Union[T, Any]) -> int:
+    @ensure_pushpop
+    async def enqueue(cls, backend: B, instance: Any) -> int:
         """
         Asynchronously enqueues an instance into the backend system. This method ensures that the backend
         supports the necessary push and pop operations before proceeding.
 
-        :param instance: The instance to be enqueued. It is of type `Union[T, Any]`, where `T` represents
-            a specific type of instance required by the implementation.
+        :param backend:
+        :param instance: The instance to be enqueued.
         :return: An integer representing the result of the enqueue operation.
         """
-        backend = cls._ensure_push_pop_supported()
-
         return await backend.enqueue(cls.get_schema_name(), instance)
 
     @classmethod
+    @ensure_pushpop
     async def dequeue(
         cls: Type[T],
+        backend: B,
         timeout: Optional[float] = None,
     ) -> Optional[T]:
         """
@@ -244,14 +244,13 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         for an item to become available until the timeout duration has been reached. If
         the timeout is not provided or set to None, the method will not wait.
 
+        :param backend:
         :param timeout: Optional; The maximum time in seconds to wait for an item to
             become available in the queue. If None, waits indefinitely.
         :type timeout: Optional[float]
         :return: The dequeued item of type T if an item is available, otherwise None.
         :rtype: Optional[T]
         """
-        backend = cls._ensure_push_pop_supported()
-
         return await backend.dequeue(
             cls.get_schema_name(),
             record_class=cls,
@@ -259,19 +258,20 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         )
 
     @classmethod
-    async def queue_length(cls) -> int:
+    @ensure_pushpop
+    async def queue_length(cls, backend: B) -> int:
         """Return the number of items currently in the queue for this model identity."""
-        backend = cls._ensure_push_pop_supported()
         return await backend.queue_length(cls.get_schema_name())
 
     @classmethod
+    @ensure_pushpop
     async def queue_range(
         cls: Type[T],
+        backend: B,
         start: int = 0,
         stop: int = -1,
     ) -> List[T]:
         """Return a slice of the queue with items deserialized into model instances."""
-        backend = cls._ensure_push_pop_supported()
         return await backend.queue_range(
             cls.get_schema_name(),
             record_class=cls,
@@ -284,3 +284,200 @@ class MessagingBackendIntegrationMixin(KeyValueStoreIntegrationMixin):
         """Return the head item as a model instance without removing it."""
         items = await cls.queue_range(start=0, stop=0)
         return items[0] if items else None
+
+    @classmethod
+    @ensure_streaming
+    async def stream_append(
+        cls,
+        backend: B,
+        record: Any,
+        max_len: Optional[int] = None,
+        approximate_trim: bool = True,
+    ) -> str:
+        """Appends a record to the model's append-only stream log."""
+        return await backend.stream_append(
+            stream_key=cls.get_schema_name(),
+            record=record,
+            max_len=max_len,
+            approximate_trim=approximate_trim,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_ensure_consumer_group(
+        cls,
+        backend: B,
+        group_name: str,
+        start_from: StreamOffset = StreamOffset.BEGINNING,
+    ) -> None:
+        """Ensures a consumer group namespace exists for this stream log."""
+        await backend.stream_ensure_consumer_group(
+            stream_key=cls.get_schema_name(),
+            group_name=group_name,
+            start_from=start_from,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_read(
+        cls: Type[T],
+        backend: B,
+        group_name: str,
+        consumer_id: Optional[str] = None,
+        count: int = 1,
+        block_ms: Optional[int] = 5000,
+    ) -> List[StreamEntry[T]]:
+        """Reads undelivered or pending entries from the stream for a consumer group."""
+        return await backend.stream_read(
+            stream_key=cls.get_schema_name(),
+            group_name=group_name,
+            record_class=cls,
+            consumer_id=consumer_id,
+            count=count,
+            block_ms=block_ms,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_ack(
+        cls,
+        backend: B,
+        group_name: str,
+        *entry_ids: str,
+    ) -> int:
+        """Acknowledges processed entries, advancing the consumer group offset."""
+        return await backend.stream_ack(
+            cls.get_schema_name(),
+            group_name,
+            *entry_ids,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_claim_pending(
+        cls: Type[T],
+        backend: B,
+        group_name: str,
+        consumer_id: str,
+        min_idle_ms: int = 30_000,
+        count: int = 100,
+    ) -> List[StreamEntry[T]]:
+        """Claims orphaned pending stream entries from crashed workers."""
+        return await backend.stream_claim_pending(
+            stream_key=cls.get_schema_name(),
+            group_name=group_name,
+            consumer_id=consumer_id,
+            record_class=cls,
+            min_idle_ms=min_idle_ms,
+            count=count,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_length(cls, backend: B) -> int:
+        """Returns the total number of entries currently stored in the stream log."""
+        return await backend.stream_length(cls.get_schema_name())
+
+    @classmethod
+    @ensure_streaming
+    async def stream_trim(
+        cls,
+        backend: B,
+        max_len: int,
+        approximate: bool = True,
+    ) -> int:
+        """Trims the stream log to at most `max_len` entries."""
+        return await backend.stream_trim(
+            stream_key=cls.get_schema_name(),
+            max_len=max_len,
+            approximate=approximate,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_delete(cls, backend: B) -> bool:
+        """Deletes the entire stream log and purges associated consumer group states."""
+        return await backend.stream_delete(cls.get_schema_name())
+
+    @classmethod
+    @ensure_streaming
+    async def stream_read_and_ack(
+        cls: Type[T],
+        backend: B,
+        group_name: str,
+        consumer_id: Optional[str] = None,
+        count: int = 1,
+        block_ms: Optional[int] = 5000,
+    ) -> List[T]:
+        """Reads and automatically acknowledges entries in a single call (At-Most-Once)."""
+        return await backend.stream_read_and_ack(
+            stream_key=cls.get_schema_name(),
+            group_name=group_name,
+            record_class=cls,
+            consumer_id=consumer_id,
+            count=count,
+            block_ms=block_ms,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_length(cls, backend: B) -> int:
+        """Returns the total number of entries currently stored in the stream log."""
+        return await backend.stream_length(cls.get_schema_name())
+
+    @classmethod
+    @ensure_streaming
+    async def stream_trim(
+        cls,
+        backend: B,
+        max_len: int,
+        approximate: bool = True,
+    ) -> int:
+        """
+        Trims the stream log to at most `max_len` entries, evicting the oldest entries first.
+
+        :param backend:
+        :param max_len: Maximum entries to retain.
+        :param approximate: If True, allows performance-optimized approximate trimming.
+        :return: Total number of evicted entries.
+        """
+        return await backend.stream_trim(
+            stream_key=cls.get_schema_name(),
+            max_len=max_len,
+            approximate=approximate,
+        )
+
+    @classmethod
+    @ensure_streaming
+    async def stream_delete(cls, backend: B) -> bool:
+        """Deletes the entire stream log and purges associated consumer group states."""
+        return await backend.stream_delete(cls.get_schema_name())
+
+    @classmethod
+    @ensure_streaming
+    async def stream_read_and_ack(
+        cls: Type[T],
+        backend: B,
+        group_name: str,
+        consumer_id: Optional[str] = None,
+        count: int = 1,
+        block_ms: Optional[int] = 5000,
+    ) -> List[T]:
+        """
+        Reads and automatically acknowledges entries in a single call (At-Most-Once delivery).
+
+        :param backend:
+        :param group_name: Consumer group tracking offset namespace.
+        :param consumer_id: Specific worker instance identifier within the group.
+        :param count: Maximum batch size to retrieve.
+        :param block_ms: Block time in milliseconds.
+        :return: List of deserialized model instances directly.
+        """
+        return await backend.stream_read_and_ack(
+            stream_key=cls.get_schema_name(),
+            group_name=group_name,
+            record_class=cls,
+            consumer_id=consumer_id,
+            count=count,
+            block_ms=block_ms,
+        )

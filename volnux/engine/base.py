@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class EngineExecutionResult(Enum):
     COMPLETED = "completed"
     TERMINATED_EARLY = "terminated_early"
+    SUSPENDED = "suspended"
     FAILED = "failed"
 
 

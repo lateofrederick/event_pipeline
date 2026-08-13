@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 from typing import TextIO
 
 from ..style import Style
@@ -42,7 +43,6 @@ async def _check_single_backend(
     A successful check means the backend accepted a connection and
     responded to a lightweight query (e.g., SELECT 1, PING).
     """
-    import importlib
 
     engine_path = cfg.get("ENGINE")
     connector_config = cfg.get("CONNECTOR_CONFIG", {})

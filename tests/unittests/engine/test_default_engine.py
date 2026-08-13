@@ -30,10 +30,14 @@ from volnux.engine.default_engine import DefaultWorkflowEngine
 from volnux.engine.base import (
     EngineExecutionResult,
     EngineResult,
+    SubgraphErrorStrategy,
     TaskNode,
     WorkflowEngine,
 )
 from volnux.engine.checkpoint_config import CheckPointConfig, CheckPointFrequency
+from volnux.execution.state_manager import ExecutionStatus
+from volnux.parser.protocols import GroupingStrategy
+from volnux.task.group import PipelineTaskGrouping
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +77,17 @@ def _awaitable_fn(return_value=None):
 # ---------------------------------------------------------------------------
 
 
+def _make_fake_sub_engine(tasks_processed=0, final_context=None):
+    """Build a fake sub-engine stand-in for spawn_sub_engine()'s return
+    value — controllable via ``.execute`` (an AsyncMock)."""
+    child = MagicMock()
+    child.tasks_processed = tasks_processed
+    child.final_context = final_context
+    child._engine_id = "child"
+    child.execute = AsyncMock()
+    return child
+
+
 def _make_task(**overrides):
     """Build a mock task with sensible defaults."""
     task = MagicMock()
@@ -95,6 +110,9 @@ def _patched_status():
     with patch("volnux.engine.default_engine.ExecutionStatus") as mock_status:
         mock_status.CANCELLED = object()
         mock_status.ABORTED = object()
+        mock_status.PAUSED = object()
+        mock_status.FAILED = object()
+        mock_status.COMPLETED = object()
         yield mock_status
 
 
@@ -1261,6 +1279,24 @@ class TestShouldTerminate:
             state.status = ms.ABORTED
             assert engine._should_terminate(state) is True
 
+    def test_paused_returns_true(self):
+        """A HITL-suspended execution must stop the loop, not be treated
+        as a completed task."""
+        engine = DefaultWorkflowEngine()
+        state = MagicMock()
+
+        with _patched_status() as ms:
+            state.status = ms.PAUSED
+            assert engine._should_terminate(state) is True
+
+    def test_failed_returns_true(self):
+        engine = DefaultWorkflowEngine()
+        state = MagicMock()
+
+        with _patched_status() as ms:
+            state.status = ms.FAILED
+            assert engine._should_terminate(state) is True
+
     def test_other_status_returns_false(self):
         engine = DefaultWorkflowEngine()
         state = MagicMock()
@@ -1288,6 +1324,27 @@ class TestShouldTerminate:
 
 
 class TestMapTerminationStatus:
+    def test_paused_returns_suspended(self):
+        engine = DefaultWorkflowEngine()
+        assert (
+            engine._map_termination_status(ExecutionStatus.PAUSED)
+            == EngineExecutionResult.SUSPENDED
+        )
+
+    def test_failed_returns_failed(self):
+        engine = DefaultWorkflowEngine()
+        assert (
+            engine._map_termination_status(ExecutionStatus.FAILED)
+            == EngineExecutionResult.FAILED
+        )
+
+    def test_cancelled_returns_terminated_early(self):
+        engine = DefaultWorkflowEngine()
+        assert (
+            engine._map_termination_status(ExecutionStatus.CANCELLED)
+            == EngineExecutionResult.TERMINATED_EARLY
+        )
+
     def test_always_returns_terminated_early(self):
         engine = DefaultWorkflowEngine()
         assert (
@@ -1695,3 +1752,377 @@ class TestDebugLogging:
             ]
             assert any("Completed processing" in c for c in debug_calls)
             assert any("1 tasks" in c for c in debug_calls)
+
+
+# ===================================================================
+# TestExecuteCheckpointerStartup
+# ===================================================================
+
+
+class TestExecuteCheckpointerStartup:
+    """Checkpoint manager's async worker starts once, at root-engine
+    startup only — never from a sub-engine."""
+
+    async def _run(self, engine, task, pipeline, mock_ctx):
+        with _patched_status(), \
+             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
+             patch.object(engine, "_build_context", return_value=mock_ctx), \
+             patch.object(engine, "_should_terminate", return_value=False), \
+             patch.object(engine, "_handle_task_switch", return_value=False), \
+             patch.object(engine, "_resolve_next_task", return_value=None), \
+             patch.object(engine, "_drain_sink_nodes"):
+            return await engine.execute(task, pipeline)
+
+    async def test_root_engine_starts_checkpointer_once(self):
+        engine = DefaultWorkflowEngine()
+        mock_checkpointer = MagicMock()
+        mock_checkpointer.start = AsyncMock()
+        engine.enable_checkpointing(mock_checkpointer, CheckPointFrequency.PER_TASK)
+
+        await self._run(engine, _make_task(), MagicMock(), _make_mock_ctx())
+
+        mock_checkpointer.start.assert_awaited_once()
+
+    async def test_child_engine_never_starts_checkpointer(self):
+        parent = DefaultWorkflowEngine()
+        mock_checkpointer = MagicMock()
+        mock_checkpointer.start = AsyncMock()
+        parent.enable_checkpointing(mock_checkpointer, CheckPointFrequency.PER_TASK)
+
+        child = DefaultWorkflowEngine(parent_engine=parent)
+        child.enable_checkpointing(mock_checkpointer, CheckPointFrequency.PER_TASK)
+
+        await self._run(child, _make_task(), MagicMock(), _make_mock_ctx())
+
+        mock_checkpointer.start.assert_not_awaited()
+
+    async def test_no_checkpointer_configured_does_not_error(self):
+        engine = DefaultWorkflowEngine()
+        result = await self._run(engine, _make_task(), MagicMock(), _make_mock_ctx())
+        assert result.status == EngineExecutionResult.COMPLETED
+
+
+# ===================================================================
+# TestSpawnSubEngineCheckpointInheritance
+# ===================================================================
+
+
+class TestSpawnSubEngineCheckpointInheritance:
+    """A sub-engine only ever inherits the parent's checkpoint manager —
+    it must never build its own."""
+
+    async def test_child_shares_parent_checkpointer_instance(self):
+        parent = DefaultWorkflowEngine()
+        mock_checkpointer = MagicMock()
+        parent.enable_checkpointing(mock_checkpointer, CheckPointFrequency.PER_TASK)
+
+        child = await parent.spawn_sub_engine(_make_task(), MagicMock())
+
+        assert child._checkpointer is mock_checkpointer
+        assert child._checkpoint_frequency == CheckPointFrequency.PER_TASK
+
+    async def test_no_spurious_warning_when_parent_has_checkpointer(self):
+        parent = DefaultWorkflowEngine()
+        mock_checkpointer = MagicMock()
+        parent.enable_checkpointing(mock_checkpointer, CheckPointFrequency.PER_TASK)
+
+        with patch("volnux.engine.default_engine.logger") as mock_logger:
+            await parent.spawn_sub_engine(_make_task(), MagicMock())
+            mock_logger.warning.assert_not_called()
+
+    async def test_child_without_parent_checkpointer_has_none(self):
+        parent = DefaultWorkflowEngine()
+        child = await parent.spawn_sub_engine(_make_task(), MagicMock())
+        assert child._checkpointer is None
+
+    async def test_child_records_parent_and_error_strategy(self):
+        parent = DefaultWorkflowEngine()
+        child = await parent.spawn_sub_engine(
+            _make_task(), MagicMock(), error_strategy=SubgraphErrorStrategy.ISOLATE
+        )
+        assert child.parent_engine is parent
+        assert child in parent.child_engines
+        assert child._error_strategy == SubgraphErrorStrategy.ISOLATE
+
+
+# ===================================================================
+# TestExecuteSubgraphs
+# ===================================================================
+
+
+class TestExecuteSubgraphs:
+    async def test_execute_subgraph_success_merges_tasks_processed(self):
+        engine = DefaultWorkflowEngine()
+        engine.tasks_processed = 0
+        child = _make_fake_sub_engine(tasks_processed=3)
+        expected = EngineResult(
+            status=EngineExecutionResult.COMPLETED, tasks_processed=3
+        )
+        child.execute.return_value = expected
+
+        with patch.object(engine, "spawn_sub_engine", AsyncMock(return_value=child)):
+            result = await engine.execute_subgraph(_make_task(), MagicMock())
+
+        assert result is expected
+        assert engine.tasks_processed == 3
+
+    async def test_execute_subgraph_treat_as_failure_still_merges_tasks_processed(self):
+        """Previously the error path returned an EngineResult without ever
+        adding sub_engine.tasks_processed to self.tasks_processed."""
+        engine = DefaultWorkflowEngine()
+        engine.tasks_processed = 0
+        child = _make_fake_sub_engine(tasks_processed=2)
+        error = RuntimeError("boom")
+        child.execute.side_effect = error
+
+        with patch.object(engine, "spawn_sub_engine", AsyncMock(return_value=child)):
+            result = await engine.execute_subgraph(
+                _make_task(), MagicMock(),
+                error_strategy=SubgraphErrorStrategy.TREAT_AS_FAILURE,
+            )
+
+        assert result.status == EngineExecutionResult.FAILED
+        assert result.error is error
+        assert engine.tasks_processed == 2
+
+    async def test_execute_subgraph_bubble_up_reraises(self):
+        engine = DefaultWorkflowEngine()
+        child = _make_fake_sub_engine(tasks_processed=1)
+        error = RuntimeError("boom")
+        child.execute.side_effect = error
+
+        with patch.object(engine, "spawn_sub_engine", AsyncMock(return_value=child)):
+            with pytest.raises(RuntimeError):
+                await engine.execute_subgraph(
+                    _make_task(), MagicMock(),
+                    error_strategy=SubgraphErrorStrategy.BUBBLE_UP,
+                )
+
+    async def test_execute_subgraph_isolate_returns_synthetic_completed(self):
+        engine = DefaultWorkflowEngine()
+        child = _make_fake_sub_engine(tasks_processed=1)
+        child.execute.side_effect = RuntimeError("boom")
+
+        with patch.object(engine, "spawn_sub_engine", AsyncMock(return_value=child)):
+            result = await engine.execute_subgraph(
+                _make_task(), MagicMock(), error_strategy=SubgraphErrorStrategy.ISOLATE
+            )
+
+        assert result.status == EngineExecutionResult.COMPLETED
+        assert result.final_context is None
+
+    async def test_concurrent_execution_runs_all_and_merges_counts(self):
+        engine = DefaultWorkflowEngine()
+        engine.tasks_processed = 0
+        tasks = [_make_task(), _make_task(), _make_task()]
+        children = [_make_fake_sub_engine(tasks_processed=i + 1) for i in range(3)]
+        for i, child in enumerate(children):
+            child.execute.return_value = EngineResult(
+                status=EngineExecutionResult.COMPLETED, tasks_processed=i + 1
+            )
+
+        with patch.object(
+            engine, "spawn_sub_engine", AsyncMock(side_effect=children)
+        ):
+            results = await engine.execute_subgraphs(tasks, MagicMock())
+
+        assert len(results) == 3
+        assert all(r.status == EngineExecutionResult.COMPLETED for r in results)
+        assert engine.tasks_processed == 1 + 2 + 3
+
+    async def test_concurrent_execution_partial_failure_treat_as_failure(self):
+        engine = DefaultWorkflowEngine()
+        engine.tasks_processed = 0
+        tasks = [_make_task(), _make_task()]
+
+        ok_child = _make_fake_sub_engine(tasks_processed=2)
+        ok_child.execute.return_value = EngineResult(
+            status=EngineExecutionResult.COMPLETED, tasks_processed=2
+        )
+        failing_child = _make_fake_sub_engine(tasks_processed=1)
+        failing_child.execute.side_effect = RuntimeError("chain failed")
+
+        with patch.object(
+            engine, "spawn_sub_engine",
+            AsyncMock(side_effect=[ok_child, failing_child]),
+        ):
+            results = await engine.execute_subgraphs(
+                tasks, MagicMock(), error_strategy=SubgraphErrorStrategy.TREAT_AS_FAILURE
+            )
+
+        statuses = {r.status for r in results}
+        assert statuses == {
+            EngineExecutionResult.COMPLETED,
+            EngineExecutionResult.FAILED,
+        }
+        # Both children's counts merged despite one failing.
+        assert engine.tasks_processed == 3
+
+    async def test_concurrent_execution_bubble_up_merges_all_before_raising(self):
+        """gather() runs every chain to completion before BUBBLE_UP raises,
+        so every child's tasks_processed must still be merged."""
+        engine = DefaultWorkflowEngine()
+        engine.tasks_processed = 0
+        tasks = [_make_task(), _make_task()]
+
+        failing_child = _make_fake_sub_engine(tasks_processed=5)
+        failing_child.execute.side_effect = RuntimeError("chain failed")
+        ok_child = _make_fake_sub_engine(tasks_processed=7)
+        ok_child.execute.return_value = EngineResult(
+            status=EngineExecutionResult.COMPLETED, tasks_processed=7
+        )
+
+        with patch.object(
+            engine, "spawn_sub_engine",
+            AsyncMock(side_effect=[failing_child, ok_child]),
+        ):
+            with pytest.raises(RuntimeError):
+                await engine.execute_subgraphs(
+                    tasks, MagicMock(), error_strategy=SubgraphErrorStrategy.BUBBLE_UP
+                )
+
+        assert engine.tasks_processed == 12
+
+
+# ===================================================================
+# TestExecuteTaskGrouping
+# ===================================================================
+
+
+class TestExecuteTaskGrouping:
+    """{} grouping: SINGLE_CHAIN executes normally, MULTIPATH_CHAINS fans
+    out into execute_subgraphs()."""
+
+    def _grouping(self, chains):
+        return PipelineTaskGrouping(chains=chains)
+
+    async def test_single_chain_falls_through_to_normal_dispatch(self):
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task()])
+        assert grouping.strategy == GroupingStrategy.SINGLE_CHAIN
+        mock_ctx = _make_mock_ctx()
+
+        with _patched_status(), \
+             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
+             patch.object(engine, "_build_context", return_value=mock_ctx) as m_build, \
+             patch.object(engine, "_should_terminate", return_value=False), \
+             patch.object(engine, "_handle_task_switch", return_value=False), \
+             patch.object(engine, "_resolve_next_task", return_value=None), \
+             patch.object(engine, "_drain_sink_nodes"), \
+             patch.object(engine, "execute_subgraphs") as m_subgraphs:
+
+            result = await engine.execute(grouping, MagicMock())
+
+        m_subgraphs.assert_not_called()
+        m_build.assert_called_once()
+        assert result.status == EngineExecutionResult.COMPLETED
+
+    async def test_multipath_chains_calls_execute_subgraphs_with_chains(self):
+        engine = DefaultWorkflowEngine()
+        chain_a, chain_b = _make_task(), _make_task()
+        grouping = self._grouping([chain_a, chain_b])
+        assert grouping.strategy == GroupingStrategy.MULTIPATH_CHAINS
+        pipeline = MagicMock()
+
+        with patch.object(
+            engine, "execute_subgraphs",
+            AsyncMock(return_value=[
+                EngineResult(status=EngineExecutionResult.COMPLETED),
+                EngineResult(status=EngineExecutionResult.COMPLETED),
+            ]),
+        ) as m_subgraphs, patch.object(engine, "_drain_sink_nodes"):
+
+            result = await engine.execute(grouping, pipeline)
+
+        m_subgraphs.assert_called_once_with([chain_a, chain_b], pipeline)
+        assert result.status == EngineExecutionResult.COMPLETED
+
+    async def test_multipath_all_success_continues_to_on_success_event(self):
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task(), _make_task()])
+        next_task = _make_task()
+        grouping.condition_node.on_success_event = next_task
+
+        with _patched_status(), \
+             patch.object(
+                 engine, "execute_subgraphs",
+                 AsyncMock(return_value=[
+                     EngineResult(status=EngineExecutionResult.COMPLETED),
+                     EngineResult(status=EngineExecutionResult.COMPLETED),
+                 ]),
+             ), \
+             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
+             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
+             patch.object(engine, "_should_terminate", return_value=False), \
+             patch.object(engine, "_handle_task_switch", return_value=False), \
+             patch.object(engine, "_resolve_next_task", return_value=None), \
+             patch.object(engine, "_drain_sink_nodes"):
+
+            result = await engine.execute(grouping, MagicMock())
+
+        # grouping (1) + next_task (1) both processed
+        assert result.tasks_processed == 2
+        assert result.status == EngineExecutionResult.COMPLETED
+
+    async def test_multipath_any_failed_continues_to_on_failure_event(self):
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task(), _make_task()])
+        failure_task = _make_task()
+        grouping.condition_node.on_failure_event = failure_task
+
+        with _patched_status(), \
+             patch.object(
+                 engine, "execute_subgraphs",
+                 AsyncMock(return_value=[
+                     EngineResult(status=EngineExecutionResult.COMPLETED),
+                     EngineResult(status=EngineExecutionResult.FAILED),
+                 ]),
+             ), \
+             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
+             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
+             patch.object(engine, "_should_terminate", return_value=False), \
+             patch.object(engine, "_handle_task_switch", return_value=False), \
+             patch.object(engine, "_resolve_next_task", return_value=None) as m_resolve, \
+             patch.object(engine, "_drain_sink_nodes"):
+
+            await engine.execute(grouping, MagicMock())
+
+        # The failure branch's task must have been queued and dispatched —
+        # _resolve_next_task only fires for it, not for the grouping itself.
+        m_resolve.assert_called_once_with(failure_task, ANY)
+
+    async def test_multipath_any_suspended_stops_workflow_early(self):
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task(), _make_task()])
+
+        with patch.object(
+            engine, "execute_subgraphs",
+            AsyncMock(return_value=[
+                EngineResult(status=EngineExecutionResult.COMPLETED),
+                EngineResult(status=EngineExecutionResult.SUSPENDED),
+            ]),
+        ), patch.object(engine, "_drain_sink_nodes") as m_drain:
+
+            result = await engine.execute(grouping, MagicMock())
+
+        assert result.status == EngineExecutionResult.SUSPENDED
+        m_drain.assert_not_called()
+
+    async def test_multipath_sink_node_collected(self):
+        """_build_context() is bypassed for MULTIPATH_CHAINS, so sink-node
+        collection must be replicated at the interception point."""
+        engine = DefaultWorkflowEngine()
+        grouping = self._grouping([_make_task()])
+        grouping.strategy = GroupingStrategy.MULTIPATH_CHAINS
+        sink = _make_task(name="sink")
+        grouping.sink_node = sink
+
+        with patch.object(
+            engine, "execute_subgraphs",
+            AsyncMock(return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)]),
+        ), patch.object(engine, "_drain_sink_nodes") as m_drain:
+
+            await engine.execute(grouping, MagicMock())
+
+        assert sink in engine.sink_queue
+        m_drain.assert_called_once()

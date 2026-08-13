@@ -1,11 +1,13 @@
 from typing import Any, Dict, List, Optional
 
-from formax import MiniAnnotated, Attrib, InitStrategy
+from formax import MiniAnnotated, Attrib
 
-from volnux.backends.formax_fk import (
+from volnux.backends.fields import (
     ForeignKeyField,
     FKConfig,
     OnDelete,
+    DateTimeField,
+    DTConfig,
 )
 from volnux.models.enums import EnvironmentType, ScopeType
 
@@ -16,7 +18,7 @@ class Organization(GovernanceModel):
     """Top-level organization entity for multi-tenancy.
 
     Reverse Relations:
-        users               — All users in this organization
+        users — All users in this organization
         teams — All teams in this organization
         workflows — All workflows in this organization
         events — All EventHub components in this organization
@@ -24,13 +26,10 @@ class Organization(GovernanceModel):
     """
 
     name: MiniAnnotated[str, Attrib(min_length=1, max_length=255)]
-    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$")]
+    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$", metadata={"unique": True})]
     policies: MiniAnnotated[Dict[str, Any], Attrib(default_factory=dict)]
     is_active: bool = True
     sso_config: Optional[Dict[str, Any]] = None
-
-    class Config(GovernanceModel.Config):
-        pass
 
 
 class User(GovernanceModel):
@@ -67,12 +66,6 @@ class User(GovernanceModel):
         FKConfig(reverse_name="users", on_delete=OnDelete.CASCADE),
     ]
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
-
 
 class Team(GovernanceModel):
     """Team entity for scoped role boundaries.
@@ -92,12 +85,6 @@ class Team(GovernanceModel):
         FKConfig(reverse_name="teams", on_delete=OnDelete.CASCADE),
     ]
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
-
 
 class TeamMember(GovernanceModel):
     """Many-to-many relationship between teams and users."""
@@ -111,12 +98,6 @@ class TeamMember(GovernanceModel):
         FKConfig(reverse_name="team_memberships", on_delete=OnDelete.CASCADE),
     ]
 
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
-
 
 class Role(GovernanceModel):
     """Role definition with associated permissions.
@@ -126,15 +107,9 @@ class Role(GovernanceModel):
     """
 
     name: MiniAnnotated[str, Attrib(min_length=1, max_length=100)]
-    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$")]
+    slug: MiniAnnotated[str, Attrib(pattern=r"^[a-z0-9-]+$", metadata={"unique": True})]
     description: MiniAnnotated[Optional[str], Attrib(default=None)]
     permissions: MiniAnnotated[List[str], Attrib(default_factory=list)]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
 
 
 class RoleAssignment(GovernanceModel):
@@ -160,10 +135,4 @@ class RoleAssignment(GovernanceModel):
         User,
         FKConfig(reverse_name="granted_role_assignments", on_delete=OnDelete.PROTECT),
     ]
-    revoked_at: MiniAnnotated[Optional[float], Attrib(default=None)]
-
-    class Config(GovernanceModel.Config):
-        init_strategy = InitStrategy.DATACLASS
-        unsafe_hash = False
-        frozen = False
-        eq = True
+    revoked_at: DateTimeField[DTConfig(nullable=True)]

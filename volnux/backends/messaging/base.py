@@ -1,6 +1,15 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, List, Optional, TYPE_CHECKING, TypeVar, Type
+from typing import (
+    Any,
+    AsyncIterator,
+    List,
+    Optional,
+    TYPE_CHECKING,
+    TypeVar,
+    Type,
+    Generic,
+)
 from enum import Enum
 from dataclasses import dataclass, field
 
@@ -319,3 +328,213 @@ class AsyncSubscriptionContext(ABC):
 
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None: ...
+
+
+@dataclass
+class StreamEntry(Generic[Record]):
+    """A single immutable record retrieved from an append-only log stream.
+
+    Attributes:
+        entry_id: Backend-assigned monotonically increasing identifier
+                 (e.g., Redis Stream ID '1700000000000-0'). Used for ACKs.
+        record: Deserialized domain record payload.
+        group_name: The consumer group namespace that delivered this entry.
+        consumer_id: Specific worker instance identifier that received the entry.
+    """
+
+    entry_id: str
+    record: Record
+    group_name: Optional[str] = None
+    consumer_id: Optional[str] = None
+
+
+class StreamOffset(str, Enum):
+    BEGINNING = "__VOLNUX_BEGIN__"  # Replay from inception
+    LATEST = "__VOLNUX_LATEST__"  # New entries only
+
+
+class StreamCapabilityMixin:
+    """Abstract append-only log capability interface.
+
+    Key Properties
+    --------------
+    1. Append-Only Persistence: Producers append immutably. Reads do not mutate log state.
+    2. Independent Offset Namespaces: Multiple consumer groups read from the same stream
+       without interfering with each other's cursor positions.
+    3. Replayability & Catch-Up: Disconnected or late-joining consumers can replay
+       historical entries starting from any valid entry ID or "0".
+    4. At-Least-Once Delivery: Unacknowledged (pending) entries remain in the delivery
+       pipeline and are re-delivered upon worker recovery.
+    """
+
+    @abstractmethod
+    async def stream_append(
+        self,
+        stream_key: str,
+        record: Record,
+        max_len: Optional[int] = None,
+        approximate_trim: bool = True,
+    ) -> str:
+        """Appends a record to the specified log stream.
+
+        Args:
+            stream_key: Target stream topic or log identifier.
+            record: Data payload to serialize and append.
+            max_len: Optional maximum entries allowed in stream. Trims oldest entries.
+            approximate_trim: If True, allows storage engine performance optimizations
+                             during trimming (e.g., Redis `MAXLEN ~`).
+
+        Returns:
+            str: Monotonically increasing entry ID assigned by the backend.
+        """
+
+    async def stream_ensure_consumer_group(
+        self,
+        stream_key: str,
+        group_name: str,
+        start_from: str = StreamOffset.BEGINNING,  # Default to full replay
+    ) -> None:
+        """
+        start_from:
+            - StreamOffset.BEGINNING: Replay all historical entries
+            - StreamOffset.LATEST: Read only new entries after group creation
+            - "<backend_native_id>": Resume from specific entry ID
+        """
+
+    @abstractmethod
+    async def stream_read(
+        self,
+        stream_key: str,
+        group_name: str,
+        record_class: Type[Record],
+        consumer_id: Optional[str] = None,
+        count: int = 1,
+        block_ms: Optional[int] = 5000,
+    ) -> List[StreamEntry[Record]]:
+        """Reads undelivered or pending entries for a consumer group.
+
+        Args:
+            stream_key: Target stream identifier.
+            group_name: Consumer group tracking offset namespace.
+            record_class: Model class used to deserialize record payloads.
+            consumer_id: Unique worker instance name within the group.
+            count: Maximum batch size to retrieve in a single call.
+            block_ms: Non-blocking behavior control:
+                      - None: Return immediately with available records.
+                      - 0: Block indefinitely until new records arrive.
+                      - >0: Wait up to N milliseconds for records.
+
+        Returns:
+            List[StreamEntry[Record]]: Ordered list of delivered entries.
+        """
+
+    @abstractmethod
+    async def stream_ack(
+        self,
+        stream_key: str,
+        group_name: str,
+        *entry_ids: str,
+    ) -> int:
+        """Acknowledges processed entries, advancing the consumer group offset.
+
+        Unacknowledged entries remain pending and will be re-delivered on
+        subsequent `stream_read` calls (At-Least-Once processing).
+
+        Args:
+            stream_key: Target stream identifier.
+            group_name: Consumer group namespace acknowledging execution.
+            *entry_ids: One or more entry IDs to confirm.
+
+        Returns:
+            int: Total number of entries successfully acknowledged.
+        """
+
+    @abstractmethod
+    async def stream_claim_pending(
+        self,
+        stream_key: str,
+        group_name: str,
+        consumer_id: str,
+        record_class: Type[Record],
+        min_idle_ms: int = 30_000,
+        count: int = 100,
+    ) -> List[StreamEntry[Record]]:
+        """Claims pending entries that have been idle for at least `min_idle_ms`.
+
+        Used for worker crash recovery. When a new worker joins a consumer group,
+        it should call this BEFORE `stream_read` to reclaim orphaned work from
+        dead workers.
+
+        Args:
+            stream_key: Target stream identifier.
+            group_name: Consumer group namespace.
+            consumer_id: The NEW worker claiming ownership of orphaned entries.
+            record_class: Record type to deserialize stream entries.
+            min_idle_ms: Minimum idle time before an entry is eligible for claiming.
+                         Prevents stealing actively-processed entries from live workers.
+            count: Maximum entries to claim per call.
+
+        Returns:
+            List[StreamEntry[Record]]: Claimed entries now owned by `consumer_id`.
+        """
+
+    @abstractmethod
+    async def stream_length(self, stream_key: str) -> int:
+        """Returns the total number of entries currently stored in the stream."""
+
+    @abstractmethod
+    async def stream_trim(
+        self,
+        stream_key: str,
+        max_len: int,
+        approximate: bool = True,
+    ) -> int:
+        """Manually trims the stream log to at most `max_len` entries.
+
+        Removes the oldest entries first. Note that trimming entries before
+        consumers read them will result in skipped records for slow consumers.
+
+        Returns:
+            int: Total number of evicted entries.
+        """
+
+    @abstractmethod
+    async def stream_delete(self, stream_key: str) -> bool:
+        """Deletes the log stream and purges all associated consumer group states.
+
+        Returns:
+            bool: True if the stream existed and was destroyed.
+        """
+
+    async def stream_read_and_ack(
+        self,
+        stream_key: str,
+        group_name: str,
+        record_class: Type[Record],
+        consumer_id: Optional[str] = None,
+        count: int = 1,
+        block_ms: Optional[int] = 5000,
+    ) -> List[Record]:
+        """Reads and automatically acknowledges entries in a single call.
+
+        WARNING: Implements At-Most-Once delivery. If the caller crashes during
+        downstream processing after this call returns, the entries are already
+        acknowledged and cannot be re-delivered.
+
+        Use `stream_read` and `stream_ack` separately for strict At-Least-Once processing.
+        """
+        entries = await self.stream_read(
+            stream_key=stream_key,
+            group_name=group_name,
+            record_class=record_class,
+            consumer_id=consumer_id,
+            count=count,
+            block_ms=block_ms,
+        )
+        if entries:
+            await self.stream_ack(
+                stream_key,
+                group_name,
+                *[e.entry_id for e in entries],
+            )
+        return [e.record for e in entries]

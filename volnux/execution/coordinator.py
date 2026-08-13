@@ -2,13 +2,13 @@ import asyncio
 import logging
 import time
 import typing
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
 from volnux.exceptions import (
     SwitchTask,
     ExternalCommunicationSuspensionRequest,
     StopProcessingError,
-    SuspendTask,
 )
 from volnux.execution.context import ExecutionContext
 from volnux.execution.result import ResultProcessor
@@ -16,7 +16,6 @@ from volnux.execution.state_manager import ExecutionStatus
 from volnux.flows import setup_execution_flow
 from volnux.mixins.event.communication.datastructures import (
     ExternalCommunicationQueueEntry,
-    ExternalCommunicationResponse,
 )
 
 if typing.TYPE_CHECKING:
@@ -245,17 +244,39 @@ class ExecutionCoordinator:
 
         return results, errors
 
+    async def _get_latest_checkpoint_key(self, task_id: str) -> typing.Optional[str]:
+        """
+        Persist a fresh context snapshot and return its lookup key, so a
+        HITL queue entry points at state saved right before suspension.
+
+        ContextSnapshot (rehydrator/engine/snapshot.py) is keyed by
+        state_id within its own schema namespace, and rehydration
+        (RehydrationManager.wake) rehydrates the *full* workflow state from
+        this key — not a narrower per-task snapshot.
+        """
+        logger.debug(
+            "Persisting checkpoint for suspended task '%s' before HITL wait", task_id
+        )
+        await self.execution_context.persist()
+        return self.execution_context.state_id
+
+    def _compute_timeout(
+        self, timeout_hours: typing.Optional[float]
+    ) -> typing.Optional[str]:
+        """ISO timestamp for when a HITL request times out, or None for
+        no timeout."""
+        if not timeout_hours:
+            return None
+        return (datetime.now(timezone.utc) + timedelta(hours=timeout_hours)).isoformat()
+
     async def execute_async(self) -> Tuple[Any, Any]:
         """
-        Execute tasks asynchronously when already in an async context.
-
-        Use this method when calling from async code instead of execute().
+        Execute tasks asynchronously.
 
         Returns:
             Tuple of (results, errors) from task execution
 
         Raises:
-            RuntimeError: If called from within an existing event loop
             Exception: If execution fails
         """
         return await self._execute_async()
@@ -265,7 +286,7 @@ class ExecutionCoordinator:
         if self._flow:
             logger.warning("Cancelling execution flow")
             await self._flow.cancel()
-            self.execution_context.update_status(ExecutionStatus.CANCELLED)
+            await self.execution_context.update_status_async(ExecutionStatus.CANCELLED)
 
     def __repr__(self) -> str:
         return (

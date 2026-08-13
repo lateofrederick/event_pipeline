@@ -441,7 +441,7 @@ class EventBase(
             ValueError: If the descriptor is not an integer between 0 and 9.
             SwitchTask: Always raised to signal the task switch.
         """
-        if not isinstance(descriptor, int):
+        if not isinstance(descriptor, int) or not (0 <= descriptor <= 9):
             raise ValueError("Descriptor must be an integer between 0 to 9")
 
         if execute_on_event_method:
@@ -563,7 +563,11 @@ class EventBase(
         )
 
     def on_success(self, execution_result: typing.Any) -> EventResult:
-        self.stop_condition.message = execution_result
+        self.stop_condition.message = (
+            execution_result
+            if execution_result is None or isinstance(execution_result, str)
+            else str(execution_result)
+        )
 
         event_called.emit(
             sender=self.__class__,
@@ -681,10 +685,13 @@ class EventBase(
             if self._resource_monitor.is_started():
                 await self._resource_monitor.stop()
 
-        if self._phase != EventPhase.COMPLETED:
-            try:
-                await self._completed(*args, **kwargs)
-            except Exception as e:
-                logger.exception(e)
+            # Must run even if steps_runner() raised (e.g. StopProcessingError/
+            # SwitchTask, both routine control-flow signals) — otherwise
+            # external resource cleanup and the cleanup() hook never fire.
+            if self._phase != EventPhase.COMPLETED:
+                try:
+                    await self._completed(*args, **kwargs)
+                except Exception as e:
+                    logger.exception(e)
 
         return result

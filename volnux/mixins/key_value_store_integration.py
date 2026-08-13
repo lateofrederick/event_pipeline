@@ -38,6 +38,7 @@ from volnux.import_utils import import_string
 from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.utils import get_obj_klass_import_str
 from volnux.concurrency.async_utils import to_thread
+from .connection import BackendConnectionIntegrationMixin
 
 if TYPE_CHECKING:
     from volnux.config import VolnuxConfig
@@ -195,7 +196,7 @@ def backend_operation(
     return decorator
 
 
-class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
+class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
     """
     Mixin to enable backend persistence for classes.
 
@@ -228,8 +229,8 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
     """
 
     # Class-level backend store instance (shared across all instances)
-    _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]] = None
-    _backend_config: ClassVar[Optional[Dict[str, Any]]] = None
+    # _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]] = None
+    # _backend_config: ClassVar[Optional[Dict[str, Any]]] = None
 
     # Backreference registry
     # Maps field_name -> set of (model_class, reverse_name, Attrib, has_native_fk) tuples
@@ -291,11 +292,7 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
                 ),
             )
 
-    def __post_init__(
-        self,
-        autosave: bool = False,
-        storage_backend: typing.Optional[KeyValueStoreBackendBase] = None,
-    ) -> None:
+    def __post_init__(self, autosave: bool = False, **kwargs) -> None:
         """Initialize the model with backend integration.
 
         This method is called during object initialization to set up
@@ -305,11 +302,6 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
             ImproperlyConfigured: If backend initialization fails.
         """
         ObjectIdentityMixin.__init__(self)
-
-        if storage_backend is not None and isinstance(
-            storage_backend, KeyValueStoreBackendBase
-        ):
-            pass
 
         if self._backend_store is None:
             self._initialize_backend()
@@ -373,79 +365,6 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
     def get_backend_config(cls) -> Dict[str, Any]:
         """Get the backend configuration for this class."""
         return cls.get_volnux_config().KEY_VALUE_STORE_CONFIG
-
-    @classmethod
-    def _initialize_backend(cls) -> None:
-        """Initialize the backend store for this class.
-
-        This method is called once per class to set up the backend connection.
-        It reads configuration from CONFIG and creates the appropriate backend store.
-
-        Raises:
-            StopProcessingError: If backend initialization fails.
-        """
-        try:
-            backend_config = cls.get_backend_config()
-            cls._backend_config = backend_config
-
-            backend_class_path = backend_config.get("ENGINE")
-            if not backend_class_path:
-                raise ImproperlyConfigured("Backend ENGINE not configured")
-
-            backend_class = import_string(backend_class_path)
-
-            connector_config = cast(
-                Dict[str, Any], backend_config.get("CONNECTOR_CONFIG", {})
-            )
-
-            cls._backend_store = backend_class(**connector_config)
-
-            # Ensure the backend is connected
-            if hasattr(cls._backend_store.connector, "connect"):
-                if not cls._backend_store.connector.is_connected():
-                    cls._backend_store.connector.connect()
-
-            logger.info(
-                f"Initialized backend store: {backend_class.__name__} "
-                f"for class {cls.__name__}"
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to initialize backend: {e}")
-            raise ImproperlyConfigured(f"Backend initialization failed: {e}") from e
-
-    @classmethod
-    def get_backend(cls) -> KeyValueStoreBackendBase:
-        """Get the backend store instance.
-
-        Returns:
-            The backend store instance.
-
-        Raises:
-            RuntimeError: If the backend is not initialized.
-        """
-        if cls._backend_store is None:
-            cls._initialize_backend()
-        return cls._backend_store  # type: ignore
-
-    def change_storage_backend(self, backend: "KeyValueStoreIntegrationMixin"):
-        pass
-
-    @classmethod
-    def get_storage_route(cls) -> StorageRoute:
-        return StorageRoute(components=["volnux", cls.__name__])
-
-    @classmethod
-    def get_schema_name(cls) -> str:
-        """Get the schema name for this class.
-
-        By default, uses the class name. Can be overridden for custom schemas.
-
-        Returns:
-            The schema name to use for backend storage.
-        """
-        backend = cls.get_backend()
-        return cls.get_storage_route().resolve(backend)
 
     def _is_loaded_from_backend(self) -> bool:
         """Check if this instance was loaded from the backend.
@@ -845,77 +764,6 @@ class KeyValueStoreIntegrationMixin(ObjectIdentityMixin):
         # Use backend's transaction support
         with connector.transaction():
             yield
-
-    def __getstate__(self) -> Dict[str, Any]:
-        """Prepare an object for serialization.
-
-        Returns:
-            Dictionary representation of the object state.
-
-        Raises:
-            SerializationError: If the object cannot be serialized.
-        """
-        try:
-            state = self.get_state()
-        except NotImplementedError:
-            raise SerializationError(
-                f"Cannot serialise object of type {self.__class__.__name__!r}"
-            )
-
-        if hasattr(self, "_id"):
-            state["id"] = self._id
-
-        if hasattr(self, "_backend_store") and self._backend_store is not None:
-            state["_backend_class"] = get_obj_klass_import_str(self._backend_store)
-
-        # Remove non-serializable attributes
-        state.pop("_backend_store", None)
-        state.pop("_backend_config", None)
-
-        return state
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore the object state after deserialization.
-
-        Args:
-            state: Dictionary containing object state.
-
-        Raises:
-            SerializationError: If the object cannot be deserialized.
-        """
-        # Remove backend class info (will be reinitialized)
-        state.pop("_backend_class", None)
-
-        try:
-            self.set_state(state)
-        except NotImplementedError:
-            raise SerializationError(
-                f"Cannot deserialized object of type {self.__class__.__name__!r}"
-            )
-
-        # Ensure the backend is initialized for this class
-        if self._backend_store is None:
-            self._initialize_backend()
-
-    @classmethod
-    def close_backend(cls) -> None:
-        """Close the backend connection.
-
-        This should be called when the application shuts down.
-        """
-        if cls._backend_store is not None:
-            try:
-                if hasattr(cls._backend_store, "close"):
-                    cls._backend_store.close()
-                elif hasattr(cls._backend_store.connector, "disconnect"):
-                    cls._backend_store.connector.disconnect()
-
-                logger.info(f"Closed backend for {cls.__name__}")
-            except Exception as e:
-                logger.warning(f"Error closing backend: {e}")
-            finally:
-                cls._backend_store = None
-                cls._backend_config = None
 
     def __repr__(self) -> str:
         """String representation of the object."""

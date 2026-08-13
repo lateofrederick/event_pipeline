@@ -295,16 +295,23 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     async def _evaluate_group_finality(self):
         """
         Internal check: Is every child context in this subtree finished?
+
+        Reads child_contexts under _context_lock, the same lock spawn_child()
+        appends under — otherwise a concurrently-spawning sibling whose child
+        hasn't been registered yet is invisible to this snapshot, and the
+        group can be marked complete before that child ever ran.
         """
-        all_done = True
-        for child in self.child_contexts:
-            child_state = await child.state_async
-            if child_state.status not in [
-                ExecutionStatus.COMPLETED,
-                ExecutionStatus.FAILED,
-            ]:
-                all_done = False
-                break
+        async with self._context_lock:
+            children_snapshot = list(self.child_contexts)
+            all_done = True
+            for child in children_snapshot:
+                child_state = await child.state_async
+                if child_state.status not in [
+                    ExecutionStatus.COMPLETED,
+                    ExecutionStatus.FAILED,
+                ]:
+                    all_done = False
+                    break
 
         if all_done:
             # The 'Super-Task' is now officially complete

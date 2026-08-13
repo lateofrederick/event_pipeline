@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from formax import MiniAnnotated, Attrib, InitStrategy
 
-from volnux.backends.formax_fk import (
+from volnux.backends.fields import (
     ForeignKeyField,
     FKConfig,
     OnDelete,

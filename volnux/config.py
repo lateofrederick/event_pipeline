@@ -1,6 +1,7 @@
 import importlib.util
 import logging
 import os
+import base64
 import threading
 import typing
 import orjson as json
@@ -66,6 +67,29 @@ class ConfigEntry:
 
     def __hash__(self) -> int:
         return hash(self.key) if self.key is not None else -1
+
+    def to_dict(self) -> typing.Dict[str, Any]:
+        """Serializes ConfigEntry into a JSON-compatible dictionary."""
+        return {
+            "name": self.name,
+            "value": self.value,
+            "timestamp": self.timestamp,
+            "origin_mesh_node": self.origin_mesh_node,
+            "signature": self.signature.hex() if self.signature else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: typing.Dict[str, Any]) -> "ConfigEntry":
+        """Reconstructs ConfigEntry from a dictionary."""
+        sig: Optional[str] = data.get("signature")
+        signature_bytes = bytes.fromhex(sig) if sig else None
+        return cls(
+            name=data.get("name"),
+            value=data.get("value"),
+            timestamp=data.get("timestamp", 0),
+            origin_mesh_node=data.get("origin_mesh_node", "local"),
+            signature=signature_bytes,
+        )
 
     def is_local(self) -> bool:
         """
@@ -239,6 +263,72 @@ class VolnuxConfig:
 
     def get_node_id(self) -> str:
         return self._node_id
+
+    def to_dict(self) -> typing.Dict[str, Any]:
+        """
+        Serializes the complete VolnuxConfig instance into a dictionary
+        for transportation across context carriers (Celery, K8s, Ray).
+        """
+        with self._lock:
+            main_store_entries = [entry.to_dict() for entry in self._store]
+
+            namespace_entries = {
+                ns: [entry.to_dict() for entry in store]
+                for ns, store in self._namespace_store.items()
+            }
+
+            return {
+                "node_id": self._node_id,
+                "lamport_clock": self._lamport_clock,
+                "store": main_store_entries,
+                "namespace_store": namespace_entries,
+            }
+
+    @classmethod
+    def from_dict(cls, data: typing.Dict[str, Any]) -> "VolnuxConfig":
+        """
+        Reconstructs a VolnuxConfig instance from a serialized dictionary carrier.
+        """
+        instance = cls.__new__(cls)
+        instance._lock = threading.RLock()
+        instance._store = ResultSet()
+        instance._namespace_store = defaultdict(ResultSet)
+        instance._signer = None
+
+        instance._node_id = data.get("node_id", _generate_node_id())
+        instance._lamport_clock = data.get("lamport_clock", 0)
+
+        # Rehydrate main store
+        for entry_dict in data.get("store", []):
+            entry = ConfigEntry.from_dict(entry_dict)
+            instance._store.add(entry)
+
+        # Rehydrate namespace stores
+        for ns, entries in data.get("namespace_store", {}).items():
+            for entry_dict in entries:
+                entry = ConfigEntry.from_dict(entry_dict)
+                instance._namespace_store[ns].add(entry)
+
+        return instance
+
+    def to_json(self) -> str:
+        """Serializes active configuration state to a JSON string."""
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "VolnuxConfig":
+        """Deserializes JSON string into a VolnuxConfig instance."""
+        return cls.from_dict(json.loads(json_str))
+
+    def to_base64(self) -> str:
+        """Encodes JSON configuration into Base64 string for headers or env vars."""
+        return base64.b64encode(self.to_json().encode("utf-8")).decode("utf-8")
+
+    @classmethod
+    def from_base64(cls, b64_str: str) -> "VolnuxConfig":
+        """Decodes Base64 string back into a VolnuxConfig instance."""
+        json_str = base64.b64decode(b64_str.encode("utf-8")).decode("utf-8")
+        return cls.from_json(json_str)
 
     def _get_config_files(
         self, config_file: typing.Optional[str] = None

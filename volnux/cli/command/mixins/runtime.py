@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from volnux.exceptions import CommandError
+
 
 class APIClientMixin:
     """

@@ -3,7 +3,7 @@ import collections
 import fnmatch
 import logging
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Type
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
 from volnux.backends.messaging.base import (
     PubSubCapabilityMixin,
@@ -13,9 +13,6 @@ from volnux.backends.messaging.base import (
     Record,
     Message,
 )
-
-if TYPE_CHECKING:
-    from volnux.backends.stores.inmemory import InMemoryKeyValueStoreBackend
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +93,10 @@ class InMemoryPubSubMixin(PubSubCapabilityMixin):
                     )
                     receivers += 1
                 except asyncio.QueueFull:
-                    pass  # Backpressure: drop if subscriber is too slow
+                    logger.warning(
+                        "In-memory pubsub queue full for channel %r; dropping message",
+                        channel,
+                    )
 
             for pattern, queues in self._pubsub_patterns.items():
                 if fnmatch.fnmatch(channel, pattern):
@@ -112,7 +112,12 @@ class InMemoryPubSubMixin(PubSubCapabilityMixin):
                             )
                             receivers += 1
                         except asyncio.QueueFull:
-                            pass
+                            logger.warning(
+                                "In-memory pubsub queue full for pattern %r (channel %r); "
+                                "dropping message",
+                                pattern,
+                                channel,
+                            )
 
         return receivers
 
@@ -145,7 +150,7 @@ class InMemorySubscriptionContext(AsyncSubscriptionContext):
 
     def __init__(
         self,
-        backend: "InMemoryKeyValueStoreBackend",
+        backend: "InMemoryPubSubMixin",
         channels: List[str],
         patterns: List[str],
         record_class: Type[Record],
@@ -167,9 +172,17 @@ class InMemorySubscriptionContext(AsyncSubscriptionContext):
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         async with self.backend._pubsub_lock:
             for c in self.channels:
-                self.backend._pubsub_channels[c].discard(self._queue)
+                channel_set = self.backend._pubsub_channels.get(c)
+                if channel_set is not None:
+                    channel_set.discard(self._queue)
+                    if not channel_set:
+                        del self.backend._pubsub_channels[c]
             for p in self.patterns:
-                self.backend._pubsub_patterns[p].discard(self._queue)
+                pattern_set = self.backend._pubsub_patterns.get(p)
+                if pattern_set is not None:
+                    pattern_set.discard(self._queue)
+                    if not pattern_set:
+                        del self.backend._pubsub_patterns[p]
 
         # Drain leftover messages to prevent memory leaks
         while not self._queue.empty():
