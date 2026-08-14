@@ -8,10 +8,11 @@ Postgres, in-memory, ...), keyed by ``get_schema_name()``. There is no Redis or
 any other transport hard-wired here.
 
 The pattern mirrors ``volnux.backends.saga._dlq.DeadLetterEntry``: a model that
-is both persistable (``KeyValueStoreIntegrationMixin``) and
-publishable/queueable (``MessagingBackendIntegrationMixin``). The reporter
-enqueues events with ``GovernanceEvent.enqueue(event)`` and a consumer drains
-them with ``GovernanceEvent.dequeue()`` over the same configured backend.
+mixes in ``MessagingBackendIntegrationMixin``, which itself extends
+``KeyValueStoreIntegrationMixin``, so the event is both persistable and
+publishable/queueable from one base. The reporter enqueues events with
+``GovernanceEvent.enqueue(event)`` and a consumer drains them with
+``GovernanceEvent.dequeue()`` over the same configured backend.
 
 The structured ``payload`` (status, error, node metrics, HITL prompt, ...) is a
 plain mapping and stays one the whole way across: producers build a dict,
@@ -20,7 +21,6 @@ consumers read a dict, and the model layer handles coercion and serialisation.
 
 from typing import Any, Dict, Optional
 from formax import BaseModel, Attrib, MiniAnnotated
-from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 from volnux.mixins.messaging import MessagingBackendIntegrationMixin
 from volnux.config import VolnuxConfig
 
@@ -66,9 +66,7 @@ class EventType:
 GOVERNANCE_SCHEMA = "volnux:governance:events"
 
 
-class GovernanceEvent(
-    KeyValueStoreIntegrationMixin, MessagingBackendIntegrationMixin, BaseModel
-):
+class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
     """A single governance fact, delivered over the provisioned messaging backend.
 
     ``event_type``, ``event_id`` and ``occurred_at`` are always present — every
@@ -99,3 +97,32 @@ class GovernanceEvent(
     @classmethod
     def get_schema_name(cls) -> str:
         return GOVERNANCE_SCHEMA
+
+    def get_state(self) -> Dict[str, Any]:
+        """Serialisable state for the transport.
+
+        The store calls this through ``__getstate__`` before writing, and JSON
+        encodes the result, so every value here has to be a plain type. Formax's
+        ``dump`` gives exactly the declared fields, which is the wire contract.
+        """
+        return self.dump("dict")
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Restore from transport state.
+
+        The store rebuilds records with ``__new__`` and hands the decoded dict
+        straight here, so this runs on an instance whose ``__init__`` never ran.
+        Assigning through the descriptors re-applies the model's own coercion,
+        which is what keeps a round-tripped event validated rather than merely
+        populated. Unknown keys are ignored so an older consumer can still read
+        events produced by a newer engine.
+        """
+        for key, value in state.items():
+            if key in ("id", "_backend_class"):
+                continue
+            if hasattr(type(self), key):
+                setattr(self, key, value)
+
+        object_id = state.get("id")
+        if object_id:
+            object.__setattr__(self, "_id", object_id)
