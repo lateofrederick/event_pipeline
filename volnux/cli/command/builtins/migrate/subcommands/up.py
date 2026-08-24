@@ -95,7 +95,7 @@ class UpSubCommand(SubCommand):
 
                 logger.info = _capture_info  # type: ignore[method-assign]
                 try:
-                    migrate_models(model)
+                    asyncio.run(migrate_models(model))
                 finally:
                     logger.info = original_info  # type: ignore[method-assign]
 

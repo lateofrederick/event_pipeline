@@ -12,7 +12,7 @@ from volnux.otel.tracer_setup import get_tracer
 from volnux.otel.context_manager import OTelContextManager, SpanHelper
 
 if typing.TYPE_CHECKING:
-    from volnux.pipeline import Pipeline
+    from volnux.execution.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +63,14 @@ def instrument_pipeline_start(original_start):
                 if execution_context:
                     # Add execution summary
                     latest_context = execution_context.get_latest_context()
-                    state = latest_context.state
 
-                    span.set_attribute("workflow.status", state.status.name)
-                    span.set_attribute("workflow.results_count", len(state.results))
-                    span.set_attribute("workflow.errors_count", len(state.errors))
+                    span.set_attribute("workflow.status", latest_context.status.name)
+                    span.set_attribute(
+                        "workflow.results_count", len(latest_context.results)
+                    )
+                    span.set_attribute(
+                        "workflow.errors_count", len(latest_context.errors)
+                    )
 
                     # Calculate total duration across all contexts
                     total_duration = 0.0
@@ -82,21 +85,21 @@ def instrument_pipeline_start(original_start):
                     span.set_attribute("workflow.context_count", context_count)
 
                     # Set span status based on workflow outcome
-                    from volnux.execution.state_manager import ExecutionStatus
+                    from volnux.execution.status import ExecutionStatus
 
-                    if state.status == ExecutionStatus.COMPLETED:
+                    if latest_context.status == ExecutionStatus.COMPLETED:
                         span.set_status(Status(StatusCode.OK))
                         span.add_event("workflow_completed")
-                    elif state.status == ExecutionStatus.FAILED:
+                    elif latest_context.status == ExecutionStatus.FAILED:
                         span.set_status(Status(StatusCode.ERROR, "Workflow failed"))
                         span.add_event("workflow_failed")
                         # Add errors
-                        for error in state.errors:
+                        for error in latest_context.errors:
                             span.record_exception(error)
-                    elif state.status == ExecutionStatus.CANCELLED:
+                    elif latest_context.status == ExecutionStatus.CANCELLED:
                         span.set_status(Status(StatusCode.ERROR, "Workflow cancelled"))
                         span.add_event("workflow_cancelled")
-                    elif state.status == ExecutionStatus.ABORTED:
+                    elif latest_context.status == ExecutionStatus.ABORTED:
                         span.set_status(Status(StatusCode.ERROR, "Workflow aborted"))
                         span.add_event("workflow_aborted")
                 else:
@@ -123,7 +126,7 @@ def patch_pipeline():
 
     This should be called during application initialization.
     """
-    from volnux.pipeline import Pipeline
+    from volnux.execution.pipeline import Pipeline
 
     if not hasattr(Pipeline, "_original_start"):
         Pipeline._original_start = Pipeline.start

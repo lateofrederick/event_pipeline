@@ -15,7 +15,6 @@ class SnapshotBuilder:
         self.serializer = serializer
 
     async def build(self, context: "ExecutionContext") -> ContextSnapshot:
-        state = await self._get_execution_state(context)
         engine = context.get_engine()
 
         traversal = self._build_traversal(engine)
@@ -45,9 +44,14 @@ class SnapshotBuilder:
             pipeline_id=pipeline_id,
             pipeline_class_path=pipeline_class_path,
             pipeline_state=self._build_pipeline_state(context),
-            status=state.status.value,
-            errors=[self.serializer.serialize_exception(e) for e in state.errors],
-            results=[self.serializer.serialize_result(r) for r in state.results],
+            status=context.status.value,
+            errors=[self.serializer.serialize_exception(e) for e in context.errors],
+            results=[self.serializer.serialize_result(r) for r in context.results],
+            aggregated_result=(
+                self.serializer.serialize_result(context.aggregated_result)
+                if context.aggregated_result
+                else None
+            ),
             metrics=self._build_metrics(context),
         )
 
@@ -98,6 +102,3 @@ class SnapshotBuilder:
             "end_time": context.metrics.end_time,
             "duration": context.metrics.duration,
         }
-
-    async def _get_execution_state(self, context: "ExecutionContext"):
-        return await context.state_async

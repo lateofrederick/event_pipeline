@@ -16,7 +16,13 @@ except ImportError:
 from treelib.tree import Tree
 
 from volnux.config import VolnuxConfig
-from volnux.constants import EMPTY, PIPELINE_FIELDS, PIPELINE_STATE, UNKNOWN
+from volnux.constants import (
+    EMPTY,
+    PIPELINE_FIELDS,
+    PIPELINE_STATE,
+    PIPELINE_AST,
+    UNKNOWN,
+)
 from volnux.exceptions import (
     BadPipelineError,
     EventDoesNotExist,
@@ -25,7 +31,7 @@ from volnux.exceptions import (
     PipelineConfigurationError,
     PointyNotExecutable,
 )
-from volnux.execution.state_manager import ExecutionStatus
+from volnux.execution.status import ExecutionStatus
 from volnux.fields import InputDataField
 from volnux.import_utils import import_string
 from volnux.mixins import ObjectIdentityMixin, ScheduleMixin
@@ -209,7 +215,7 @@ class PipelineState(object):
         fields per instance without destroying previously cached entries.
 
         Args:
-            instance:             The Pipeline instance being cached.
+            instance: The Pipeline instance being cached.
             instance_cache_field: Name of the top-level cache attribute
                                   (e.g. ``"pipeline_cache"``).
             field_name:           The field being cached (key in inner dict).
@@ -311,7 +317,7 @@ class PipelineMeta(type):
         # Compile the Pointy-Lang source into an executable task graph.
         # Raise descriptive errors rather than generic Exception.
         try:
-            workflow = build_pipeline_flow_from_pointy_code(pointy_str)
+            workflow, ast = build_pipeline_flow_from_pointy_code(pointy_str)
         except (PointyNotExecutable, SyntaxError):
             raise  # propagate as-is — these have clear messages
         except Exception as exc:
@@ -329,12 +335,11 @@ class PipelineMeta(type):
 
         setattr(new_class, PIPELINE_FIELDS, input_data_fields)
         setattr(new_class, PIPELINE_STATE, PipelineState(workflow))
+        setattr(new_class, PIPELINE_AST, ast)
         return new_class
 
 
-class Pipeline(
-    ObjectIdentityMixin, ScheduleMixin, InternalMetadataMixin, metaclass=PipelineMeta
-):
+class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMeta):
     """
     Represents a Volnux workflow pipeline.
 
@@ -466,9 +471,8 @@ class Pipeline(
 
         if self.execution_context:
             latest_context = self.execution_context.get_latest_context()
-            execution_state = await latest_context.state_async
 
-            if execution_state.status == ExecutionStatus.CANCELLED:
+            if latest_context.status == ExecutionStatus.CANCELLED:
                 await pipeline_stop.emit_async(
                     sender=self.__class__,
                     pipeline=self,
@@ -476,7 +480,7 @@ class Pipeline(
                 )
                 return self.execution_context
 
-            if execution_state.status == ExecutionStatus.ABORTED:
+            if latest_context.status == ExecutionStatus.ABORTED:
                 await pipeline_shutdown.emit_async(
                     sender=self.__class__,
                     pipeline=self,
@@ -568,6 +572,10 @@ class Pipeline(
     @classmethod
     def get_pipeline_state(cls) -> PipelineState:
         return getattr(cls, PIPELINE_STATE)
+
+    @classmethod
+    def get_pointy_ast(cls):
+        return getattr(cls, PIPELINE_AST)
 
     @classmethod
     def get_fields(

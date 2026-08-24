@@ -17,15 +17,19 @@ class ObjectIdentityMixin:
     :type id: str
 
     Subclasses must implement:
-        get_state() -> dict — return serialisable state, must include '_id'.
+        get_state() -> dict — return serializable state, must include '_id'.
         set_state(state: dict) — restore state from dict, must restore '_id'.
     """
 
     _id: str
 
-    def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._objectid_lock = threading.Lock()
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._objectid_lock = threading.Lock()
+
+    def __post_init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        # super().__init__(*args, **kwargs)
+        # self._objectid_lock = threading.Lock()
         generate_unique_id(self, lock=self._objectid_lock)
 
     @property
@@ -46,9 +50,14 @@ class ObjectIdentityMixin:
         return get_obj_klass_import_str(self)
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
+        if hasattr(self, "__get_formax_state__"):
+            return self.__get_formax_state__()
         raise NotImplementedError()
 
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
+        if hasattr(self, "__set_formax_state__"):
+            self.__set_formax_state__(state)
+            return
         raise NotImplementedError()
 
     def __setstate__(self, state: typing.Dict[str, typing.Any]) -> None:

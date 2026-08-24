@@ -690,7 +690,7 @@ def get_error_context(input_data, error_pos, context_size=50):
 parser = yacc()
 
 
-def pointy_parser(code: str):
+def pointy_parser(code: str) -> ProgramNode:
     try:
         return parser.parse(code, lexer=pointy_lexer.lexer)
     except YaccError as e:

@@ -24,6 +24,9 @@ class PostgresConnector(BackendConnectorBase[Connection]):
     DEFAULT_MIN_POOL_SIZE = 2
     DEFAULT_MAX_POOL_SIZE = 20
 
+    # uri scheme
+    scheme = "postgres"
+
     def __init__(
         self,
         host: str,

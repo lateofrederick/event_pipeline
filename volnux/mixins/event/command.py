@@ -118,7 +118,8 @@ class EventCommandMixin:
                     if command:
                         await self._handle_command(command)
                 except asyncio.TimeoutError:
-                    # Expected - no command available within timeout
+                    # Expected - no command available within timeout; the
+                    # timeout itself paces the loop, no extra sleep needed.
                     pass
                 except asyncio.CancelledError:
                     # Don't catch cancellation - let it propagate
@@ -128,9 +129,6 @@ class EventCommandMixin:
                         f"Error in command listener for task {self._task_id}: {e}",
                         exc_info=True,
                     )
-
-                # Small delay to prevent tight loop
-                await asyncio.sleep(0.01)
 
         except asyncio.CancelledError:
             logger.debug(f"Command listener for task {self._task_id} cancelled")
@@ -168,7 +166,8 @@ class EventCommandMixin:
 
             elif command.command_type == CommandType.CANCEL:
                 logger.warning(f"Task {self._task_id} received CANCEL command")
-                await self._send_update(MessageType.STATUS_UPDATE, TaskState.CANCELLED)
+                # The authoritative CANCELLED status update is sent by
+                # steps_runner once the worker task actually stops.
                 self._main_worker_task.cancel()
 
             elif command.command_type == CommandType.UPDATE_PRIORITY:
@@ -267,6 +266,7 @@ class EventCommandMixin:
         current_index = 0
         steps = list(self._get_steps())
         total_steps = len(steps)
+        error_reported = False
 
         try:
             await self._send_update(MessageType.STATUS_UPDATE, TaskState.RUNNING)
@@ -288,7 +288,7 @@ class EventCommandMixin:
                     )
                     continue
 
-                # Wait for a pause gate (non-blocking if a gate is set)
+                # Blocks here until RESUME sets the gate; returns immediately if already set
                 await self._pause_gate.wait()
 
                 # Execute the step
@@ -315,6 +315,7 @@ class EventCommandMixin:
                             "step_name": step.__name__,
                         },
                     )
+                    error_reported = True
                     raise
 
                 # Non-blocking checkpoint after a successful step
@@ -357,7 +358,12 @@ class EventCommandMixin:
                 await self.enqueue_checkpoint()
 
                 await self._send_update(MessageType.STATUS_UPDATE, TaskState.QUEUED)
-                raise SuspendTask(self)
+                # Consume the flag now so a later hard CANCEL on this
+                # instance isn't mistaken for another preemption.
+                self._preempted = False
+                raise SuspendTask(
+                    self, suspension_type=SuspendTask.SuspensionType.PREEMPTION
+                )
 
             # Hard cancellation
             logger.warning(
@@ -372,15 +378,18 @@ class EventCommandMixin:
                 f"{current_index + 1}/{total_steps}: {e}",
                 exc_info=True,
             )
-            await self._send_update(
-                MessageType.ERROR,
-                TaskState.FAILED,
-                {
-                    "error": str(e),
-                    "step": current_index + 1,
-                    "total": total_steps,
-                },
-            )
+            # Avoid double-reporting a failure already sent by the
+            # per-step error handler above.
+            if not error_reported:
+                await self._send_update(
+                    MessageType.ERROR,
+                    TaskState.FAILED,
+                    {
+                        "error": str(e),
+                        "step": current_index + 1,
+                        "total": total_steps,
+                    },
+                )
             raise
 
         # construct event result from the exec_status and exec_result attributes

@@ -1,5 +1,6 @@
 import typing
 import logging
+import threading
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from formax import BaseModel, MiniAnnotated, Attrib, ValidationFlags
@@ -151,6 +152,7 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         float, Attrib(default_factory=lambda: datetime.now(timezone.utc).timestamp())
     ]
     snapshot_version: str = volnux_version
+    aggregated_result: typing.Optional[dict] = None
 
     class Config:
         validation = ValidationFlags.NONE
@@ -170,10 +172,13 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
         data = state.copy()
         data["traversal"] = TraversalSnapshot(**data["traversal"])
+        data.pop("_objectid_lock", None)
         self.__dict__.update(data)
+        self._objectid_lock = threading.Lock()
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
         state = self.__dict__.copy()
+        state.pop("_objectid_lock", None)
         traversal_state = state["traversal"].__dict__.copy()
         state["traversal"] = traversal_state
         return state

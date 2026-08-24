@@ -13,12 +13,12 @@ from volnux.event.base import EventType
 from volnux.manifest.utils import build_authenticated_url, redact_credentials
 from volnux.exceptions import SubprocessTimeoutError
 from .utils import initialize_and_register_workflow
-from ..source import SourceCredentials
 from volnux.utils import run_command
 
 logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
+    from ..source import SourceCredentials
     from ..registry import WorkflowRegistry
 
 
@@ -123,7 +123,7 @@ class LoadFromGit(Event):
         workflow_name: str,
         registry: "WorkflowRegistry",
         *,
-        credentials: typing.Optional[SourceCredentials] = None,
+        credentials: typing.Optional["SourceCredentials"] = None,
         branch: str = "main",
         timeout: typing.Optional[int] = None,
     ) -> typing.Tuple[bool, typing.Optional[str]]:

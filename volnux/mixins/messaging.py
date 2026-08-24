@@ -35,10 +35,6 @@ B = TypeVar(
 )
 
 
-class MessagingNotSupportedError(NotImplementedError):
-    """Raised when the configured backend does not implement MessagingBackendMixin."""
-
-
 class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     """
     Mixin providing messaging and queue backend integration for implementations that support Pub/Sub
@@ -66,7 +62,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :rtype: int
         """
         return await backend.publish(
-            channel=cls.get_schema_name(),
+            channel=await cls.get_schema_name(),
             record=record,
         )
 
@@ -90,7 +86,9 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
                          the channel.
         :type callback: Callable[[T], Awaitable[None]]
         """
-        async with backend.subscribe(cls.get_schema_name(), record_class=cls) as pub:
+        async with backend.subscribe(
+            await cls.get_schema_name(), record_class=cls
+        ) as pub:
             async for record in pub:
                 await as_coroutine(callback, record)
 
@@ -113,7 +111,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
             passed to the callback is an instance of the record matching the subscribed patterns.
         :return: This method does not return any value.
         """
-        pattern_set = {cls.get_schema_name(), *patterns}
+        pattern_set = {await cls.get_schema_name(), *patterns}
         async with backend.psubscribe(*pattern_set, record_class=cls) as pub:
             async for record in pub:
                 await as_coroutine(callback, record)
@@ -140,7 +138,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :rtype: int
         """
         return await backend.push(
-            cls.get_schema_name(),
+            await cls.get_schema_name(),
             *instances,
             side=side,
         )
@@ -173,7 +171,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :rtype: Optional[T]
         """
         return await backend.pop(
-            cls.get_schema_name(),
+            await cls.get_schema_name(),
             record_class=cls,
             timeout=timeout,
             side=side,
@@ -212,7 +210,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
             Empty if the timeout expired before any item arrived.
         """
         return await backend.pop_many(
-            cls.get_schema_name(),
+            await cls.get_schema_name(),
             record_class=cls,
             limit=limit,
             timeout=timeout,
@@ -230,7 +228,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :param instance: The instance to be enqueued.
         :return: An integer representing the result of the enqueue operation.
         """
-        return await backend.enqueue(cls.get_schema_name(), instance)
+        return await backend.enqueue(await cls.get_schema_name(), instance)
 
     @classmethod
     @ensure_pushpop
@@ -252,7 +250,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :rtype: Optional[T]
         """
         return await backend.dequeue(
-            cls.get_schema_name(),
+            await cls.get_schema_name(),
             record_class=cls,
             timeout=timeout,
         )
@@ -261,7 +259,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     @ensure_pushpop
     async def queue_length(cls, backend: B) -> int:
         """Return the number of items currently in the queue for this model identity."""
-        return await backend.queue_length(cls.get_schema_name())
+        return await backend.queue_length(await cls.get_schema_name())
 
     @classmethod
     @ensure_pushpop
@@ -273,7 +271,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> List[T]:
         """Return a slice of the queue with items deserialized into model instances."""
         return await backend.queue_range(
-            cls.get_schema_name(),
+            await cls.get_schema_name(),
             record_class=cls,
             start=start,
             stop=stop,
@@ -296,7 +294,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> str:
         """Appends a record to the model's append-only stream log."""
         return await backend.stream_append(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             record=record,
             max_len=max_len,
             approximate_trim=approximate_trim,
@@ -312,7 +310,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> None:
         """Ensures a consumer group namespace exists for this stream log."""
         await backend.stream_ensure_consumer_group(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             group_name=group_name,
             start_from=start_from,
         )
@@ -329,7 +327,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> List[StreamEntry[T]]:
         """Reads undelivered or pending entries from the stream for a consumer group."""
         return await backend.stream_read(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             group_name=group_name,
             record_class=cls,
             consumer_id=consumer_id,
@@ -347,7 +345,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> int:
         """Acknowledges processed entries, advancing the consumer group offset."""
         return await backend.stream_ack(
-            cls.get_schema_name(),
+            await cls.get_schema_name(),
             group_name,
             *entry_ids,
         )
@@ -364,7 +362,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> List[StreamEntry[T]]:
         """Claims orphaned pending stream entries from crashed workers."""
         return await backend.stream_claim_pending(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             group_name=group_name,
             consumer_id=consumer_id,
             record_class=cls,
@@ -376,7 +374,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     @ensure_streaming
     async def stream_length(cls, backend: B) -> int:
         """Returns the total number of entries currently stored in the stream log."""
-        return await backend.stream_length(cls.get_schema_name())
+        return await backend.stream_length(await cls.get_schema_name())
 
     @classmethod
     @ensure_streaming
@@ -388,7 +386,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> int:
         """Trims the stream log to at most `max_len` entries."""
         return await backend.stream_trim(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             max_len=max_len,
             approximate=approximate,
         )
@@ -397,7 +395,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     @ensure_streaming
     async def stream_delete(cls, backend: B) -> bool:
         """Deletes the entire stream log and purges associated consumer group states."""
-        return await backend.stream_delete(cls.get_schema_name())
+        return await backend.stream_delete(await cls.get_schema_name())
 
     @classmethod
     @ensure_streaming
@@ -411,7 +409,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     ) -> List[T]:
         """Reads and automatically acknowledges entries in a single call (At-Most-Once)."""
         return await backend.stream_read_and_ack(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             group_name=group_name,
             record_class=cls,
             consumer_id=consumer_id,
@@ -423,7 +421,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     @ensure_streaming
     async def stream_length(cls, backend: B) -> int:
         """Returns the total number of entries currently stored in the stream log."""
-        return await backend.stream_length(cls.get_schema_name())
+        return await backend.stream_length(await cls.get_schema_name())
 
     @classmethod
     @ensure_streaming
@@ -442,7 +440,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :return: Total number of evicted entries.
         """
         return await backend.stream_trim(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             max_len=max_len,
             approximate=approximate,
         )
@@ -451,7 +449,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
     @ensure_streaming
     async def stream_delete(cls, backend: B) -> bool:
         """Deletes the entire stream log and purges associated consumer group states."""
-        return await backend.stream_delete(cls.get_schema_name())
+        return await backend.stream_delete(await cls.get_schema_name())
 
     @classmethod
     @ensure_streaming
@@ -474,7 +472,7 @@ class MessagingBackendIntegrationMixin(BackendConnectionIntegrationMixin):
         :return: List of deserialized model instances directly.
         """
         return await backend.stream_read_and_ack(
-            stream_key=cls.get_schema_name(),
+            stream_key=await cls.get_schema_name(),
             group_name=group_name,
             record_class=cls,
             consumer_id=consumer_id,

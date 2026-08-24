@@ -53,8 +53,8 @@ class PipelineWrapper:
         {
             "message_type": "pipeline_signal",
             "kwargs": {
-                "sender":     <sender class>,
-                "signal":     <SoftSignal instance>,   ← required by construct_signal()
+                "sender": <sender class>,
+                "signal": <SoftSignal instance>, ← required by construct_signal()
                 ...original signal kwargs...
             },
             "wrapper_id": str,

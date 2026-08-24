@@ -10,7 +10,7 @@ from redis.exceptions import (
     AuthenticationError,
 )
 
-from volnux.backends.connection import BackendConnectorBase, ConnectionError
+from volnux.backends.connection import BackendConnectorBase
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,9 @@ class RedisConnector(BackendConnectorBase[Redis]):
         ...     connector.cursor.set("key", "value")
         ...     value = connector.cursor.get("key")
     """
+
+    # uri scheme
+    scheme = "redis"
 
     def __init__(
         self,

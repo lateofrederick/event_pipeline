@@ -1,4 +1,4 @@
-from volnux.cli.command.mixin import SubCommandMixin
+from volnux.cli.command.mixins import SubCommandMixin
 from volnux.cli.command.base import CommandCategory, BaseCommand
 from volnux.cli.command.builtins.workflow.subcommands import (
     InitWorkflowCommand,

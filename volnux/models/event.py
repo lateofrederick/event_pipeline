@@ -3,10 +3,9 @@ from typing import Any, Dict, Optional
 
 from formax import MiniAnnotated, Attrib, InitStrategy
 
-from volnux.backends.formax_fk import (
+from volnux.backends.fields import (
     ForeignKeyField,
     FKConfig,
-    ForeignKey,
     OnDelete,
     FKConstraint,
 )
@@ -23,7 +22,7 @@ class Event(GovernanceModel):
     Reverse Relations:
         versions     — Version history
         dependencies — Events that depend on this event
-        dependents   — Events this event depends on
+        dependents — Events this event depends on
     """
 
     name: MiniAnnotated[str, Attrib(min_length=1, max_length=255)]

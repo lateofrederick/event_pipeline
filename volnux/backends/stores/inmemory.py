@@ -1,5 +1,4 @@
 import copy
-import threading
 import typing
 
 from volnux.backends.store import KeyValueStoreBackendBase
@@ -9,6 +8,10 @@ from volnux.backends.messaging.stores.inmemory import (
     InMemoryPushPopMixin,
 )
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError
+
+if typing.TYPE_CHECKING:
+    from volnux.result import ResultStream
+    from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
 class DummyConnector(BackendConnectorBase):
@@ -87,7 +90,7 @@ class InMemoryKeyValueStoreBackend(
 
     def __init__(self, namespace_prefix: typing.Optional[str] = None, **_: typing.Any):
         super().__init__(namespace_prefix)
-        self._storage: typing.Dict[str, typing.Dict[str, typing.Any]] = {}
+        self._storage: typing.Dict[str, typing.Dict[str, KeyValueStoreBackendBase]] = {}
 
         # Initialize messaging mixins
         self.__post_init_pubsub__()
@@ -125,26 +128,24 @@ class InMemoryKeyValueStoreBackend(
         self,
         schema_name: str,
         record_key: str,
-        record: typing.Any,
+        record: "KeyValueStoreIntegrationMixin",
         ttl: typing.Optional[int] = None,
     ) -> None:
         del ttl
         with self._acquire_lock():
             bucket = self._get_schema_bucket(schema_name)
-            if record_key in bucket:
-                raise ObjectExistError(
-                    f"Record '{record_key}' already exists in schema '{schema_name}'"
-                )
-            bucket[record_key] = copy.deepcopy(record)
+            bucket[record_key] = record
 
-    def update(self, schema_name: str, record_key: str, record: typing.Any) -> None:
+    def update(
+        self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> None:
         with self._acquire_lock():
             bucket = self._get_schema_bucket(schema_name)
             if record_key not in bucket:
                 raise ObjectDoesNotExist(
                     f"Record '{record_key}' does not exist in schema '{schema_name}'"
                 )
-            bucket[record_key] = copy.deepcopy(record)
+            bucket[record_key] = record
 
     def delete(self, schema_name: str, record_key: str) -> None:
         with self._acquire_lock():
@@ -159,8 +160,8 @@ class InMemoryKeyValueStoreBackend(
         self,
         schema_name: str,
         record_key: typing.Union[str, int],
-        record_klass: typing.Type[typing.Any],
-    ) -> typing.Optional[typing.Any]:
+        record_klass: typing.Type["KeyValueStoreIntegrationMixin"],
+    ) -> "KeyValueStoreIntegrationMixin":
         del record_klass
         with self._acquire_lock():
             bucket = self._get_schema_bucket(schema_name)
@@ -168,43 +169,44 @@ class InMemoryKeyValueStoreBackend(
                 raise ObjectDoesNotExist(
                     f"Record '{record_key}' does not exist in schema '{schema_name}'"
                 )
-            return copy.deepcopy(bucket[str(record_key)])
+            return bucket[str(record_key)]
 
     def filter(
         self,
         schema_name: str,
-        record_klass: typing.Type[typing.Any],
+        record_klass: typing.Type["KeyValueStoreIntegrationMixin"],
         limit: typing.Optional[int] = None,
         offset: typing.Optional[int] = None,
         order_by: typing.Optional[str] = None,
         **filter_kwargs: typing.Any,
-    ) -> typing.Iterable[typing.Any]:
-        del record_klass
+    ) -> "ResultStream[KeyValueStoreIntegrationMixin]":
         predicate = self.create_filter_predicate(**filter_kwargs)
-        with self._acquire_lock():
-            bucket = self._get_schema_bucket(schema_name)
-            return [
-                copy.deepcopy(value) for value in bucket.values() if predicate(value)
-            ]
+
+        keys = []
+        bucket = self._get_schema_bucket(schema_name)
+        for key, record in bucket.items():
+            if predicate(record):
+                keys.append(key)
+
+        return self._create_result_stream(record_keys=keys, record_klass=record_klass)
 
     def count(
         self,
         schema_name: str,
-        record_klass: typing.Optional[typing.Type[typing.Any]] = None,
+        record_klass: typing.Type["KeyValueStoreIntegrationMixin"],
         **filter_kwargs: typing.Any,
     ) -> int:
-        del record_klass
         return len(
-            list(
-                self.filter(
-                    schema_name,
-                    typing.cast(typing.Type[typing.Any], object),
-                    **filter_kwargs,
-                )
+            self.filter(
+                schema_name,
+                record_klass,
+                **filter_kwargs,
             )
         )
 
-    def reload(self, schema_name: str, record: typing.Any) -> typing.Any:
+    def reload(
+        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> typing.Any:
         fresh = self.get(schema_name, record.id, record.__class__)
         record.__dict__.update(fresh.__dict__)
         return record
@@ -213,7 +215,7 @@ class InMemoryKeyValueStoreBackend(
         self,
         schema_name: str,
         record_keys: typing.List[str],
-        record_klass: typing.Type[typing.Any],
+        record_klass: typing.Type["KeyValueStoreIntegrationMixin"],
     ) -> typing.List[typing.Any]:
         results: typing.List[typing.Any] = []
         for record_key in record_keys:
@@ -223,6 +225,8 @@ class InMemoryKeyValueStoreBackend(
                 continue
         return results
 
-    def clear_schema(self, schema_name: str) -> None:
+    def bulk_delete(self, schema_name: str, record_keys: typing.List[str]) -> None:
         with self._acquire_lock():
+            for record_key in record_keys:
+                self._storage[schema_name].pop(record_key, None)
             self._storage.pop(schema_name, None)

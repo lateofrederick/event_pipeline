@@ -1,3 +1,4 @@
+import enum
 from datetime import datetime, timezone
 from dataclasses import dataclass, field, InitVar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -184,24 +185,46 @@ class SwitchTask(Exception):
 
 class SuspendTask(Exception):
     """
-    Represents an exception that is raised when a task is suspended
-    to allow for the execution of higher-priority tasks.
+    Represents an exception that is raised when a task is suspended.
 
     This exception is intended to be used in systems where task
-    prioritization is critical. It carries information about the
-    specific task instance that has been suspended.
+    prioritization, cancellation, or external coordination requires a
+    task to pause and be resumed or re-queued later. It carries
+    information about the specific task instance that has been
+    suspended, why it was suspended, and any data needed to resume it.
 
     :ivar task_instance: The task instance associated with the suspension.
     :type task_instance: BaseEvent
+    :ivar suspension_type: The reason the task was suspended.
+    :type suspension_type: Optional[SuspensionType]
+    :ivar suspension_data: Additional data needed to resume the task.
+    :type suspension_data: object
     """
+
+    class SuspensionType(enum.Enum):
+        """Reason a task was suspended via SuspendTask"""
+
+        PREEMPTION = "preemption"
+        CANCELLATION = "cancellation"
+        HITL = "hitl"
+        EXTERNAL_EVENT = "external_event"
+        CONDITION = "condition"
 
     def __init__(
         self,
         task_instance: "BaseEvent",
+        *,
+        suspension_type: Optional[SuspensionType] = None,
+        suspension_data: object = None,
         message: str = "Task suspended for higher priority execution",
     ):
         self.task_instance = task_instance
+        self.suspension_type = suspension_type  # type: ignore[misc]
+        self.suspension_data = suspension_data
         super().__init__(message)
+
+    def get_phase(self):
+        return getattr(self.task_instance, "_phase", "Unknown")
 
 
 class SkipExecutionError(Exception):
@@ -266,7 +289,14 @@ class ExternalCommunicationSuspensionRequest(SuspendTask):
     )
 
     def __post_init__(self, task: "BaseEvent") -> None:
-        super().__init__(task, message=self.message)
+        # request_type is an ExternalCommunicationType, imported only under
+        # TYPE_CHECKING to avoid a circular import with volnux.mixins.event.external
+        suspension_type = (
+            SuspensionType.HITL
+            if getattr(self.request_type, "value", None) == "hitl"
+            else SuspensionType.EXTERNAL_EVENT
+        )
+        super().__init__(task, suspension_type=suspension_type, message=self.message)
 
 
 class TaskSwitchingError(PipelineError):

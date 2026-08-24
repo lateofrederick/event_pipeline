@@ -165,7 +165,7 @@ class ConfigEntry:
             signer = self._create_signer(key_pem=private_key_pem)
 
         self.signature = signer.sign(self._signing_payload())
-        return self.signature
+        return self.signature  # type: ignore
 
     def validate(self, signer: Optional[Signer] = None) -> bool:
         """
@@ -312,8 +312,8 @@ class VolnuxConfig:
         return instance
 
     def to_json(self) -> str:
-        """Serializes active configuration state to a JSON string."""
-        return json.dumps(self.to_dict())
+        """Serializes the active configuration state to a JSON string."""
+        return json.dumps(self.to_dict()).decode("utf-8")
 
     @classmethod
     def from_json(cls, json_str: str) -> "VolnuxConfig":
@@ -452,7 +452,7 @@ class VolnuxConfig:
             return self._store
 
         try:
-            return get_store(namespace).get_entry_by_hash(hash(key))
+            return get_store(namespace).get_entry_by_identity(f"hash:{hash(key)}")
         except KeyError:
             pass
 

@@ -31,7 +31,7 @@ from volnux.mixins.event import (
     RetryPolicy,
     ExecutorInitializerMixin,
     ExecutorInitializerConfig,
-    EventCheckPointingMixin,
+    EventCheckpointingMixin,
     EventCommandMixin,
     ExternalCommunicationMixin,
 )
@@ -54,6 +54,9 @@ _event_registry = Registry()
 
 
 if typing.TYPE_CHECKING:
+    from volnux.flows.bridge.communications.tasks.channels.base import (
+        CommandChannelBase,
+    )
     from volnux.execution.context import ExecutionContext
     from volnux.signal.handlers.event_initialiser import EventInitKwargs
 
@@ -221,7 +224,7 @@ class EventMeta(abc.ABCMeta):
 class EventBase(
     RetryMixin,
     ExecutorInitializerMixin,
-    EventCheckPointingMixin,
+    EventCheckpointingMixin,
     EventCommandMixin,
     ExternalCommunicationMixin,
     metaclass=EventMeta,

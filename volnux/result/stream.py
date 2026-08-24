@@ -1,13 +1,22 @@
 import logging
 import math
 import typing
+import asyncio
 import itertools
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from typing import Any, Callable, List, Optional, Tuple, AsyncIterator, Set, Type
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.backends.stores.inmemory import InMemoryKeyValueStoreBackend
 from volnux.mixins import KeyValueStoreIntegrationMixin
+from volnux.backends.messaging.util import _BLOCKING_EXECUTOR as _STREAM_EXECUTOR
+from volnux.backends.q_compiler import (
+    create_q_predicate,
+    create_filter_predicate,
+    resolve_field_value,
+)
 
 try:
     from typing import TypeAlias  # noqa: F401
@@ -21,6 +30,40 @@ logger = logging.getLogger(__name__)
 T = typing.TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 
 Result: TypeAlias = typing.Hashable  # Placeholder for a Result type
+
+
+class _ReverseComparable:
+    """Wrapper that inverts comparison operators for descending sort."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def __lt__(self, other: Any) -> bool:
+        if isinstance(other, _ReverseComparable):
+            return self._value > other._value
+        return NotImplemented
+
+    def __le__(self, other: Any) -> bool:
+        if isinstance(other, _ReverseComparable):
+            return self._value >= other._value
+        return NotImplemented
+
+    def __gt__(self, other: Any) -> bool:
+        if isinstance(other, _ReverseComparable):
+            return self._value < other._value
+        return NotImplemented
+
+    def __ge__(self, other: Any) -> bool:
+        if isinstance(other, _ReverseComparable):
+            return self._value <= other._value
+        return NotImplemented
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, _ReverseComparable):
+            return self._value == other._value
+        return NotImplemented
 
 
 @dataclass(frozen=True)
@@ -46,11 +89,9 @@ class Q:
     def __invert__(self) -> "Q":
         return Q(*self.children, _connector=self.connector, _negated=not self.negated)
 
-    def to_predicate(
-        self, backend: "KeyValueStoreBackendBase"
-    ) -> typing.Callable[[typing.Any], bool]:
+    def to_predicate(self) -> typing.Callable[[typing.Any], bool]:
         """Convert a Q object to a predicate function using backend's operators."""
-        return backend._create_complex_filter([self])
+        return create_q_predicate([self])
 
     def to_filter_kwargs(self) -> typing.Dict[str, typing.Any]:
         """Attempt to convert simple Q objects back to filter kwargs.
@@ -102,6 +143,7 @@ class ResultStream(typing.Generic[T]):
     model_klass: typing.Type[T]
     transaction_id: str
     chunk_size: int = 100
+    memory_capacity: int = 100
     memory_backend: typing.Optional[KeyValueStoreBackendBase] = field(
         default=None, repr=False
     )
@@ -116,116 +158,218 @@ class ResultStream(typing.Generic[T]):
         default_factory=list, repr=False
     )
     _q_objects: typing.List[Q] = field(default_factory=list, repr=False)
+    _access_order: OrderedDict[str, None] = field(
+        default_factory=OrderedDict, repr=False, init=False
+    )
 
     def __post_init__(self) -> None:
         if self.chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}")
 
-        if self.memory_backend is None:
+        if self.memory_capacity > 0:
             self.memory_backend = InMemoryKeyValueStoreBackend(
                 namespace_prefix=self.transaction_id
             )
+        # memory_capacity == 0 → no memory backend, no caching
 
+    async def _cache_get(self, schema: str, record_id: str) -> Optional[T]:
+        """Get from memory backend + update LRU access order."""
+        if self.memory_backend is None:
+            return None
+
+        instance = typing.cast(
+            T,
+            await self._run_sync(
+                self.memory_backend.get, schema, record_id, self.model_klass
+            ),
+        )
+        # Move to end (most recently used)
+        self._access_order.move_to_end(record_id)
+        return instance
+
+    async def _cache_put(self, schema: str, record_id: str, instance: T) -> None:
+        """Put into memory backend with LRU eviction when at capacity."""
+        if self.memory_backend is None or self.memory_capacity <= 0:
+            return
+
+        # Evict LRU entries if at capacity, and this is a new key
+        if (
+            record_id not in self._access_order
+            and len(self._access_order) >= self.memory_capacity
+        ):
+            evict_key, _ = self._access_order.popitem(last=False)
+            try:
+                await self._run_sync(self.memory_backend.delete, schema, evict_key)
+            except Exception:
+                pass
+
+        await self._run_sync(self.memory_backend.upsert, schema, record_id, instance)
+        self._access_order[record_id] = None
+        self._access_order.move_to_end(record_id)
+
+    async def _cache_delete(self, schema: str, record_id: str) -> None:
+        if self.memory_backend is None:
+            return
+        await self._run_sync(self.memory_backend.delete, schema, record_id)
+        self._access_order.pop(record_id, None)
+
+    async def _cache_clear(self, schema: str) -> None:
+        if self.memory_backend is None:
+            return
+        await self._run_sync(self.memory_backend.clear_schema, schema)
+        self._access_order.clear()
+
+    @classmethod
+    async def _run_sync(
+        cls, func: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
+        """Offload a sync backend method to the stream executor."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _STREAM_EXECUTOR, lambda: func(*args, **kwargs)
+        )
+
+    async def _ensure_persisted_backend(self) -> Optional["KeyValueStoreBackendBase"]:
+        """Lazily initialize persisted backend via async get_backend()."""
         if self.persisted_backend is None:
             try:
-                self.persisted_backend = self.model_klass.get_backend()
-            except Exception:
-                self.persisted_backend = None
+                self.persisted_backend = await self.model_klass.get_backend()
+            except Exception as e:
+                logger.debug(
+                    "Could not init persisted backend for %s: %s",
+                    self.model_klass.__name__,
+                    e,
+                )
+        return self.persisted_backend
+
+    async def _schema_name(self) -> str:
+        """Async schema name resolution (calls await get_backend() internally)."""
+        if self.persisted_backend:
+            return self.persisted_backend.resolve_physical_target(
+                self.model_klass.get_storage_route()
+            )
+        return await self.model_klass.get_schema_name()
+
+    def no_cache(self) -> "ResultStream[T]":
+        """Return a new stream with caching disabled."""
+        return ResultStream._make(
+            model_klass=self.model_klass,
+            transaction_id=self.transaction_id,
+            keys=self._keys,
+            predicates=self._predicates,
+            chunk_size=self.chunk_size,
+            memory_capacity=0,
+            persisted_backend=self.persisted_backend,
+            q_predicates=self._q_objects,
+        )
 
     @classmethod
     def _make(
         cls,
-        model_klass: typing.Type[T],
+        model_klass: Type[T],
         transaction_id: str,
-        keys: typing.List[str],
-        predicates: typing.List[typing.Callable[[T], bool]],
+        keys: List[str],
+        predicates: List[Callable[[T], bool]],
         chunk_size: int,
-        memory_backend: typing.Optional[KeyValueStoreBackendBase],
-        persisted_backend: typing.Optional[KeyValueStoreBackendBase],
-        q_predicates: typing.Optional[typing.List[Q]] = None,
+        memory_capacity: int,
+        persisted_backend: Optional["KeyValueStoreBackendBase"],
+        q_predicates: Optional[List["Q"]] = None,
     ) -> "ResultStream[T]":
-        """Internal factory that bypasses add() for bulk key assignment."""
-        if memory_backend is None:
-            memory_backend = InMemoryKeyValueStoreBackend(
-                namespace_prefix=transaction_id
-            )
-
         stream: ResultStream[T] = cls.__new__(cls)
         stream.model_klass = model_klass
         stream.transaction_id = transaction_id
         stream.chunk_size = chunk_size
-        stream.memory_backend = memory_backend
+        stream.memory_capacity = memory_capacity
         stream.persisted_backend = persisted_backend
         stream._keys = list(keys)
         stream._key_set = set(keys)
         stream._predicates = list(predicates)
-        stream._q_predicates = list(q_predicates or [])
+        stream._q_objects = list(q_predicates or [])
+        stream.memory_backend = (
+            InMemoryKeyValueStoreBackend(namespace_prefix=transaction_id)
+            if memory_capacity > 0
+            else None
+        )
+        stream._access_order = OrderedDict()
         return stream
 
-    def _schema_name(self) -> str:
-        return self.model_klass.get_schema_name()
-
-    def _memory_get_or_none(self, record_id: str) -> typing.Optional[T]:
+    async def _memory_get_or_none(self, record_id: str) -> Optional[T]:
         try:
-            return typing.cast(
-                T,
-                self.memory_backend.get(
-                    self._schema_name(), record_id, self.model_klass
-                ),
-            )
-        except Exception as e:
-            logger.debug("Failed to fetch %s: %s", record_id, e)
+            schema = await self._schema_name()
+            return await self._cache_get(schema, record_id)
+        except Exception:
             return None
 
-    def _persisted_get_or_none(self, record_id: str) -> typing.Optional[T]:
-        if self.persisted_backend is None:
+    async def _persisted_get_or_none(self, record_id: str) -> Optional[T]:
+        backend = await self._ensure_persisted_backend()
+        if backend is None:
             return None
         try:
+            schema = await self._schema_name()
             return typing.cast(
                 T,
-                self.persisted_backend.get(
-                    self._schema_name(), record_id, self.model_klass
-                ),
+                await self._run_sync(backend.get, schema, record_id, self.model_klass),
             )
         except Exception:
             return None
 
-    def add(self, instance: T, persist: typing.Optional[bool] = None) -> None:
+    async def add(self, instance: T, persist: Optional[bool] = None) -> None:
         """
-        Adds an instance to the stream.
+        Adds an instance to the cache and optionally persists it to a backend.
 
-        The result is always written to the in-memory tier first.
-        If `persist` is True, or the instance advertises `is_persisted=True`,
-        it is also mirrored to the durable backend.
+        This method adds a given instance to a cache, keyed by its ID. Depending
+        on the provided persist flag or the instance's `is_persisted` attribute,
+        the instance may also be persisted to a backend. If the instance is new
+        to the key set, it will be added to internal tracking structures.
+
+        :param instance: The instance to be added to the cache.
+        :param persist: Optional boolean flag indicating whether the instance
+            should be persisted. If None, the instance's `is_persisted` attribute
+            will be used to determine persistence behavior.
+        :return: None
         """
-        key: str = instance.id
+        key = instance.id
+        schema = await self._schema_name()
+
+        await self._cache_put(schema, key, instance)
+
         should_persist = (
             persist if persist is not None else getattr(instance, "is_persisted", False)
         )
-
-        self.memory_backend.upsert(self._schema_name(), key, instance)
-
-        if should_persist and self.persisted_backend is not None:
-            self.persisted_backend.upsert(self._schema_name(), key, instance)
-            if hasattr(instance, "is_persisted"):
-                instance.is_persisted = True
+        if should_persist:
+            backend = await self._ensure_persisted_backend()
+            if backend is not None:
+                await self._run_sync(backend.upsert, schema, key, instance)
+                if hasattr(instance, "is_persisted"):
+                    instance.is_persisted = True
 
         if key not in self._key_set:
             self._keys.append(key)
             self._key_set.add(key)
 
-    def persist(self, instance: T) -> None:
-        """Persist an already tracked instance to the durable backend."""
-        if self.persisted_backend is None:
-            raise RuntimeError(
-                f"No persisted backend configured for {self.model_klass.__name__}"
-            )
+    async def persist(self, instance: T) -> None:
+        """
+        Persist an instance into the backend storage after ensuring that the backend is
+        properly initialized and persisted. This includes upserting the instance data
+        into the backend, updating the cache, and tracking the instance's key. If the
+        instance has an attribute `is_persisted`, it will be updated to `True`.
 
-        self.persisted_backend.upsert(self._schema_name(), instance.id, instance)
+        :param instance: The instance to be persisted into the storage.
+        :type instance: T
+        :return: None
+        :rtype: None
+        :raises RuntimeError: If no persisted backend is initialized for the model class.
+        """
+        backend = await self._ensure_persisted_backend()
+        if backend is None:
+            raise RuntimeError(f"No persisted backend for {self.model_klass.__name__}")
+
+        schema = await self._schema_name()
+        await self._run_sync(backend.upsert, schema, instance.id, instance)
+        await self._cache_put(schema, instance.id, instance)
+
         if hasattr(instance, "is_persisted"):
             instance.is_persisted = True
-        self.memory_backend.upsert(self._schema_name(), instance.id, instance)
-
         if instance.id not in self._key_set:
             self._keys.append(instance.id)
             self._key_set.add(instance.id)
@@ -240,18 +384,17 @@ class ResultStream(typing.Generic[T]):
             >>> stream.filter(status__in=["active", "pending"])
             >>> stream.filter(created_at__gte=datetime(2023, 1, 1))
         """
-
-        backend = self.persisted_backend or self.memory_backend
-        new_predicate: typing.Callable[[T], bool] = backend._create_filter_predicate(
+        new_predicate: typing.Callable[[T], bool] = create_filter_predicate(
             **filter_kwargs
         )
+
         return ResultStream._make(
             model_klass=self.model_klass,
             transaction_id=self.transaction_id,
             keys=self._keys,
             predicates=self._predicates + [new_predicate],
             chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
+            memory_capacity=10,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects,
         )
@@ -267,7 +410,7 @@ class ResultStream(typing.Generic[T]):
             keys=self._keys,
             predicates=self._predicates + [predicate],
             chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
+            memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects,
         )
@@ -300,71 +443,88 @@ class ResultStream(typing.Generic[T]):
                 keys=self._keys[i : i + shard_size],
                 predicates=self._predicates,
                 chunk_size=self.chunk_size,
-                memory_backend=self.memory_backend,
+                memory_capacity=self.memory_capacity,
                 persisted_backend=self.persisted_backend,
                 q_predicates=self._q_objects,
             )
 
-    def first(self) -> typing.Optional[T]:
-        """Returns the first filtered result, or None if the stream is empty."""
-        return next(iter(self), None)
+    def exists(self):
+        """
+        Checks whether the object contains any elements or not.
 
-    def has_results(self) -> bool:
-        """Returns True if at least one object survives the filter pipeline."""
-        try:
-            next(iter(self))
-            return True
-        except StopIteration:
-            return False
+        This method evaluates if the current object has a non-zero
+        size or length, indicating the existence of elements.
+
+        :return: True if the object contains one or more elements,
+            False otherwise.
+        :rtype: bool
+        """
+        return len(self) > 0
+
+    async def first(self) -> Optional[T]:
+        """
+        Iterates over an asynchronous iterable and returns the first item if available. If the
+        iterable is empty, returns None.
+
+        :return: The first item of the asynchronous iterable if available, otherwise None.
+        :rtype: Optional[T]
+        """
+        async for obj in self:
+            return obj
+        return None
+
+    async def has_results(self) -> bool:
+        """
+        Determines whether there are any results available by evaluating the first result.
+
+        This asynchronous method checks if the first result exists, and returns a boolean
+        indicating the presence of results.
+
+        :return: Boolean indicating whether any results exist.
+        :rtype: bool
+        """
+        return (await self.first()) is not None
 
     def __len__(self) -> int:
         """Returns the number of tracked IDs before filtering."""
         return len(self._keys)
 
-    def _fetch_batch(
-        self, batch_ids: typing.List[str]
-    ) -> typing.Generator[T, typing.Any, None]:
-        """
-        Resolves a batch using memory-first lookup and persisted fallback.
-
-        :param batch_ids: A list of unique identifiers corresponding to the instances to
-            retrieve.
-        :return: A generator that yields resolved instances of type `T`.
-        """
+    async def _fetch_batch(self, batch_ids: List[str]) -> List[T]:
+        """Resolve a batch: memory-first, persisted fallback, cache on hit."""
+        results: List[T] = []
+        schema = await self._schema_name()
 
         for rid in batch_ids:
-            try:
-                instance = self._memory_get_or_none(rid)
-                if instance is None:
-                    instance = self._persisted_get_or_none(rid)
-                    if instance is not None:
-                        self.memory_backend.upsert(self._schema_name(), rid, instance)
+            instance = await self._memory_get_or_none(rid)
 
+            if instance is None:
+                instance = await self._persisted_get_or_none(rid)
                 if instance is not None:
-                    yield instance
-            except Exception:
-                logger.exception(
-                    "Failed to fetch %s(id=%r) from stream storage; skipping.",
-                    self.model_klass.__name__,
-                    rid,
-                )
+                    try:
+                        await self._cache_put(schema, rid, instance)
+                    except Exception:
+                        pass
 
-    def evict_memory(self, record_id: typing.Optional[str] = None) -> None:
+            if instance is not None:
+                results.append(instance)
+
+        return results
+
+    async def evict_memory(self, record_id: Optional[str] = None) -> None:
         """Evict one or all in-memory copies without touching durable storage."""
+        schema = await self._schema_name()
+
         if record_id is not None:
             try:
-                self.memory_backend.delete(self._schema_name(), record_id)
+                await self._cache_delete(schema, record_id)
             except Exception as e:
                 logger.debug("Failed to evict %s: %s", record_id, e)
-                return
-            return
-
-        for rid in list(self._keys):
-            try:
-                self.memory_backend.delete(self._schema_name(), rid)
-            except Exception as e:
-                logger.debug("Failed to evict %s: %s", rid, e)
-                continue
+        else:
+            for rid in self._keys:
+                try:
+                    await self._cache_delete(schema, rid)
+                except Exception as e:
+                    logger.debug("Failed to evict %s: %s", rid, e)
 
     def q_filter(self, q_object: Q) -> "ResultStream[T]":
         """
@@ -375,8 +535,7 @@ class ResultStream(typing.Generic[T]):
             stream.q_filter(~Q(is_deleted=True) & Q(active=True))
         """
 
-        backend = self.persisted_backend or self.memory_backend
-        new_predicate = q_object.to_predicate(backend)
+        new_predicate = q_object.to_predicate()
 
         return ResultStream._make(
             model_klass=self.model_klass,
@@ -384,228 +543,240 @@ class ResultStream(typing.Generic[T]):
             keys=self._keys,
             predicates=self._predicates + [new_predicate],
             chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
+            memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects + [q_object],
         )
 
-    def order_by(self, *fields: str) -> "ResultStream[T]":
-        """
-        Order results by given fields. Prefix with '-' for descending.
-        Forces evaluation to determine order, but keeps objects lazy.
+    async def order_by(self, *fields: str) -> "ResultStream[T]":
+        """Order results by given fields. Prefix with '-' for descending.
+
+        Forces full evaluation to determine sort order. Returns a new stream
+        with sorted keys and cleared predicates (pre-filtered).
 
         Examples:
-            stream.order_by('-age', 'name')
-            stream.filter(status="active").order_by('created_at')
+            await stream.order_by('-age', 'name')
+            await stream.filter(status="active").order_by('created_at')
         """
         if not fields:
             return self
 
-        # Evaluate to get sorted IDs
-        results_with_keys = []
-        for obj in self:
-            sort_keys = []
-            for field in fields:
-                reverse = field.startswith("-")
-                field_name = field.lstrip("-")
+        # Parse field specs once before iteration
+        sort_specs: List[Tuple[str, bool]] = []  # (field_path, descending)
+        for fd in fields:
+            descending = fd.startswith("-")
+            field_path = fd.lstrip("-")
+            sort_specs.append((field_path, descending))
 
-                # Handle nested attributes
-                value = obj
-                for part in field_name.split("__"):
-                    value = getattr(value, part, None)
-                    if value is None:
-                        break
+        results_with_keys: List[Tuple[Tuple[Any, ...], str]] = []
+        async for obj in self:
+            sort_key_parts: List[Any] = []
+            for field_path, descending in sort_specs:
+                value, found = resolve_field_value(obj, field_path)
 
-                # Make sortable: None values sort last
-                sort_keys.append((value is None, value or ""))
+                # Sort tuple: (is_none, is_descending, value)
+                # - None always sorts last regardless of direction
+                # - is_descending inverts comparison via negation wrapper
+                if not found or value is None:
+                    sort_key_parts.append((True, False, ""))
+                else:
+                    sort_key_parts.append((False, descending, value))
 
-            results_with_keys.append((tuple(sort_keys), obj.id))
+            results_with_keys.append((tuple(sort_key_parts), obj.id))
 
-        # Sort by the composite key
-        results_with_keys.sort(key=lambda x: x[0])
+        # Sort with proper descending support per field
+        def sort_key(entry: Tuple[Tuple[Any, ...], str]) -> Tuple[Any, ...]:
+            parts = entry[0]
+            result = []
+            for is_none, descending, value in parts:
+                if is_none:
+                    # None sorts last: use max possible sentinel
+                    result.append((1,))
+                elif descending:
+                    # For descending, we invert comparable values.
+                    # Wrap in a reverse-comparable container.
+                    result.append((0, _ReverseComparable(value)))
+                else:
+                    result.append((0, value))
+            return tuple(result)
 
+        results_with_keys.sort(key=sort_key)
         sorted_keys = [rid for _, rid in results_with_keys]
 
         return ResultStream._make(
             model_klass=self.model_klass,
             transaction_id=self.transaction_id,
             keys=sorted_keys,
-            predicates=[],  # Pre-filtered
+            predicates=[],  # Pre-filtered during materialization
             chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
+            memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
-            q_predicates=[],
+            q_predicates=[],  # Pre-filtered during materialization
         )
 
-    def count(self) -> int:
-        """Count filtered results without loading all objects."""
-        count = 0
-        for _ in self:
-            count += 1
-        return count
+    async def count(self) -> int:
+        """
+        Counts the number of items in the stream. This method is more computationally
+        expensive than directly using the length of the stream (e.g., len(stream)),
+        because it queries the underlying backend.
 
-    def aggregate(
-        self, aggregator: typing.Callable[[typing.Iterator[T]], typing.Any]
-    ) -> typing.Any:
-        """Apply an aggregation function to the filtered stream."""
-        return aggregator(iter(self))
+        :return: The total number of items in the stream.
+        :rtype: int
+        """
+        n = 0
+        async for _ in self:
+            n += 1
+        return n
 
-    def paginate(
+    async def to_list(self) -> List[T]:
+        return [obj async for obj in self]
+
+    async def paginate(
         self, page: int = 1, page_size: int = 20
-    ) -> typing.Tuple["ResultStream[T]", int]:
+    ) -> Tuple["ResultStream[T]", int]:
         """
-        Return a page of results and total count.
-        Note: This consumes the stream twice unless cached.
-        """
-        # Calculate total (could be expensive)
-        total = self.count()
+        Paginate through items in the result stream with the given page number and page size. The method
+        returns a tuple consisting of a paginated result stream and the total number of items.
 
-        # Calculate offset and create a paginated stream
+        :param page: The page number to fetch. Defaults to 1.
+        :param page_size: The number of items to include per page. Defaults to 20.
+        :return: A tuple containing the paginated ResultStream object and the total number of items.
+        """
+        total = len(self)
         offset = (page - 1) * page_size
-        paginated_keys = []
-        for i, obj in enumerate(self):
-            if i >= offset and len(paginated_keys) < page_size:
+        paginated_keys: List[str] = []
+        idx = 0
+        async for obj in self:
+            if idx >= offset and len(paginated_keys) < page_size:
                 paginated_keys.append(obj.id)
             elif len(paginated_keys) >= page_size:
                 break
+            idx += 1
 
-        paginated_stream = ResultStream._make(
-            model_klass=self.model_klass,
-            transaction_id=self.transaction_id,
-            keys=paginated_keys,
-            predicates=[],  # Pre-filtered
-            chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
-            persisted_backend=self.persisted_backend,
+        return (
+            ResultStream._make(
+                model_klass=self.model_klass,
+                transaction_id=self.transaction_id,
+                keys=paginated_keys,
+                predicates=[],
+                chunk_size=self.chunk_size,
+                memory_capacity=self.memory_capacity,
+                persisted_backend=self.persisted_backend,
+            ),
+            total,
         )
 
-        return paginated_stream, total
-
-    def cache_results(self) -> "ResultStream[T]":
+    async def cache_results(self) -> "ResultStream[T]":
         """
-        Force evaluation and cache all results in memory.
-        Returns a new stream backed by the cached results.
+        Caches the results of the current result stream into a new `ResultStream` instance,
+        based on the provided attributes of the current object. This method iterates through
+        the current stream to ensure that all the results are processed before creating
+        a cached version of the result stream.
+
+        :return: A new `ResultStream` instance with cached results.
+        :rtype: ResultStream[T]
         """
         # Evaluate entire stream
-        for obj in self:
+        async for obj in self:
             # Already being cached via _memory_get_or_none
             pass
-
         return ResultStream._make(
             model_klass=self.model_klass,
             transaction_id=self.transaction_id,
             keys=self._keys,
             predicates=self._predicates,
             chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
+            memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
         )
 
-    def __getitem__(
-        self, index: typing.Union[int, slice]
-    ) -> typing.Union[T, "ResultStream[T]"]:
-        """Support indexing and slicing."""
-        if isinstance(index, int):
-            # Single item access
-            if index < 0:
-                # Negative indexing requires full evaluation
-                results = list(self)
-                return results[index]
-            else:
-                try:
-                    return next(itertools.islice(self, index, index + 1))
-                except StopIteration:
-                    raise IndexError("ResultStream index out of range")
-        elif isinstance(index, slice):
-            # Slice returns a new stream
-            start = index.start or 0
-            stop = index.stop
-            step = index.step or 1
+    async def bulk_update(self, **kwargs: Any) -> int:
+        """
+        Performs a bulk update operation on objects in the collection.
 
-            sliced_keys = []
-            for i, obj in enumerate(self):
-                if stop is not None and i >= stop:
-                    break
-                if i >= start and (i - start) % step == 0:
-                    sliced_keys.append(obj.id)
+        This method iterates over the objects in the collection, applies the provided
+        updates by modifying the attributes based on the given keyword arguments, and
+        then synchronizes the changes with associated backends. If an object lacks an
+        attribute specified in the kwargs, a warning is emitted instead of raising an
+        exception.
 
-            return ResultStream._make(
-                model_klass=self.model_klass,
-                transaction_id=self.transaction_id,
-                keys=sliced_keys,
-                predicates=[],  # Pre-filtered
-                chunk_size=self.chunk_size,
-                memory_backend=self.memory_backend,
-                persisted_backend=self.persisted_backend,
-            )
-        else:
-            raise TypeError("Indices must be integers or slices")
-
-    def bulk_update(self, **kwargs) -> int:
-        """Update attributes on all filtered objects."""
+        :param kwargs: Key-value pairs representing the attributes to update and their
+                       respective new values.
+        :type kwargs: Any
+        :return: The number of objects successfully updated.
+        :rtype: int
+        """
+        schema = await self._schema_name()
         updated = 0
-        for obj in self:
-            # new to validate that the obj has the field before we try to set it
+
+        async for obj in self:
             for key, value in kwargs.items():
                 if hasattr(obj, key):
                     setattr(obj, key, value)
                 else:
-                    warnings.warn(
-                        f"Object {obj} does not have attribute {key}", UserWarning
-                    )
+                    warnings.warn(f"{obj} lacks attribute '{key}'", UserWarning)
 
-            # Re-persist
-            self.memory_backend.upsert(self._schema_name(), obj.id, obj)
-            if self.persisted_backend:
-                self.persisted_backend.upsert(self._schema_name(), obj.id, obj)
+            await self._run_sync(self.memory_backend.upsert, schema, obj.id, obj)
+            backend = await self._ensure_persisted_backend()
+            if backend is not None:
+                await self._run_sync(backend.upsert, schema, obj.id, obj)
             updated += 1
         return updated
 
-    def bulk_delete(self) -> int:
-        """Delete all filtered objects from storage."""
+    async def bulk_delete(self) -> int:
+        """
+        Deletes all objects in the collection and rebuilds the internal key references safely.
+
+        This method collects all objects in the collection and attempts to delete each object
+        from both memory and persistent backends. Upon successful deletion, the corresponding
+        key is removed from the internal key set. The internal key list is rebuilt at the end
+        to ensure consistency with the key set.
+
+        :async: This method is asynchronous and must be awaited.
+
+        :return: The total count of objects successfully deleted.
+        :rtype: int
+        """
+        schema = await self._schema_name()
         deleted = 0
-        for obj in self:
+
+        async for obj in self:
             was_deleted = False
             try:
-                self.memory_backend.delete(self._schema_name(), obj.id)
+                await self._cache_delete(schema, obj.id)
                 was_deleted = True
             except Exception:
-                was_deleted = False
+                pass
 
-            if self.persisted_backend:
+            backend = await self._ensure_persisted_backend()
+            if backend is not None:
                 try:
-                    self.persisted_backend.delete(self._schema_name(), obj.id)
+                    await self._run_sync(backend.delete, schema, obj.id)
                     was_deleted = True
                 except Exception:
-                    if not was_deleted:
-                        was_deleted = False
+                    pass
 
             if was_deleted:
-                # Remove from key list
-                if obj.id in self._key_set:
-                    self._keys.remove(obj.id)
-                    self._key_set.discard(obj.id)
+                self._key_set.discard(obj.id)
                 deleted += 1
+
+        self._keys = [k for k in self._keys if k in self._key_set]
         return deleted
 
     def union(self, *streams: "ResultStream[T]") -> "ResultStream[T]":
         """Combine multiple streams, preserving order and removing duplicates."""
-        combined_keys = list(self._keys)
-        seen = set(self._keys)
+        combined_keys = set(self._keys)
 
         for stream in streams:
-            for key in stream._keys:
-                if key not in seen:
-                    combined_keys.append(key)
-                    seen.add(key)
+            combined_keys = combined_keys.union(set(stream._keys))
 
         return ResultStream._make(
             model_klass=self.model_klass,
             transaction_id=self.transaction_id,
-            keys=combined_keys,
+            keys=list(combined_keys),
             predicates=[],  # Reset predicates for combined stream
             chunk_size=self.chunk_size,
-            memory_backend=self.memory_backend,
+            memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
         )
 
@@ -622,74 +793,90 @@ class ResultStream(typing.Generic[T]):
             "estimated_memory": len(self._keys) * 8,  # Rough estimate
         }
 
-    def stats(self) -> dict:
-        """Return execution statistics."""
-        memory_hits = 0
-        persisted_hits = 0
-        misses = 0
-        filtered = 0
+    def __aiter__(self) -> AsyncIterator[T]:
+        return self._async_iterate()
 
-        for obj in self:
-            # This is approximate since we can't track hits without modifying _fetch_batch
-            pass
-
-        return {
-            "total_objects": len(self._keys),
-            "memory_hits": memory_hits,
-            "persisted_hits": persisted_hits,
-            "misses": misses,
-            "filtered_out": filtered,
-        }
-
-    def try_optimize(self) -> "ResultStream[T]":
+    async def optimize(self) -> "ResultStream[T]":
         """
-        Attempt to push predicates to the backend for server-side filtering.
-        Falls back to in-memory filtering if not possible.
+        Optimize the result stream by pushing simple Q predicates to the backend for
+        server-side filtering and returning a new stream with a reduced key set. This
+        method ensures that the original stream remains unchanged, applying AND
+        semantics to multiple Q objects. Any complex Q objects that cannot be
+        converted remain as in-memory predicates.
+
+        :return: A new instance of the ResultStream with optimized filtering applied.
+        :rtype: ResultStream[T]
         """
-        if not self._q_objects or not self.persisted_backend:
+        if not self._q_objects or self.persisted_backend is None:
             return self
 
-        # Try to push simple Q objects to the backend
-        optimized_predicates = list(self._predicates)
+        schema = await self._schema_name()
+
+        current_keys: Optional[Set[str]] = None
+        remaining_q_objects: List["Q"] = []
+        any_optimized = False
 
         for q in self._q_objects:
             try:
-                # Try to convert to simple filter kwargs
                 filter_kwargs = q.to_filter_kwargs()
 
-                # Use backend's native filter if available
-                filtered_keys = []
-                backend_results = self.persisted_backend.filter(
-                    self._schema_name(), self.model_klass, **filter_kwargs
+                backend_results: "ResultStream[T]" = await self._run_sync(
+                    self.persisted_backend.filter,
+                    schema,
+                    self.model_klass,
+                    **filter_kwargs,
                 )
 
-                for result in backend_results:
-                    if result.id in self._key_set:
-                        filtered_keys.append(result.id)
+                matched_ids = set(backend_results._keys)
 
-                # Update keys to only include matches
-                self._keys = filtered_keys
-                self._key_set = set(filtered_keys)
+                if current_keys is None:
+                    # First successful push: intersect with original key set
+                    current_keys = matched_ids.intersection(self._key_set)
+                else:
+                    # Subsequent pushes: intersect with accumulated result (AND)
+                    current_keys = current_keys.intersection(matched_ids)
 
-            except (ValueError, NotImplementedError):
-                # Can't optimize this Q object, keep as predicate
-                pass
+                any_optimized = True
 
-        return self
+            except (ValueError, NotImplementedError, AttributeError):
+                remaining_q_objects.append(q)
 
-    def __iter__(self) -> typing.Iterator[T]:
-        """
-        Terminal operation with an optional backend optimization attempt.
-        """
-        # Try to optimize before iterating
-        if self._q_objects:
-            self.try_optimize()
+        if not any_optimized:
+            # No Q objects could be pushed — nothing changed
+            return self
 
-        # Original iteration logic
-        for i in range(0, len(self._keys), self.chunk_size):
-            batch_ids = self._keys[i : i + self.chunk_size]
-            for instance in self._fetch_batch(batch_ids):
-                if all(predicate(instance) for predicate in self._predicates):
+        # Preserve original key ordering for deterministic chunking/pagination
+        if current_keys is not None:
+            optimized_key_list = [k for k in self._keys if k in current_keys]
+        else:
+            optimized_key_list = self._keys
+
+        return ResultStream._make(
+            model_klass=self.model_klass,
+            transaction_id=self.transaction_id,
+            keys=optimized_key_list,
+            predicates=self._predicates,
+            chunk_size=self.chunk_size,
+            memory_capacity=self.memory_capacity,
+            persisted_backend=self.persisted_backend,
+            q_predicates=remaining_q_objects,
+        )
+
+    async def _async_iterate(self) -> AsyncIterator[T]:
+        if self._q_objects and self.persisted_backend is not None:
+            optimized = await self.optimize()
+            # Iterate over the optimized stream's keys instead
+            keys = optimized._keys
+            predicates = optimized._predicates
+        else:
+            keys = self._keys
+            predicates = self._predicates
+
+        for i in range(0, len(keys), self.chunk_size):
+            batch_ids = keys[i : i + self.chunk_size]
+            batch = await self._fetch_batch(batch_ids)
+            for instance in batch:
+                if all(pred(instance) for pred in predicates):
                     yield instance
 
     def __repr__(self) -> str:

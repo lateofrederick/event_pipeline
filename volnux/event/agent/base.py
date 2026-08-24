@@ -298,10 +298,6 @@ class AgentEventBase(EventBase):
         from the last persisted step without replaying completed LLM calls.
         """
 
-        import pdb
-
-        pdb.set_trace()
-
         # Initialize the private mutable state on the first entry.
         # On checkpoint resume, SnapshotBuilder has already restored these
         # attributes — the hasattr guard prevents overwriting the restored state.

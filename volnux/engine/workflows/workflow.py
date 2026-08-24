@@ -27,7 +27,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, List, Optional, Callable, Awaitable, Dict, Type, Literal
 
-from .registry import WorkflowSource, get_workflow_registry
+from .source import WorkflowSource
+from .registry import get_workflow_registry
 from volnux.executors.utils.registry import get_global_executor_registry
 from volnux.result import ResultSet as TriggerSet
 from volnux.event import EventBase
@@ -38,6 +39,7 @@ from volnux.config import VolnuxConfig
 from volnux.import_utils import load_module_from_path, load_multiple_submodules
 
 if typing.TYPE_CHECKING:
+    from .registry import WorkflowRegistry
     from volnux.executors import BaseExecutor
     from .trigger.triggers import TriggerBase, TriggerActivation
     from .trigger.triggers.base import TriggerType
@@ -305,7 +307,7 @@ class WorkflowConfig(ABC):
             len(classes),
             self.name,
         )
-        return self._event_classes
+        return self._event_classes  # type: ignore
 
     def get_pipeline_class(self) -> Type[Pipeline]:
         """
@@ -335,7 +337,7 @@ class WorkflowConfig(ABC):
                 and obj is not Pipeline
             ):
                 self._pipeline_class = obj
-                return self._pipeline_class
+                return self._pipeline_class  # type: ignore
 
         raise RuntimeError(
             f"Workflow '{self.name}' has no Pipeline subclass in pipeline.py"
@@ -370,11 +372,16 @@ class WorkflowConfig(ABC):
                 and obj is not BatchPipeline
             ):
                 self._batch_pipeline_class = obj
-                return self._batch_pipeline_class
+                return self._batch_pipeline_class  # type: ignore
 
         raise RuntimeError(
             f"Workflow '{self.name}' has no BatchPipeline subclass in batch_pipeline.py"
         )
+
+    def get_pointy_ast(self):
+        """Return the pointy AST for this workflow."""
+        pipeline = self.get_pipeline_class()
+        return pipeline.get_pointy_ast()
 
     # Executor management
     def get_executor_registry(self) -> "ExecutorRegistry":
@@ -500,7 +507,7 @@ class WorkflowConfig(ABC):
         """Return the workflow registry singleton."""
         if self._registry is None:
             self._registry = get_workflow_registry()
-        return self._registry
+        return self._registry  # type: ignore
 
     def register_registry_source(self, source: "WorkflowSource") -> None:
         """

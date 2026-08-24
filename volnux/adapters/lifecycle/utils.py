@@ -55,7 +55,6 @@ async def _run_server(
     )
 
     try:
-
         await asyncio.gather(server_task, trigger_task, stop_task)
     except asyncio.CancelledError:
         # Propagate cancellation — outer finally handles cleanup

@@ -9,8 +9,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from volnux import EventBase
 from volnux.event.base import EventType
-
-from ..source import SourceCredentials
 from .git import LoadFromGit
 from .pypi import LoadFromPyPi
 from volnux.manifest.utils import (
@@ -21,6 +19,7 @@ from volnux.manifest.utils import (
 )
 
 if typing.TYPE_CHECKING:
+    from ..source import SourceCredentials
     from ..registry import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
@@ -93,7 +92,7 @@ def _validate_manifest_against_schema(
         return False
 
 
-def _jwt_headers(credentials: Optional[SourceCredentials]) -> Dict[str, str]:
+def _jwt_headers(credentials: Optional["SourceCredentials"]) -> Dict[str, str]:
     """
     Build HTTP headers for EventHub JWT authentication.
 
@@ -130,7 +129,7 @@ class LoadFromEventHub(EventBase):
         location: str,
         registry: "WorkflowRegistry",
         version: Optional[str] = None,
-        credentials: Optional[SourceCredentials] = None,
+        credentials: Optional["SourceCredentials"] = None,
         timeout: int = 30_000,
         **kwargs: Any,
     ) -> Tuple[bool, Any]:
@@ -207,7 +206,7 @@ class LoadFromEventHub(EventBase):
         eventhub_url: str,
         package_name: str,
         version: str,
-        credentials: Optional[SourceCredentials],
+        credentials: Optional["SourceCredentials"],
         timeout_s: float,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -301,7 +300,7 @@ class LoadFromEventHub(EventBase):
         source: Dict[str, Any],
         package_name: str,
         version: str,
-        credentials: Optional[SourceCredentials],
+        credentials: Optional["SourceCredentials"],
         timeout: int,
         timeout_s: float,
         registry: "WorkflowRegistry",
@@ -384,7 +383,7 @@ class LoadFromEventHub(EventBase):
         eventhub_url: str,
         package_name: str,
         version: str,
-        credentials: Optional[SourceCredentials],
+        credentials: Optional["SourceCredentials"],
         timeout_s: float,
         timeout: int,
         registry: "WorkflowRegistry",

@@ -76,7 +76,7 @@ class SagaRecoveryManager:
         )
 
         # Upsert state using active-record persistence
-        await state.save_async()
+        await state.save()
         logger.debug(
             "Saga recovery checkpoint saved: %s (step %d)", saga_id, current_step_index
         )
@@ -86,7 +86,7 @@ class SagaRecoveryManager:
     async def load_state(cls, saga_id: str) -> Optional[SagaRecoveryState]:
         """Fetches an interrupted saga snapshot by ID."""
         try:
-            return await SagaRecoveryState.get_async(saga_id)
+            return await SagaRecoveryState.get(saga_id)
         except Exception as exc:
             logger.warning(
                 "Failed to load recovery state for saga %s: %s", saga_id, exc
@@ -97,8 +97,8 @@ class SagaRecoveryManager:
     async def delete_state(cls, saga_id: str) -> None:
         """Removes the checkpoint upon successful completion or DLQ escalation."""
         try:
-            state = await SagaRecoveryState.get_async(saga_id)
-            await state.delete_async()
+            state = await SagaRecoveryState.get(saga_id)
+            await state.delete()
             logger.debug("Saga recovery state cleaned up: %s", saga_id)
         except Exception as exc:
             logger.warning(

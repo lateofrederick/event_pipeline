@@ -2,7 +2,7 @@ import logging
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, cast
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ class StreamSummary:
         return CategoricalStreamSummary()
 
     def _promote_to_categorical(self) -> CategoricalStreamSummary:
-        numeric = self._impl
+        numeric = cast(NumericStreamSummary, self._impl)
         cat = CategoricalStreamSummary()
         # Transfer counts to categorical instance before calling update()
         cat.count = numeric.count

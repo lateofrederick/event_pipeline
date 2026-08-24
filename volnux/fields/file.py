@@ -7,7 +7,7 @@ from volnux import default_batch_processors as batch_defaults
 from volnux.constants import EMPTY
 
 if typing.TYPE_CHECKING:
-    from volnux.pipeline import Pipeline
+    from volnux.execution.pipeline import Pipeline
 
 __all__ = ["FileInputDataField"]
 

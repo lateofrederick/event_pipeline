@@ -23,7 +23,6 @@ from ...exceptions import (
 )
 from ...typing import BatchProcessType
 from ...utils import validate_batch_processor
-from ...execution.state_manager import ExecutionStatus
 from ...fields import InputDataField
 from ...import_utils import import_string
 from ...mixins import ObjectIdentityMixin, ScheduleMixin
@@ -460,7 +459,7 @@ class _BatchProcessingMonitor(threading.Thread):
             signal: SoftSignal = data.pop("signal", None)
 
             if sender and signal:
-                parent_signal = import_string(signal.__instance_import_str__)
+                parent_signal: SoftSignal = import_string(signal.__instance_import_str__)  # type: ignore
                 parent_signal.emit(sender=sender, **data)
         except Exception:
             logger.exception(
@@ -524,7 +523,7 @@ class _BatchProcessingMonitor(threading.Thread):
         return str(sender)
 
 
-class BatchPipeline(ObjectIdentityMixin, ScheduleMixin, InternalMetadataMixin):
+class BatchPipeline(ObjectIdentityMixin, InternalMetadataMixin):
     """
     Executes a Pipeline template across multiple input batches using
     a process pool, with inter-process signal monitoring.

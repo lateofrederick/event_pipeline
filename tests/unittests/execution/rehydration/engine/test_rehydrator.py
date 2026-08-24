@@ -683,52 +683,56 @@ class TestRebuildTask:
 # _restore_execution_state
 # ===========================================================================
 class TestRestoreExecutionState:
+    """_restore_execution_state now assigns hot state directly onto the
+    ExecutionContext (status/errors/results/aggregated_result) and persists
+    via context.save_async(), instead of pushing an ExecutionState into a
+    separate StateManager singleton keyed by state_id."""
 
     async def test_restores_status_and_results(
         self, rehydrator: LazyRehydrator
     ) -> None:
         mock_context = MagicMock()
-        mock_state_manager = MagicMock()
-        mock_context.get_state_manager.return_value = mock_state_manager
+        mock_context.save_async = AsyncMock()
 
         snapshot = _make_context_snapshot(status="COMPLETED", results=[])
 
         mock_result_a = MagicMock()
         mock_result_b = MagicMock()
 
-        with patch.object(
-            rehydrator.deserializer, "deserialize_result",
+        with patch(
+            "volnux.execution.rehydrator.event.event_result_serializer.EXEC_RESULT_SERIALIZER.deserialize_exec_result",
             new_callable=AsyncMock,
             side_effect=[mock_result_a, mock_result_b],
-        ), patch("volnux.execution.state_manager.ExecutionState") as mock_state_cls, \
-         patch("volnux.execution.state_manager.ExecutionStatus") as mock_status_cls, \
-         patch("volnux.result.ResultSet") as mock_result_set_cls:
-
-            mock_state_cls.return_value = MagicMock()
-            mock_result_set_cls.return_value = [mock_result_a, mock_result_b]
+        ), patch(
+            "volnux.execution.status.ExecutionStatus"
+        ) as mock_status_cls:
+            mock_status_cls.return_value = "COMPLETED"
 
             await rehydrator._restore_execution_state(mock_context, snapshot)
 
-        mock_state_manager.update_state.assert_called_once()
+        assert mock_context.status == "COMPLETED"
+        assert mock_context.errors == []
+        mock_context.save_async.assert_awaited_once()
 
     async def test_empty_results_no_deserialize_calls(
         self, rehydrator: LazyRehydrator
     ) -> None:
         mock_context = MagicMock()
+        mock_context.save_async = AsyncMock()
         snapshot = _make_context_snapshot(results=[])
 
-        with patch.object(
-            rehydrator.deserializer, "deserialize_result",
+        with patch(
+            "volnux.execution.rehydrator.event.event_result_serializer.EXEC_RESULT_SERIALIZER.deserialize_exec_result",
             new_callable=AsyncMock,
-        ) as mock_deser, patch("volnux.execution.state_manager.ExecutionState"), \
-         patch("volnux.execution.state_manager.ExecutionStatus"), \
-         patch("volnux.result.ResultSet", return_value=[]):
+        ) as mock_deser:
             await rehydrator._restore_execution_state(mock_context, snapshot)
 
         mock_deser.assert_not_called()
+        assert mock_context.results == []
 
     async def test_metrics_restored(self, rehydrator: LazyRehydrator) -> None:
         mock_context = MagicMock()
+        mock_context.save_async = AsyncMock()
         mock_context.metrics.start_time = 0.0
         mock_context.metrics.end_time = 0.0
 
@@ -737,42 +741,29 @@ class TestRestoreExecutionState:
             metrics={"start_time": 50.0, "end_time": 150.0, "duration": 100.0},
         )
 
-        with patch.object(
-            rehydrator.deserializer, "deserialize_result", new_callable=AsyncMock
-        ), patch("volnux.execution.state_manager.ExecutionState"), \
-         patch("volnux.execution.state_manager.ExecutionStatus"), \
-         patch("volnux.result.ResultSet", return_value=[]):
-            await rehydrator._restore_execution_state(mock_context, snapshot)
+        await rehydrator._restore_execution_state(mock_context, snapshot)
 
         assert mock_context.metrics.start_time == 50.0
         assert mock_context.metrics.end_time == 150.0
 
     async def test_no_metrics_keys_skipped(self, rehydrator: LazyRehydrator) -> None:
         mock_context = MagicMock()
+        mock_context.save_async = AsyncMock()
 
         snapshot = _make_context_snapshot(results=[], metrics={})
 
-        with patch.object(
-            rehydrator.deserializer, "deserialize_result", new_callable=AsyncMock
-        ), patch("volnux.execution.state_manager.ExecutionState"), \
-         patch("volnux.execution.state_manager.ExecutionStatus"), \
-         patch("volnux.result.ResultSet", return_value=[]):
-            await rehydrator._restore_execution_state(mock_context, snapshot)
+        await rehydrator._restore_execution_state(mock_context, snapshot)
 
         # No metrics assignment should happen
         mock_context.metrics.start_time  # just access to verify no crash
 
     async def test_none_metrics_safe(self, rehydrator: LazyRehydrator) -> None:
         mock_context = MagicMock()
+        mock_context.save_async = AsyncMock()
 
         snapshot = _make_context_snapshot(results=[], metrics=None)
 
-        with patch.object(
-            rehydrator.deserializer, "deserialize_result", new_callable=AsyncMock
-        ), patch("volnux.execution.state_manager.ExecutionState"), \
-         patch("volnux.execution.state_manager.ExecutionStatus"), \
-         patch("volnux.result.ResultSet", return_value=[]):
-            await rehydrator._restore_execution_state(mock_context, snapshot)
+        await rehydrator._restore_execution_state(mock_context, snapshot)
 
         # Should not raise
 

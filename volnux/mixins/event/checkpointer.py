@@ -15,6 +15,7 @@ from typing import (
     TYPE_CHECKING,
 )
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
 from volnux.import_utils import import_string
 from volnux.constants import EMPTY
@@ -53,6 +54,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 conf = VolnuxConfig.get_instance()
+
+
+# Dedicated executor for sync sub_phase init_funcs with timeouts.
+# NEVER use the default asyncio.to_thread pool.
+_SUB_PHASE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=64, thread_name_prefix="volnux-subphase"
+)
+
+
+class SubPhaseSuspension(Exception):
+    """Internal signal raised by sub_phase to suspend the event.
+
+    Carries the sub-phase name so the engine can:
+      1. Update ExecutionRecord.status to SUSPENDED
+      2. Record which sub-phase is awaiting external input
+      3. Route webhook/HITL responses to the correct resume point
+    """
+
+    def __init__(self, sub_phase_name: str, pending_value: Any):
+        self.sub_phase_name = sub_phase_name
+        self.pending_value = pending_value
+        super().__init__(f"Sub-phase '{sub_phase_name}' suspended")
 
 
 @dataclass
@@ -170,7 +193,7 @@ class StopConditionProcessor:
         }
 
 
-class EventCheckPointingMixin:
+class EventCheckpointingMixin:
 
     @staticmethod
     def _process_result_tuple(result: Any, method_name="process") -> Tuple[bool, Any]:
@@ -522,57 +545,70 @@ class EventCheckPointingMixin:
         name: str,
         init_func: Callable[[], Any],
         *,
+        suspend_on: Optional[Callable[[Any], bool]] = None,
         serialise: Optional[Callable[[Any], Any]] = None,
         deserialise: Optional[Callable[[Any], Any]] = None,
         timeout: Optional[float] = None,
     ) -> Any:
-        """
-        Execute a named computation block with automatic sub-phase checkpointing.
+        """Execute a named computation block with caching, checkpointing, and optional suspension.
 
-        This function ensures efficient checkpointing and replay in a computation
-        process. It can save execution states to avoid redundant computations on
-        retries or process restarts. It supports both synchronous and asynchronous
-        execution, with optional timeout enforcement and custom serialization.
+        Suspension Lifecycle
+        --------------------
+        1. First call: init_func runs → suspend_on(result) == True → cache pending value,
+           checkpoint, raise SubPhaseSuspension.
+        2. Resume (after external response updates cache via deliver_sub_phase_response):
+           init_func is NOT re-executed → cached value found → suspend_on(cached) == False →
+           return deserialised result.
+        3. Resume (no external response yet): cached value found → suspend_on(cached) == True →
+           re-suspend immediately without re-executing init_func.
 
-        Parameters:
-        -----------
-        :param name: The unique name of the computation block. It must be stable
-            across code revisions and unique within a single execution of the
-            parent process.
-        :type name: str
-        :param init_func: The initialization function for the computation.
-            Can be synchronous or asynchronous.
-        :type init_func: Callable[[], Any]
-        :param serialise: Optional function for serializing the result of
-            the computation block. Used for mutation consistency.
-        :type serialise: Optional[Callable[[Any], Any]]
-        :param deserialise: Optional function for deserializing the
-            serialized result. Used for mutation consistency, typically paired
-            with `serialise`.
-        :type deserialise: Optional[Callable[[Any], Any]]
-        :param timeout: Optional timeout in seconds. If provided, the computation
-            will be interrupted if it exceeds the specified timeout.
-        :type timeout: Optional[float]
+        Parameters
+        ----------
+        name : str
+            Stable, unique identifier for this computation block within the event.
+        init_func : Callable[[], Any]
+            The computation to execute. Sync or async.
+        suspend_on : Callable[[Any], bool], optional
+            Predicate evaluated against the init_func result (or cached value on resume).
+            Return True to suspend; False/None to proceed normally.
+            When provided, the sub-phase becomes a durable suspension point.
+        serialise : Callable[[Any], Any], optional
+            Transform result before caching/checkpointing. Required if result is not
+            JSON-primitive. Paired with deserialise.
+        deserialise : Callable[[Any], Any], optional
+            Transform cached value back to domain object on retrieval.
+        timeout : float, optional
+            Max seconds for init_func execution. Sync functions are offloaded to
+            _SUB_PHASE_EXECUTOR so asyncio.wait_for can interrupt them.
 
-        Returns:
-        --------
-        :return: The result of the computation, either retrieved from the cache
-            or freshly computed. If both `serialise` and `deserialise` are provided,
-            the deserialized value is returned for consistent object identity.
-        :rtype: Any
-
-        Raises:
+        Returns
         -------
-        :raises asyncio.TimeoutError: If the computation exceeds the given timeout.
-        :raises Exception: If there is an exception during the execution of
-            `init_func`. Such exceptions will not cache the result and the
-            computation will retry the next time it's invoked.
-        """
-        cache = self._sub_phase_cache.get(name, {})
+        Any
+            The computed (and optionally deserialised) result.
 
-        if name in cache:
-            cached = cache[name]
+        Raises
+        ------
+        SubPhaseSuspension
+            When suspend_on returns True. Caught by the engine to transition
+            ExecutionRecord to SUSPENDED state.
+        asyncio.TimeoutError
+            When init_func exceeds timeout.
+        """
+
+        if name in self._sub_phase_cache:
+            cached = self._sub_phase_cache[name]
             result = deserialise(cached) if deserialise is not None else cached
+
+            if suspend_on is not None and suspend_on(result):
+                # Still waiting — re-suspend WITHOUT re-executing init_func
+                logger.debug(
+                    "sub_phase %r: re-suspending from cache (event=%s)",
+                    name,
+                    self._task_id,
+                )
+                raise SubPhaseSuspension(name, result)
+
+            # Cached and resolved — return immediately
             logger.debug(
                 "sub_phase %r: cache hit — skipping init_func (event=%s)",
                 name,
@@ -581,30 +617,14 @@ class EventCheckPointingMixin:
             return result
 
         logger.debug(
-            "sub_phase %r: executing init_func (event=%s)", name, self._task_id
+            "sub_phase %r: executing init_func (event=%s)",
+            name,
+            self._task_id,
         )
         start_time = time.monotonic()
 
         try:
-            # Determine whether to call on event loop or offload to thread.
-            # Async functions and lambdas returning coroutines are called directly.
-            # Sync functions with a timeout are offloaded, so wait_for can interrupt.
-            is_async_fn = inspect.iscoroutinefunction(
-                init_func
-            ) or inspect.iscoroutinefunction(getattr(init_func, "__wrapped__", None))
-
-            if is_async_fn or timeout is None:
-                raw = init_func()
-            else:
-                loop = asyncio.get_running_loop()
-                raw = loop.run_in_executor(None, init_func)
-
-            if inspect.isawaitable(raw):
-                if timeout is not None:
-                    raw = await asyncio.wait_for(raw, timeout=timeout)
-                else:
-                    raw = await raw
-
+            raw = await self._execute_sub_phase_func(init_func, timeout)
         except asyncio.TimeoutError:
             logger.warning(
                 "sub_phase %r: timed out after %.1fs (event=%s)",
@@ -613,15 +633,29 @@ class EventCheckPointingMixin:
                 self._task_id,
             )
             raise
-
         except Exception:
-            # Failed executions are never cached — re-execute on retry
+            # Failed executions are NEVER cached — will re-execute on next attempt
             raise
 
         elapsed = time.monotonic() - start_time
         logger.debug(
-            "sub_phase %r: completed in %.2fs (event=%s)", name, elapsed, self._task_id
+            "sub_phase %r: completed in %.2fs (event=%s)",
+            name,
+            elapsed,
+            self._task_id,
         )
+
+        if suspend_on is not None and suspend_on(raw):
+            stored = serialise(raw) if serialise is not None else raw
+            self._sub_phase_cache[name] = stored
+            await self.enqueue_checkpoint()
+
+            logger.info(
+                "sub_phase %r: suspending — awaiting external resolution (event=%s)",
+                name,
+                self._task_id,
+            )
+            raise SubPhaseSuspension(name, raw)
 
         stored = serialise(raw) if serialise is not None else raw
         self._sub_phase_cache[name] = stored
@@ -630,6 +664,142 @@ class EventCheckPointingMixin:
         if serialise is not None and deserialise is not None:
             return deserialise(stored)
         return raw
+
+    async def _execute_sub_phase_func(
+        self, init_func: Callable[[], Any], timeout: Optional[float]
+    ) -> Any:
+        """Execute init_func with correct sync/async handling and timeout support."""
+        is_async = inspect.iscoroutinefunction(
+            init_func
+        ) or inspect.iscoroutinefunction(getattr(init_func, "__wrapped__", None))
+
+        if is_async:
+            coro = init_func()
+        elif timeout is not None:
+            # Sync + timeout → offload to dedicated executor so wait_for can interrupt
+            loop = asyncio.get_running_loop()
+            coro = loop.run_in_executor(_SUB_PHASE_EXECUTOR, init_func)
+        else:
+            # Sync + no timeout → safe to run directly (fast path)
+            return init_func()
+
+        if timeout is not None:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        return await coro
+
+    # async def sub_phase(
+    #     self,
+    #     name: str,
+    #     init_func: Callable[[], Any],
+    #     *,
+    #     serialise: Optional[Callable[[Any], Any]] = None,
+    #     deserialise: Optional[Callable[[Any], Any]] = None,
+    #     timeout: Optional[float] = None,
+    # ) -> Any:
+    #     """
+    #     Execute a named computation block with automatic sub-phase checkpointing.
+    #
+    #     This function ensures efficient checkpointing and replay in a computation
+    #     process. It can save execution states to avoid redundant computations on
+    #     retries or process restarts. It supports both synchronous and asynchronous
+    #     execution, with optional timeout enforcement and custom serialization.
+    #
+    #     Parameters:
+    #     -----------
+    #     :param name: The unique name of the computation block. It must be stable
+    #         across code revisions and unique within a single execution of the
+    #         parent process.
+    #     :type name: str
+    #     :param init_func: The initialization function for the computation.
+    #         Can be synchronous or asynchronous.
+    #     :type init_func: Callable[[], Any]
+    #     :param serialise: Optional function for serializing the result of
+    #         the computation block. Used for mutation consistency.
+    #     :type serialise: Optional[Callable[[Any], Any]]
+    #     :param deserialise: Optional function for deserializing the
+    #         serialized result. Used for mutation consistency, typically paired
+    #         with `serialise`.
+    #     :type deserialise: Optional[Callable[[Any], Any]]
+    #     :param timeout: Optional timeout in seconds. If provided, the computation
+    #         will be interrupted if it exceeds the specified timeout.
+    #     :type timeout: Optional[float]
+    #
+    #     Returns:
+    #     --------
+    #     :return: The result of the computation, either retrieved from the cache
+    #         or freshly computed. If both `serialise` and `deserialise` are provided,
+    #         the deserialized value is returned for consistent object identity.
+    #     :rtype: Any
+    #
+    #     Raises:
+    #     -------
+    #     :raises asyncio.TimeoutError: If the computation exceeds the given timeout.
+    #     :raises Exception: If there is an exception during the execution of
+    #         `init_func`. Such exceptions will not cache the result and the
+    #         computation will retry the next time it's invoked.
+    #     """
+    #     cache = self._sub_phase_cache.get(name, {})
+    #
+    #     if name in cache:
+    #         cached = cache[name]
+    #         result = deserialise(cached) if deserialise is not None else cached
+    #         logger.debug(
+    #             "sub_phase %r: cache hit — skipping init_func (event=%s)",
+    #             name,
+    #             self._task_id,
+    #         )
+    #         return result
+    #
+    #     logger.debug(
+    #         "sub_phase %r: executing init_func (event=%s)", name, self._task_id
+    #     )
+    #     start_time = time.monotonic()
+    #
+    #     try:
+    #         # Determine whether to call on event loop or offload to thread.
+    #         # Async functions and lambdas returning coroutines are called directly.
+    #         # Sync functions with a timeout are offloaded, so wait_for can interrupt.
+    #         is_async_fn = inspect.iscoroutinefunction(
+    #             init_func
+    #         ) or inspect.iscoroutinefunction(getattr(init_func, "__wrapped__", None))
+    #
+    #         if is_async_fn or timeout is None:
+    #             raw = init_func()
+    #         else:
+    #             loop = asyncio.get_running_loop()
+    #             raw = loop.run_in_executor(None, init_func)
+    #
+    #         if inspect.isawaitable(raw):
+    #             if timeout is not None:
+    #                 raw = await asyncio.wait_for(raw, timeout=timeout)
+    #             else:
+    #                 raw = await raw
+    #
+    #     except asyncio.TimeoutError:
+    #         logger.warning(
+    #             "sub_phase %r: timed out after %.1fs (event=%s)",
+    #             name,
+    #             timeout,
+    #             self._task_id,
+    #         )
+    #         raise
+    #
+    #     except Exception:
+    #         # Failed executions are never cached — re-execute on retry
+    #         raise
+    #
+    #     elapsed = time.monotonic() - start_time
+    #     logger.debug(
+    #         "sub_phase %r: completed in %.2fs (event=%s)", name, elapsed, self._task_id
+    #     )
+    #
+    #     stored = serialise(raw) if serialise is not None else raw
+    #     self._sub_phase_cache[name] = stored
+    #     await self.enqueue_checkpoint()
+    #
+    #     if serialise is not None and deserialise is not None:
+    #         return deserialise(stored)
+    #     return raw
 
     async def _register_resource(
         self,

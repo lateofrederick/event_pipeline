@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Type
+from typing import Any, Dict, List, Optional, Union, Type, cast, TYPE_CHECKING
 
 from volnux import Event
 from volnux.mixins.event import RetryPolicy
@@ -19,6 +19,9 @@ from volnux.engine.workflows.loaders import (
     LoadFromEventHub,
     LoadFromLocal,
 )
+
+if TYPE_CHECKING:
+    from .registry import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +153,8 @@ class WorkflowSource:
             options=Options.from_dict(options),
         )
 
+        loader: Event = cast(object, loader)  # type: ignore
+
         # Apply the retry policy to the *instance* so concurrent loads of the
         # same source types cannot overwrite each other's class-level policy.
         if self.retries > 0:
@@ -181,7 +186,7 @@ class WorkflowSource:
             )
 
         try:
-            return await loader(**actual_kwargs)
+            return await loader(**actual_kwargs)  # type: ignore
         except Exception as exc:
             logger.error(
                 "WorkflowSource '%s': loader %s raised an unexpected error: %s",

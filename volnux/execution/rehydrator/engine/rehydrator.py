@@ -260,7 +260,7 @@ class LazyRehydrator:
     async def _restore_execution_state(
         self, context: "ExecutionContext", snapshot: ContextSnapshot
     ) -> None:
-        from volnux.execution.state_manager import ExecutionState, ExecutionStatus
+        from volnux.execution.status import ExecutionStatus
         from volnux.result import ResultSet
         from ..event.event_result_serializer import EXEC_RESULT_SERIALIZER
 
@@ -271,12 +271,14 @@ class LazyRehydrator:
             ]
         )
 
-        state = ExecutionState(
-            status=ExecutionStatus(snapshot.status),
-            errors=[],
-            results=results,
-        )
-        context.get_state_manager().update_state(context.state_id, state)
+        context.status = ExecutionStatus(snapshot.status)
+        context.errors = []
+        context.results = results
+        context.aggregated_result = getattr(snapshot, "aggregated_result", None)
+        # Establish a live KV record under the (already identity-swapped)
+        # context id, now that construction itself no longer touches the
+        # backend.
+        await context.save_async()
 
         metrics = snapshot.metrics or {}
         if "start_time" in metrics:

@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import traceback
 import weakref
 import logging
 import time
@@ -16,7 +18,9 @@ from formax import (
     ValidationError as FormaxValidationError,
 )
 
-from volnux.mixins import ObjectIdentityMixin
+from volnux.mixins import KeyValueStoreIntegrationMixin
+from volnux.exceptions import StopProcessingError, SwitchTask, SuspendTask
+from volnux.execution.status import ExecutionStatus
 from volnux.parser.operator import PipeType
 from volnux.parser.options import ResultEvaluationStrategy
 from volnux.parser.protocols import TaskType
@@ -31,8 +35,15 @@ from volnux.signal.signals import (
 )
 from volnux.task import PipelineTask, PipelineTaskGrouping
 from volnux.concurrency.async_utils import to_thread
-
-from .state_manager import ExecutionState, ExecutionStatus, StateManager
+from volnux.context import get_current_node_id, get_current_project_id
+from volnux.backends.fields import (
+    ForeignKeyField,
+    FKConfig,
+    FKConstraint,
+    ListConfig,
+    ListField,
+    OnDelete,
+)
 
 if typing.TYPE_CHECKING:
     from volnux.engine.base import WorkflowEngine
@@ -68,7 +79,7 @@ def preformat_task_profile(
     raise FormaxValidationError("invalid task format")  # type: ignore
 
 
-class ExecutionContext(ObjectIdentityMixin, BaseModel):
+class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     """
     Represents the execution context for a particular event in the pipeline.
 
@@ -115,50 +126,180 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         Attrib(pre_formatter=preformat_task_profile),
     ]
     pipeline: Pipeline
-    metrics: ExecutionMetrics = field(default_factory=lambda: ExecutionMetrics())
+    metrics: MiniAnnotated[
+        ExecutionMetrics, Attrib(default_factory=lambda: ExecutionMetrics())
+    ]
+
+    # project identity
+    node_id: MiniAnnotated[str, Attrib(default_factory=lambda: get_current_node_id())]
+    project_id: MiniAnnotated[
+        str, Attrib(default_factory=lambda: get_current_project_id())
+    ]
 
     # Horizontal Links (Linked list)
-    previous_context: typing.Optional["ExecutionContext"] = None
-    next_context: typing.Optional["ExecutionContext"] = None
+    previous_context: ForeignKeyField[
+        "ExecutionContext",
+        FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
+    ]
+    next_context: ForeignKeyField[
+        "ExecutionContext",
+        FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
+    ]
 
     # Vertical Links (The Tree)
-    parent_context: typing.Optional["ExecutionContext"] = None
-    child_contexts: typing.List["ExecutionContext"] = field(default_factory=list)
+    parent_context: ForeignKeyField[
+        "ExecutionContext",
+        FKConfig(nullable=True, on_delete=OnDelete.SET_NULL),
+    ]
+    child_contexts: ListField["ExecutionContext", ListConfig(unique_items=True)]
+
+    # Workflow identifier for grouping contexts
+    workflow_id: typing.Optional[str]
+    workflow_name: typing.Optional[str]
+
+    # Hot execution state (formerly ExecutionState/StateManager). Persisted
+    # through KeyValueStoreIntegrationMixin (see get_state/set_state) instead
+    # of an in-process multiprocessing.Manager, so it can be shared across
+    # workers/machines rather than just processes forked from one parent.
+    status: MiniAnnotated[ExecutionStatus, Attrib(default=ExecutionStatus.PENDING)]
+    errors: typing.List[Exception] = field(default_factory=list)
+    results: "ResultSet[EventResult]" = field(default_factory=lambda: ResultSet())
+
+    # Usually used by Reduce meta-event
+    aggregated_result: typing.Optional[EventResult] = None
 
     _context_lock: asyncio.Lock = field(
         default_factory=lambda: asyncio.Lock()
     )  # Protects concurrent append ops
 
-    _state_manager: typing.ClassVar[typing.Optional["StateManager"]] = None
-
     # Weak reference to the engine (not persisted)
     _engine_ref: typing.Optional[weakref.ReferenceType] = None
 
-    # Workflow identifier for grouping contexts
-    workflow_id: str = None
-    workflow_name: str = None
-
     # Checkpoint data for idempotency
     _task_checkpoint: typing.Optional[typing.Dict[str, typing.Any]] = None
+
+    # Opt-in: when True, mutators persist to the configured backend after
+    # every change. Default False keeps the common one-context-per-task case
+    # off the backend hot path; call sites that need cross-process visibility
+    # (or explicit persist()/checkpointing) can still save on demand.
+    persist_state: bool = False
 
     class Config:
         validation = ValidationFlags.NONE
         init_strategy = InitStrategy.DATACLASS
 
-    def __post_init__(
-        self, *args: typing.Tuple[typing.Any], **kwargs: typing.Dict[str, typing.Any]
-    ) -> None:
-        from .state_manager import ExecutionState, ExecutionStatus, StateManager
+    def get_state(self) -> typing.Dict[str, typing.Any]:
+        """Persisted slice of the context: hot execution state plus enough
+        hierarchy/identity to look records back up, excluding the transient,
+        non-serializable orchestration graph (pipeline, task_profiles, engine
+        ref, locks)."""
+        state = self.__get_formax_state__().copy()
+        state.pop("_context_lock", None)
+        state.pop("_engine_ref", None)
+        state.pop("_task_checkpoint", None)
 
-        super().__init__(*args, **kwargs)  # type: ignore
+        return state
 
-        # Initialize shared state manager
-        if self.__class__._state_manager is None:
-            self.__class__._state_manager = StateManager()
+        # return {
+        #     "status": self.status.value,
+        #     "errors": [self._serialize_error(error) for error in self.errors],
+        #     # Results/aggregated_result persist by reference: EventResult
+        #     # already persists itself independently via the same mixin.
+        #     "results": [self._result_id(result) for result in self.results],
+        #     "aggregated_result": self._result_id(self.aggregated_result),
+        #     "workflow_id": self.workflow_id,
+        #     "workflow_name": self.workflow_name,
+        #     "parent_context_id": (
+        #         self.parent_context.id if self.parent_context else None
+        #     ),
+        #     "child_context_ids": [child.id for child in self.child_contexts],
+        #     "previous_context_id": (
+        #         self.previous_context.id if self.previous_context else None
+        #     ),
+        #     "next_context_id": self.next_context.id if self.next_context else None,
+        #     "metrics": {
+        #         "start_time": self.metrics.start_time,
+        #         "end_time": self.metrics.end_time,
+        #     },
+        #     "task_checkpoint": self._task_checkpoint,
+        # }
 
-        # Create a state in shared memory with its own lock
-        initial_state = ExecutionState(ExecutionStatus.PENDING)
-        self._state_manager.create_state(self.state_id, initial_state)
+    def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
+        self._objectid_lock = threading.Lock()
+
+        if "id" in state:
+            self._id = state["id"]
+
+        self.status = ExecutionStatus(
+            state.get("status", ExecutionStatus.PENDING.value)
+        )
+        # Persisted errors are flattened dicts, not live Exception instances -
+        # sentinel scanning (get_switch_request et al.) only matters during
+        # live execution, never after a cold reload/rehydration.
+        self.errors = state.get("errors", [])
+        self.results = state.get("results", [])
+        self.aggregated_result = state.get("aggregated_result")
+        self.workflow_id = state.get("workflow_id")
+        self.workflow_name = state.get("workflow_name")
+        metrics = state.get("metrics") or {}
+        self.metrics = ExecutionMetrics(
+            start_time=metrics.get("start_time", 0.0),
+            end_time=metrics.get("end_time", 0.0),
+        )
+        self._task_checkpoint = state.get("task_checkpoint")
+
+        # Hierarchy is restored as plain ids, not live object refs - resolving
+        # the actual neighbors/children is the rehydrator's job.
+        self._parent_context_id = state.get("parent_context_id")
+        self._child_context_ids = state.get("child_context_ids", [])
+        self._previous_context_id = state.get("previous_context_id")
+        self._next_context_id = state.get("next_context_id")
+
+    @staticmethod
+    def _serialize_error(
+        error: typing.Union[Exception, typing.Dict[str, typing.Any]],
+    ) -> typing.Dict[str, typing.Any]:
+        # get_state() must be idempotent: backends (e.g. the in-memory one,
+        # via copy.deepcopy) may round-trip get_state()/set_state() more than
+        # once, so `error` may already be a previously-serialized dict.
+        if isinstance(error, dict):
+            return error
+        return {
+            "type": error.__class__.__name__,
+            "message": str(error),
+            "traceback": "".join(
+                traceback.format_exception(type(error), error, error.__traceback__)
+            ),
+        }
+
+    @staticmethod
+    def _result_id(
+        result: typing.Union["EventResult", str, None],
+    ) -> typing.Optional[str]:
+        # Same idempotency concern as _serialize_error: `result` may already
+        # be a plain id from a prior round trip.
+        return getattr(result, "id", result)
+
+    def get_stop_processing_request(self) -> typing.Optional[Exception]:
+        """Check for StopProcessingError in errors"""
+        for err in self.errors:
+            if isinstance(err, Exception) and type(err) == StopProcessingError:
+                return err
+        return None
+
+    def get_switch_request(self) -> typing.Optional[Exception]:
+        """Check for SwitchTask in errors"""
+        for err in self.errors:
+            if isinstance(err, Exception) and type(err) == SwitchTask:
+                return err
+        return None
+
+    def get_suspension_request(self) -> typing.Optional[Exception]:
+        """Check for SuspendTask in errors"""
+        for err in self.errors:
+            if isinstance(err, Exception) and type(err) == SuspendTask:
+                return err
+        return None
 
     @classmethod
     async def create_context(
@@ -172,6 +313,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         next_context: typing.Optional["ExecutionContext"] = None,
         parent_context: typing.Optional["ExecutionContext"] = None,
         child_contexts: typing.List["ExecutionContext"] = None,
+        persist_state: bool = False,
     ) -> "ExecutionContext":
         """
         Creates an ExecutionContext instance in an asynchronous, thread-safe manner. This method wraps the
@@ -197,6 +339,9 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         :type parent_context: typing.Optional[ExecutionContext], optional
         :param child_contexts: (Optional) List of child ExecutionContexts derived from the current context.
         :type child_contexts: typing.List[ExecutionContext], optional
+        :param persist_state: (Optional) Whether mutators should persist hot state to the
+            configured backend after every change. Defaults to False.
+        :type persist_state: bool, optional
 
         :return: An instance of ExecutionContext constructed asynchronously.
         :rtype: ExecutionContext
@@ -219,6 +364,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             next_context=next_context,
             parent_context=parent_context,
             child_contexts=child_contexts,
+            persist_state=persist_state,
         )
         return context
 
@@ -226,26 +372,11 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     def state_id(self) -> str:
         return self.id
 
-    @property
-    def state(self) -> "ExecutionState":
-        """
-        Get the current state from shared memory.
-        """
-        return self.get_state_manager().get_state(self.state_id)
-
-    @property
-    async def state_async(self) -> "ExecutionState":
-        """
-        Async version of getting the current state from shared memory.
-        """
-        return await self.get_state_manager().get_state_async(self.state_id)
-
     async def spawn_child(
         self, task_profiles: typing.Deque[TaskType]
     ) -> "ExecutionContext":
         """
-        Creates and returns a child ExecutionContext. The child inherits the same
-        StateManager as the parent but is assigned a unique state_id. The parent-child
+        Creates and returns a child ExecutionContext. The parent-child
         relationship is established by linking the child context to the parent's list
         of child contexts.
 
@@ -255,13 +386,13 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             current context.
         :rtype: ExecutionContext
         """
-        # Child inherit the same StateManager but get a unique state_id
         child = await ExecutionContext.create_context(
             task_profiles=task_profiles,
             pipeline=self.pipeline,
             parent_context=self,
             workflow_id=self.workflow_id,
             workflow_name=self.workflow_name,
+            persist_state=self.persist_state,
         )
 
         async with self._context_lock:
@@ -305,11 +436,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             children_snapshot = list(self.child_contexts)
             all_done = True
             for child in children_snapshot:
-                child_state = await child.state_async
-                if child_state.status not in [
+                if child.status not in (
                     ExecutionStatus.COMPLETED,
                     ExecutionStatus.FAILED,
-                ]:
+                ):
                     all_done = False
                     break
 
@@ -317,49 +447,48 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             # The 'Super-Task' is now officially complete
             await self.update_status_async(ExecutionStatus.COMPLETED)
 
-    def get_state_manager(self) -> StateManager:
-        """
-        Get context state manager
+    def _maybe_persist(self) -> None:
+        if self.persist_state:
+            self.save()
 
-        Returns:
-            The state manager for this context
-        """
-        if self.__class__._state_manager is None:
-            state_manager = StateManager()
-            initial_state = ExecutionState(ExecutionStatus.PENDING)
-            state_manager.create_state(self.state_id, initial_state)
-            self.__class__._state_manager = state_manager
-            return state_manager
-        return self._state_manager  # type: ignore
+    async def _maybe_persist_async(self) -> None:
+        if self.persist_state:
+            await self.save()
 
     def update_status(self, new_status: "ExecutionStatus") -> None:
-        self.get_state_manager().update_status(self.state_id, new_status)
+        self.status = new_status
+        self._maybe_persist()
 
     async def update_status_async(self, new_status: "ExecutionStatus") -> None:
-        await self.get_state_manager().update_status_async(self.state_id, new_status)
+        self.status = new_status
+        await self._maybe_persist_async()
 
         # If this child is done, signal the parent to check its 'Group' status
         if new_status == ExecutionStatus.COMPLETED and self.parent_context:
             await self.parent_context._evaluate_group_finality()
 
     def add_error(self, error: Exception) -> None:
-        self.get_state_manager().append_error(self.state_id, error)
+        self.errors.append(error)
+        self._maybe_persist()
 
     async def add_error_async(self, error: Exception) -> None:
-        await self.get_state_manager().append_error_async(self.state_id, error)
+        self.errors.append(error)
+        await self._maybe_persist_async()
 
     def add_result(self, result: EventResult) -> None:
-        self.get_state_manager().append_result(self.state_id, result)
+        self.results.append(result)
+        self._maybe_persist()
 
     async def add_result_async(self, result: EventResult) -> None:
-        await self.get_state_manager().append_result_async(self.state_id, result)
+        self.results.append(result)
+        await self._maybe_persist_async()
 
     def cancel(self) -> None:
         """
-        Cancel execution - only locks THIS context.
+        Cancel execution - only mutates THIS context.
         Other contexts continue running unaffected.
         """
-        self.get_state_manager().update_status(self.state_id, ExecutionStatus.CANCELLED)
+        self.update_status(ExecutionStatus.CANCELLED)
         # Emit event
         event_execution_cancelled.emit(
             sender=self.__class__,
@@ -370,12 +499,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     async def cancel_async(self) -> None:
         """
-        Async version of cancel execution - only locks THIS context.
+        Async version of cancel execution - only mutates THIS context.
         Other contexts continue running unaffectedly.
         """
-        await self.get_state_manager().update_status_async(
-            self.state_id, ExecutionStatus.CANCELLED
-        )
+        await self.update_status_async(ExecutionStatus.CANCELLED)
         # Emit event
         await event_execution_cancelled.emit_async(
             sender=self.__class__,
@@ -386,10 +513,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     def abort(self) -> None:
         """
-        Abort execution - only locks THIS context.
+        Abort execution - only mutates THIS context.
         Other contexts continue running unaffected.
         """
-        self.get_state_manager().update_status(self.state_id, ExecutionStatus.ABORTED)
+        self.update_status(ExecutionStatus.ABORTED)
         # Emit event
         event_execution_aborted.emit(
             sender=self.__class__,
@@ -400,12 +527,10 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
 
     async def abort_async(self) -> None:
         """
-        Async version of abort execution - only locks THIS context.
+        Async version of abort execution - only mutates THIS context.
         Other contexts continue running unaffected.
         """
-        await self.get_state_manager().update_status_async(
-            self.state_id, ExecutionStatus.ABORTED
-        )
+        await self.update_status_async(ExecutionStatus.ABORTED)
         # Emit event
         await event_execution_aborted.emit_async(
             sender=self.__class__,
@@ -418,7 +543,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         Mark the execution context as failed.
         """
-        self.get_state_manager().update_status(self.state_id, ExecutionStatus.FAILED)
+        self.update_status(ExecutionStatus.FAILED)
         # Emit event
         event_execution_failed.emit(
             sender=self.__class__,
@@ -431,9 +556,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         """
         Async version of marking the execution context as failed.
         """
-        await self.get_state_manager().update_status_async(
-            self.state_id, ExecutionStatus.FAILED
-        )
+        await self.update_status_async(ExecutionStatus.FAILED)
         # Emit event
         await event_execution_failed.emit_async(
             sender=self.__class__,
@@ -443,9 +566,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         )
 
     async def paused_async(self) -> None:
-        await self.get_state_manager().update_status_async(
-            self.state_id, ExecutionStatus.PAUSED
-        )
+        await self.update_status_async(ExecutionStatus.PAUSED)
 
         # Emit event
         await event_execution_paused.emit_async(
@@ -455,10 +576,6 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             state=ExecutionStatus.PAUSED,
         )
 
-    def get_state_snapshot(self) -> "ExecutionState":
-        """Get a thread-safe copy of the current state."""
-        return self.state
-
     def bulk_update(
         self,
         status: typing.Optional["ExecutionStatus"] = None,
@@ -466,14 +583,13 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         results: typing.Optional[typing.Sequence[EventResult]] = None,
     ) -> None:
         """Efficient bulk update"""
-        state = self.state
         if status is not None:
-            state.status = status
+            self.status = status
         if errors is not None:
-            state.errors.extend(errors)  # type: ignore
+            self.errors.extend(errors)
         if results is not None:
-            state.results.extend(results)
-        self.get_state_manager().update_state(self.state_id, state)  # type: ignore
+            self.results.extend(results)
+        self._maybe_persist()
 
     async def bulk_update_async(
         self,
@@ -482,19 +598,17 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
         results: typing.Optional[typing.Sequence[EventResult]] = None,
     ) -> None:
         """Async version of efficient bulk update"""
-        state = await self.state_async
         if status is not None:
-            state.status = status
+            self.status = status
         if errors is not None:
-            state.errors.extend(errors)  # type: ignore
+            self.errors.extend(errors)
         if results is not None:
-            state.results.extend(results)
-        await self.get_state_manager().update_state_async(self.state_id, state)
+            self.results.extend(results)
+        await self._maybe_persist_async()
 
     async def update_aggregated_result(self, result: "EventResult") -> None:
-        state = await self.state_async
-        state.aggregated_result = result
-        self.get_state_manager().update_state(self.state_id, state)
+        self.aggregated_result = result
+        await self._maybe_persist_async()
 
     def __iter__(self) -> typing.Generator["ExecutionContext", typing.Any, None]:
         current: typing.Optional["ExecutionContext"] = self
@@ -654,10 +768,6 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             return task_profile.get_event_class().evaluator()
         return None
 
-    def cleanup(self) -> None:
-        """Clean up shared memory resources"""
-        self.get_state_manager().release_state(self.state_id)
-
     def set_engine(self, engine: "WorkflowEngine") -> None:
         """Associate this context with its execution engine"""
         self._engine_ref = weakref.ref(engine)
@@ -723,7 +833,7 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
     async def persist(self) -> None:
         """Persist current state"""
         snapshot = await self.create_snapshot()
-        await snapshot.save_async()
+        await snapshot.save()
         logger.debug(f"Persisted context {self.state_id}")
 
     def set_task_checkpoint(self, checkpoint_data: dict) -> None:
@@ -734,12 +844,3 @@ class ExecutionContext(ObjectIdentityMixin, BaseModel):
             checkpoint_data: Arbitrary data marking progress within a task
         """
         self._task_checkpoint = checkpoint_data
-
-    def __del__(self) -> None:
-        """Ensure cleanup on garbage collection"""
-        try:
-            if hasattr(self, "state_id") and self.state_id:
-                if self._state_manager:
-                    self._state_manager.release_state(self.state_id)
-        except:
-            pass  # Ignore errors during cleanup

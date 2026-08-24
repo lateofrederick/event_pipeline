@@ -13,6 +13,7 @@ import orjson as json
 import threading
 import logging
 import operator
+from enum import Enum
 from yoyo import read_migrations, get_backend
 from contextlib import contextmanager
 from typing import (
@@ -46,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 class YoyoMigrationsMixin:
 
-    connector: Any
+    connector: BackendConnectorBase[Any]
 
     @staticmethod
     def decompose_field_type(
@@ -64,6 +65,17 @@ class YoyoMigrationsMixin:
             else:
                 raise ValueError(f"Invalid field type: {field_type}")
         return field_type, None
+
+    @staticmethod
+    def _sqlite_row_and_tuple_to_dict(row: Any, cursor: Any) -> Dict[str, Any]:
+        if hasattr(row, "_asdict"):
+            row_dict = row._asdict()
+        elif hasattr(row, "keys"):
+            row_dict = {k: row[k] for k in row.keys()}
+        else:
+            col_names = [d[0] for d in cursor.description]
+            row_dict = dict(zip(col_names, row))
+        return row_dict
 
     def schema_exists(self, schema_name: str) -> bool:
         raise NotImplementedError
@@ -121,7 +133,9 @@ class YoyoMigrationsMixin:
     def _get_migration_backend(self) -> typing.Any:
         return get_backend(self.connector.get_uri())
 
-    def _validate_migrations_dir(self, migrations_dir: str) -> None:
+    def _validate_migrations_dir(self, migrations_dir: Optional[str] = None) -> None:
+        if migrations_dir is None:
+            return
         if not os.path.isdir(migrations_dir):
             raise FileNotFoundError(
                 f"Migrations directory does not exist: {migrations_dir}"
@@ -196,12 +210,14 @@ class YoyoMigrationsMixin:
         Apply all pending migrations from the given directory.
 
         Args:
-            migrations_dir: Path to the migrations directory.
+            migrations_dir: Path to the migrations' directory.
             dry_run: If True, only calculate what would be applied.
 
         Returns:
             Number of migrations that would be, or were, applied.
         """
+        if migrations_dir is None:
+            return 0
         self._validate_migrations_dir(migrations_dir)
 
         backend, _, to_apply = self._get_pending_migrations(migrations_dir)
@@ -333,36 +349,14 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     NAMESPACE_SEPARATOR = ":"
 
-    RESERVED_FIELDS = {"_id", "_backend", "_schema_name"}
-
-    LOOKUP_SEPARATOR = "__"
-
-    LOOKUP_OPERATORS = {
-        "exact": operator.eq,
-        "iexact": lambda a, b: str(a).lower() == str(b).lower(),
-        "contains": lambda a, b: b in str(a) if a is not None else False,
-        "icontains": lambda a, b: (
-            b.lower() in str(a).lower() if a is not None else False
-        ),
-        "in": lambda a, b: a in b,
-        "gt": operator.gt,
-        "gte": operator.ge,
-        "lt": operator.lt,
-        "lte": operator.le,
-        "startswith": lambda a, b: str(a).startswith(b) if a is not None else False,
-        "istartswith": lambda a, b: (
-            str(a).lower().startswith(b.lower()) if a is not None else False
-        ),
-        "endswith": lambda a, b: str(a).endswith(b) if a is not None else False,
-        "iendswith": lambda a, b: (
-            str(a).lower().endswith(b.lower()) if a is not None else False
-        ),
-        "range": lambda a, b: b[0] <= a <= b[1],
-        "isnull": lambda a, b: (a is None) == b,
-        "regex": lambda a, b: bool(re.search(b, str(a))) if a is not None else False,
-        "iregex": lambda a, b: (
-            bool(re.search(b, str(a), re.IGNORECASE)) if a is not None else False
-        ),
+    RESERVED_FIELDS = {
+        "_id",
+        "_backend",
+        "_backend_class",
+        "_objectid_lock",
+        "_schema_name",
+        "_backend_config",
+        "_backend_store",
     }
 
     def __init__(
@@ -386,120 +380,17 @@ class KeyValueStoreBackendBase(abc.ABC):
         finally:
             self._connector_lock.release()
 
-    @classmethod
-    def _parse_lookup(cls, field_name: str) -> tuple[str, str]:
-        """Parse field name for a lookup type.
+    def _ensure_connected(self) -> None:
+        """Ensure the Redis connection is active.
 
-        Args:
-            field_name: Field name potentially containing __lookup suffix.
-
-        Returns:
-            Tuple of (actual_field_name, lookup_type).
+        Raises:
+            ConnectionError: If a connection cannot be established.
         """
-        parts = field_name.rsplit(cls.LOOKUP_SEPARATOR, 1)
-        if len(parts) == 2 and parts[1] in cls.LOOKUP_OPERATORS:
-            return parts[0], parts[1]
-        return field_name, "exact"
-
-    @classmethod
-    def _create_filter_predicate(cls, **filter_kwargs: Any) -> Callable[[Any], bool]:
-        """Create a filter predicate function from keyword arguments.
-
-        Supports Django-style field lookups like:
-        - age__gt=25
-        - name__contains="John"
-        - email__icontains="gmail"
-        - status__in=["active", "pending"]
-        - created_at__gte=datetime(2023, 1, 1)
-
-        Args:
-            **filter_kwargs: Attribute-lookup-value pairs to match against records.
-
-        Returns:
-            A predicate function that returns True if a record matches all criteria.
-        """
-        predicates = []
-
-        for field_spec, value in filter_kwargs.items():
-            field_name, lookup_type = cls._parse_lookup(field_spec)
-            operator_func = cls.LOOKUP_OPERATORS[lookup_type]
-
-            def make_predicate(field, op, val):
-                def predicate(record: Any) -> bool:
-                    try:
-                        # Handle nested attributes
-                        if "__" in field:
-                            record_value = record
-                            for part in field.split("__"):
-                                record_value = getattr(record_value, part, None)
-                                if record_value is None:
-                                    break
-                        else:
-                            record_value = getattr(record, field, None)
-
-                        return op(record_value, val)
-                    except (AttributeError, TypeError, ValueError):
-                        return False
-
-                return predicate
-
-            predicates.append(make_predicate(field_name, operator_func, value))
-
-        # Combine all predicates with AND
-        def combined_predicate(record: Any) -> bool:
-            return all(predicate(record) for predicate in predicates)
-
-        return combined_predicate
-
-    @classmethod
-    def _create_complex_filter(
-        cls, q_objects: typing.List["Q"], default_connector: str = "AND"
-    ) -> Callable[[Any], bool]:
-        """Create a filter predicate from Q objects for complex queries.
-
-        Args:
-            q_objects: List of Q objects defining the filter logic.
-            default_connector: Default logical connector ('AND' or 'OR').
-
-        Returns:
-            A predicate function that evaluates the Q object tree.
-        """
-
-        from volnux.result.stream import Q
-
-        def evaluate_q(q, record):
-            if q.negated:
-                return not evaluate_q_children(q, record)
-            return evaluate_q_children(q, record)
-
-        def evaluate_q_children(q, record):
-            if q.connector == "AND":
-                return all(evaluate_child(child, record) for child in q.children)
-            else:
-                return any(evaluate_child(child, record) for child in q.children)
-
-        def evaluate_child(child, record):
-            if isinstance(child, Q):
-                return evaluate_q(child, record)
-            else:
-                # It's a (field_lookup, value) tuple
-                field_spec, value = child
-                field_name, lookup_type = cls._parse_lookup(field_spec)
-                operator_func = cls.LOOKUP_OPERATORS.get(lookup_type, operator.eq)
-
-                try:
-                    record_value = getattr(record, field_name, None)
-                    return operator_func(record_value, value)
-                except (AttributeError, TypeError, ValueError):
-                    return False
-
-        # Create root Q if multiple objects
-        if len(q_objects) == 1:
-            root_q = q_objects[0]
-        else:
-            root_q = Q(*q_objects, _connector=default_connector)
-
-        return lambda record: evaluate_q(root_q, record)
+        if not self.connector.is_connected():
+            logger.warning(
+                f"{self.connector.__class__.__name__} connection lost, attempting to reconnect..."
+            )
+            self.connector.connect()
 
     def close(self) -> None:
         """Close the backend connection and release resources."""
@@ -555,6 +446,11 @@ class KeyValueStoreBackendBase(abc.ABC):
 
             if isinstance(value, (dict, list)):
                 record_data[field_name] = value
+            elif isinstance(value, Enum):
+                record_data[field_name] = value.value
+            # NOTE: nested objects serialisation should be handled by preformatters
+            # elif hasattr(value, "__getstate__"):
+            #     record_data[field_name] = value.__getstate__()
             elif value is not None:
                 record_data[field_name] = value
             else:
@@ -582,7 +478,9 @@ class KeyValueStoreBackendBase(abc.ABC):
             raise SerializationError(f"Serialization failed: {e}")
 
     def _deserialize_record(
-        self, data: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]
+        self,
+        data: Union[bytes, str, Dict[str, Any]],
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
     ) -> "KeyValueStoreIntegrationMixin":
         """Deserialize bytes to a record object.
 
@@ -597,9 +495,33 @@ class KeyValueStoreBackendBase(abc.ABC):
             SerializationError: If deserialization fails.
         """
         try:
-            state = json.loads(data)
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
+            if isinstance(data, dict):
+                state = data
+            else:
+                state = json.loads(data)
+
+            for key, value in state.items():
+                if key == "id":
+                    continue
+                # Deserialize JSON columns back to Python objects
+                if isinstance(value, (str, bytes)):
+                    try:
+                        parsed = json.loads(value)
+                        if isinstance(parsed, (dict, list)):
+                            state[key] = parsed
+                            continue
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                state[key] = value
+
+            if hasattr(record_klass, "hydrate_formax_model"):
+                copied = state.copy()
+                record_id = copied.pop("id")
+                record = record_klass.hydrate_formax_model(copied)
+                record.change_object_id(record_id)
+            else:
+                record = record_klass.__new__(record_klass)
+                record.__setstate__(state)
             return record
         except Exception as e:
             logger.error(f"Failed to deserialize record: {e}")
@@ -618,9 +540,10 @@ class KeyValueStoreBackendBase(abc.ABC):
             model_klass=record_klass,
             keys=record_keys,
             chunk_size=chunk_size,
-            memory_backend=None,
+            memory_capacity=10,
             persisted_backend=self,
             transaction_id=f"{self.__class__.__name__}",
+            predicates=[],
         )
 
     def create_native_fk_constraint(
@@ -756,7 +679,7 @@ class KeyValueStoreBackendBase(abc.ABC):
     @abc.abstractmethod
     def update(
         self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
-    ) -> None:
+    ) -> Optional[int]:
         """Update an existing record in the store.
 
         Args:
@@ -770,7 +693,7 @@ class KeyValueStoreBackendBase(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def delete(self, schema_name: str, record_key: str) -> None:
+    def delete(self, schema_name: str, record_key: str) -> Optional[int]:
         """Delete a record from the store.
 
         Args:
@@ -901,7 +824,7 @@ class KeyValueStoreBackendBase(abc.ABC):
 
     def upsert(
         self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
-    ) -> None:
+    ) -> Optional[int]:
         """Insert or update a record (upsert operation).
 
         Args:
@@ -927,3 +850,34 @@ class KeyValueStoreBackendBase(abc.ABC):
             An iterable of all records in the schema.
         """
         return self.filter(schema_name, record_klass)
+
+    # Custom Performance Ops
+    async def atomic_update_field(
+        self, key: str, field: str, value: Union[bytes, str]
+    ) -> bool:
+        """Atomically update a single JSON field within a stored object.
+
+        Returns False if the key does not exist. The backend must guarantee
+        this operation is atomic (no read-modify-write race).
+
+        Implementations:
+          - Redis: Lua script with GET + SET + KEEPTTL
+          - Postgres: UPDATE ... SET jsonb_col = jsonb_set(...) WHERE key = ...
+          - InMemory: asyncio.Lock-protected dict mutation
+        """
+        raise NotImplementedError("Not supported")
+
+    async def atomic_append_to_field(
+        self, key: str, field: str, value: Union[bytes, str]
+    ) -> bool:
+        """Atomically append an element to a JSON array field within a stored object.
+
+        Returns False if the key does not exist. Creates the array if the
+        field doesn't yet exist. Backend must guarantee atomicity.
+
+        Implementations:
+          - Redis: Lua script with table.insert
+          - Postgres: UPDATE ... SET jsonb_col = jsonb_col || jsonb_build_array(...)
+          - InMemory: asyncio.Lock-protected list.append
+        """
+        raise NotImplementedError("Not supported")

@@ -1,25 +1,12 @@
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
-from formax import Attrib, BaseModel, MiniAnnotated, preformat, postformat
+from typing import Dict, Any, Optional
+from formax import Attrib, BaseModel, MiniAnnotated
 
 from .triggers import TriggerLifecycle
 from volnux.mixins import KeyValueStoreIntegrationMixin
-
-if TYPE_CHECKING:
-    from volnux.result import ResultStream
+from volnux.backends.fields import DateTimeField, DTConfig
 
 logger = logging.getLogger(__name__)
-
-
-def datetime_to_str(dt: datetime) -> str:
-    if isinstance(dt, str):
-        return dt
-    return dt.astimezone(timezone.utc).isoformat()
-
-
-def str_to_datetime(dt: str) -> datetime:
-    return datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
 
 
 class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
@@ -31,21 +18,7 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
     last_fired: Optional[str]
     # dirty=True means the CLI wrote a change the engine hasn't applied yet
     dirty: MiniAnnotated[bool, Attrib(default=False)]
-    updated_at: MiniAnnotated[
-        str, Attrib(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    ]
-
-    @preformat(["last_fired", "updated_at"], 1)
-    def serialize_datetime(self, value: Optional[datetime]) -> Optional[str]:
-        if value is None:
-            return None
-        return datetime_to_str(value)
-
-    @postformat(["last_fired", "updated_at"], 1)
-    def deserialize_datetime(self, value: Optional[str]) -> Optional[datetime]:
-        if value is None:
-            return None
-        return str_to_datetime(value)
+    updated_at: DateTimeField[DTConfig(auto_now=True)]
 
     @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:
@@ -57,20 +30,21 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
         }
 
     @classmethod
-    async def get_dirty(cls) -> "ResultStream[TriggerStateRecord]":
-        records = await cls.filter_async(dirty=True)
+    async def get_dirty(cls):
+        records = await cls.filter(dirty=True)
         return records
 
     @classmethod
     async def mark_clean(cls, trigger_id: str) -> None:
-        record = await cls.get_or_none_async(record_id=trigger_id)
+        record = await cls.get_or_none(record_id=trigger_id)
         if record is None:
             logging.warning(
                 f"TriggerStateRecord not found for trigger_id: {trigger_id}"
             )
             return
+
         record.dirty = False
-        await record.save_async()
+        await record.save()
 
     async def start(self):
         if self.lifecycle == TriggerLifecycle.ACTIVE:
@@ -78,10 +52,11 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
                 f"Trigger '{self.id}' is already active and cannot be started again."
             )
 
-        self.lifecycle = TriggerLifecycle.ACTIVE
-        self.enabled = True
-        self.dirty = True
-        await self.save_async()
+        async with self.transaction():
+            self.lifecycle = TriggerLifecycle.ACTIVE
+            self.enabled = True
+            self.dirty = True
+            await self.save()
         logger.info(f"Trigger '{self.id}' started.")
 
     async def stop(self):
@@ -90,10 +65,11 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
                 f"Trigger '{self.id}' is already stopped and cannot be stopped again."
             )
 
-        self.lifecycle = TriggerLifecycle.STOPPED
-        self.enabled = False
-        self.dirty = True
-        await self.save_async()
+        async with self.transaction():
+            self.lifecycle = TriggerLifecycle.STOPPED
+            self.enabled = False
+            self.dirty = True
+            await self.save()
         logger.info(f"Trigger '{self.id}' stopped.")
 
     async def pause(self):
@@ -109,10 +85,11 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
                 f"Cannot pause trigger '{self.id}': "
                 f"current lifecycle is '{self.lifecycle.value}', expected 'active'."
             )
-        self.enabled = False
-        self.lifecycle = TriggerLifecycle.PAUSED
-        self.dirty = True
-        await self.save_async()
+        async with self.transaction():
+            self.enabled = False
+            self.lifecycle = TriggerLifecycle.PAUSED
+            self.dirty = True
+            await self.save()
         logger.info(f"Trigger '{self.id}' paused.")
 
     async def resume(self):
@@ -128,8 +105,9 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
                 f"Cannot resume trigger '{self.id}': "
                 f"current lifecycle is '{self.lifecycle.value}', expected 'paused'."
             )
-        self.enabled = True
-        self.lifecycle = TriggerLifecycle.ACTIVE
-        self.dirty = True
-        await self.save_async()
+        async with self.transaction():
+            self.enabled = True
+            self.lifecycle = TriggerLifecycle.ACTIVE
+            self.dirty = True
+            await self.save()
         logger.info(f"Trigger '{self.id}' resumed.")

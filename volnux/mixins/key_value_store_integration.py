@@ -1,7 +1,8 @@
 import logging
 import typing
 import re
-from contextlib import contextmanager
+import asyncio
+from contextlib import asynccontextmanager
 from functools import wraps
 from typing import (
     Any,
@@ -20,7 +21,7 @@ from typing import (
     TYPE_CHECKING,
     ForwardRef,
 )
-
+from concurrent.futures import ThreadPoolExecutor
 from formax import Attrib
 from formax.typing import get_type_hints, evaluate_forward_ref
 
@@ -30,15 +31,10 @@ from volnux.exceptions import (
     ObjectExistError,
     ObjectProtectedError,
     ObjectDoesNotExist,
-    ImproperlyConfigured,
-    SerializationError,
 )
-from volnux.backends.storage_route import StorageRoute
 from volnux.import_utils import import_string
-from volnux.mixins.identity import ObjectIdentityMixin
-from volnux.utils import get_obj_klass_import_str
-from volnux.concurrency.async_utils import to_thread
 from .connection import BackendConnectionIntegrationMixin
+from volnux.backends.db_utils import default_native_fk_check
 
 if TYPE_CHECKING:
     from volnux.config import VolnuxConfig
@@ -47,6 +43,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="KeyValueStoreIntegrationMixin")
+
+# Dedicated executor for blocking KV backend calls.
+# NEVER use default asyncio.to_thread pool for persistence operations.
+_KV_BACKEND_EXECUTOR = ThreadPoolExecutor(
+    max_workers=128, thread_name_prefix="volnux-kv-backend"
+)
 
 
 def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) -> None:
@@ -70,30 +72,46 @@ def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) 
         if len(args) != 2:
             continue
 
-        has_native_fk = False
         attrib = args[1]
 
         if isinstance(attrib, Attrib):
             fk_meta = attrib.metadata
             if not fk_meta:
-                break
+                continue
 
-            target_model: Optional["KeyValueStoreIntegrationMixin"] = fk_meta.get(
-                "target_model"
-            )
+            target_model: Union[
+                Type["KeyValueStoreIntegrationMixin"], None, ForwardRef
+            ] = fk_meta.get("target_model")
             if not target_model:
-                break
+                continue
 
             if isinstance(target_model, ForwardRef):
-                target_model = evaluate_forward_ref(target_model, None, None)
-                fk_meta["target_model"] = target_model
-                attrib.metadata = fk_meta
+                try:
+                    if target_model.__forward_arg__ == cls.__name__:
+                        target_model = cls
+                    else:
+                        import sys
 
-            if target_model == cls:
-                has_native_fk = True
-                fk_meta["has_native_fk"] = has_native_fk
+                        module = sys.modules[cls.__module__]
+                        target_model: Type["KeyValueStoreIntegrationMixin"] = (
+                            evaluate_forward_ref(target_model, module.__dict__, None)
+                        )
+                    fk_meta["target_model"] = target_model
+                except Exception as e:
+                    logger.warning(
+                        "Could not resolve ForwardRef for %s.%s: %s",
+                        cls.__name__,
+                        field_name,
+                        e,
+                    )
+                    raise
 
-                attrib.metadata = fk_meta
+            if default_native_fk_check(cls, target_model):
+                fk_meta["has_native_fk"] = True
+            else:
+                fk_meta["has_native_fk"] = False
+
+            attrib.metadata = fk_meta
 
             reverse_name = fk_meta.get("reverse_name")
             if not reverse_name:
@@ -106,64 +124,95 @@ def _resolve_foreign_keys_for_class(cls: Type["KeyValueStoreIntegrationMixin"]) 
                 field_attrib=attrib,
                 referencing_model=cls,
                 reverse_name=reverse_name,
-                has_native_fk=has_native_fk,
+                has_native_fk=fk_meta["has_native_fk"],
             )
-            break
 
 
 class _ReverseRelationDescriptor:
-    """
-    Descriptor that provides reverse relation access.
+    """Descriptor providing async reverse relation access.
 
     Enables patterns like:
-        user.workflows # All workflows created by this user
-        user.audit_entries # All audit entries by this user
+        workflows = await user.workflows # All workflows created by this user
+        entries = await user.audit_entries # All audit entries referencing this user
+
+    Returns a ResultStream (never a single object). No caching — each
+    access performs a fresh query to ensure consistency. Caching is
+    the caller's responsibility if needed.
     """
+
+    __slots__ = ("_referencing_model", "_foreign_key_field")
 
     def __init__(
         self,
         referencing_model: Union[Type["KeyValueStoreIntegrationMixin"], str],
         foreign_key_field: str,
     ):
-        self.referencing_model = referencing_model
-        self.foreign_key_field = foreign_key_field
-        self._cache: Dict[str, "KeyValueStoreIntegrationMixin"] = {}
+        self._referencing_model = referencing_model
+        self._foreign_key_field = foreign_key_field
 
-    def get_model(self) -> Type["KeyValueStoreIntegrationMixin"]:
-        if isinstance(self.referencing_model, str):
-            self.referencing_model = cast(
-                Type["KeyValueStoreIntegrationMixin"],
-                import_string(self.referencing_model),
-            )
-        return self.referencing_model
+    def _get_model(self) -> Type["KeyValueStoreIntegrationMixin"]:
+        """Resolve string references lazily. Mutates slot in place."""
+        if isinstance(self._referencing_model, str):
+            self._referencing_model = import_string(self._referencing_model)
+        return self._referencing_model  # type: ignore[return-value]
 
-    def __get__(self, instance, owner=None):
+    def __get__(self, instance: Any, owner: Any = None) -> Any:
         if instance is None:
             return self
 
-        if str(instance.id) in self._cache:
-            return self._cache[str(instance.id)]
+        # Return an awaitable that resolves to a ResultStream.
+        # Callers use: results = await user.workflows
+        return _ReverseRelationQuery(
+            descriptor=self,
+            instance=instance,
+        )
 
-        model_class = self.get_model()
-
-        # Build the filter: {foreign_key_field: instance}
-        # The foreign key field stores {"object_id": instance.id, ...}
-        # We need to filter on object_id within the JSONB field
-        filter_key = f"{self.foreign_key_field}__object_id"
-
-        model_instance = model_class.filter(**{filter_key: str(instance.id)})
-        self._cache[str(instance.id)] = model_instance  # type: ignore[assignment]
-        return model_instance
-
-    def __set__(self, instance, value):
+    def __set__(self, instance: Any, value: Any) -> None:
         raise AttributeError("Reverse relations are read-only")
 
-    def __delete__(self, instance):
+    def __delete__(self, instance: Any) -> None:
         raise AttributeError("Reverse relations cannot be deleted")
 
     def __repr__(self) -> str:
+        model_name = (
+            self._referencing_model
+            if isinstance(self._referencing_model, str)
+            else self._referencing_model.__name__
+        )
+        return f"<ReverseRelation: {model_name}.{self._foreign_key_field}>"
+
+
+class _ReverseRelationQuery:
+    """Awaitable proxy returned by _ReverseRelationDescriptor.__get__.
+
+    Defers the async filter call until the caller actually awaits it.
+    This allows `await user.workflows` syntax while keeping __get__
+    synchronous (as required by the descriptor protocol).
+    """
+
+    __slots__ = ("_descriptor", "_instance")
+
+    def __init__(
+        self,
+        descriptor: _ReverseRelationDescriptor,
+        instance: "KeyValueStoreIntegrationMixin",
+    ):
+        self._descriptor = descriptor
+        self._instance = instance
+
+    async def _resolve(self) -> "ResultStream[T]":
+        model_class = self._descriptor._get_model()
+        filter_key = f"{self._descriptor._foreign_key_field}__object_id"
+        return await model_class.filter(**{filter_key: str(self._instance.id)})
+
+    def __await__(self):
+        return self._resolve().__await__()
+
+    def __repr__(self) -> str:
         return (
-            f"<ReverseRelation: {self.referencing_model}" f".{self.foreign_key_field}>"
+            f"<ReverseRelationQuery: "
+            f"{type(self._instance).__name__}({self._instance.id}) "
+            f"-> {self._descriptor}>"
         )
 
 
@@ -185,10 +234,10 @@ def backend_operation(
 
     def decorator(method: Callable) -> Callable:
         @wraps(method)
-        def wrapper(self: "KeyValueStoreIntegrationMixin", *args, **kwargs):
+        async def wrapper(self: "KeyValueStoreIntegrationMixin", *args, **kwargs):
             result = method(self, *args, **kwargs)
             if auto_save:
-                self.save(force_insert=force_insert, ttl=ttl)
+                await self.save(force_insert=force_insert, ttl=ttl)
             return result
 
         return wrapper
@@ -228,14 +277,10 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         >>> loaded.save()  # Update in backend
     """
 
-    # Class-level backend store instance (shared across all instances)
-    # _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]] = None
-    # _backend_config: ClassVar[Optional[Dict[str, Any]]] = None
-
     # Backreference registry
     # Maps field_name -> set of (model_class, reverse_name, Attrib, has_native_fk) tuples
     # Example: {"created_by": {(Workflow, "workflows", attrib, False), (AuditEntry, "audit_entries", attrib, True)}}
-    _backreferences: ClassVar[Dict[str, Set[Tuple[Type, str, Attrib, bool]]]] = {}
+    _backreferences: ClassVar[Dict[str, Set[Tuple[Type, str, Attrib, bool]]]]
 
     def __init_subclass__(cls, **kwargs):
         """Register ForeignKey backreferences when a subclass is defined.
@@ -245,7 +290,18 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         register backreferences on the target models.
         """
         super().__init_subclass__(**kwargs)
+
+        # Each subclass gets its OWN isolated backreference registry
+        cls._backreferences = {}
         _resolve_foreign_keys_for_class(cls)
+
+    @classmethod
+    async def _run_in_kv_executor(cls, func, *args, **kwargs):
+        """Run a sync backend method in the dedicated KV executor."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _KV_BACKEND_EXECUTOR, lambda: func(*args, **kwargs)
+        )
 
     @classmethod
     def register_backreference(
@@ -292,27 +348,10 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                 ),
             )
 
-    def __post_init__(self, autosave: bool = False, **kwargs) -> None:
-        """Initialize the model with backend integration.
+    def _after_backend_init(self, **kwargs: Any) -> None:
+        self._loaded_from_backend = False
 
-        This method is called during object initialization to set up
-        the backend connection and perform initial save.
-
-        Raises:
-            ImproperlyConfigured: If backend initialization fails.
-        """
-        ObjectIdentityMixin.__init__(self)
-
-        if self._backend_store is None:
-            self._initialize_backend()
-
-        if autosave and not self._is_loaded_from_backend():
-            try:
-                self.save()
-            except Exception as e:
-                logger.warning(f"Failed to auto-save new object: {e}")
-
-    def _on_delete_hook(self) -> None:
+    async def _on_delete_hook(self) -> None:
         """Process all backreferences before deletion."""
         for field_name, references in self._backreferences.items():
             for reference_tuple in references:
@@ -339,7 +378,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                     continue
 
                 try:
-                    action.operation_handler(
+                    await action.operation_handler(
                         self.id,
                         self.__class__.__name__,
                         referencing_model,
@@ -378,7 +417,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         """Mark this instance as loaded from the backend."""
         self._loaded_from_backend = True
 
-    def save(
+    async def save(
         self, force_insert: bool = False, ttl: typing.Optional[int] = None
     ) -> None:
         """Save this object to the backend store.
@@ -394,22 +433,30 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             ObjectExistError: If force_insert is True and the record already exists.
         """
         try:
-            backend = self.get_backend()
-            schema_name = self.get_schema_name()
+            backend = await self.get_backend()
+            schema_name = await self.get_schema_name()
 
             if force_insert:
-                backend.insert(schema_name, self.id, self, ttl=ttl)
+                await self._run_in_kv_executor(
+                    backend.insert, schema_name, self.id, self, ttl=ttl
+                )
                 logger.debug(f"Inserted {self.__class__.__name__}:{self.id}")
             else:
                 # Use upsert for save operation
                 if hasattr(backend, "upsert"):
-                    backend.upsert(schema_name, self.id, self)
+                    await self._run_in_kv_executor(
+                        backend.upsert, schema_name, self.id, self
+                    )
                 else:
-                    # Fallback: try insert, if fails then update
+                    # Fallback: try insert, if fails, then update
                     try:
-                        backend.insert(schema_name, self.id, self, ttl=ttl)
+                        await self._run_in_kv_executor(
+                            backend.insert, schema_name, self.id, self, ttl=ttl
+                        )
                     except ObjectExistError:
-                        backend.update(schema_name, self.id, self)
+                        await self._run_in_kv_executor(
+                            backend.update, schema_name, self.id, self
+                        )
 
                 logger.debug(f"Saved {self.__class__.__name__}:{self.id}")
 
@@ -421,50 +468,74 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             logger.error(f"Failed to save {self.__class__.__name__}:{self.id}: {e}")
             raise
 
-    async def save_async(
-        self, force_insert: bool = False, ttl: typing.Optional[int] = None
-    ) -> None:
-        """Save this object to the backend store."""
-        await to_thread(self.save, force_insert=force_insert, ttl=ttl)
-
-    def update(self) -> None:
+    async def update(self) -> None:
         """Update this object in the backend store.
 
         Raises:
             ObjectDoesNotExist: If the record doesn't exist in the backend.
         """
         try:
-            backend = self.get_backend()
-            backend.update(self.get_schema_name(), self.id, self)
+            backend = await self.get_backend()
+            await self._run_in_kv_executor(
+                backend.update, await self.get_schema_name(), self.id, self
+            )
             logger.debug(f"Updated {self.__class__.__name__}:{self.id}")
         except Exception as e:
             logger.error(f"Failed to update {self.__class__.__name__}:{self.id}: {e}")
             raise
 
-    async def update_async(self) -> None:
-        """Update this object in the backend store."""
-        await to_thread(self.update)
-
-    def delete(self) -> None:
+    async def delete(self) -> None:
         """Delete this object from the backend store.
 
         Raises:
             ObjectDoesNotExist: If the record doesn't exist in the backend.
         """
         try:
-            backend = self.get_backend()
-            self._on_delete_hook()
-            backend.delete(self.get_schema_name(), self.id)
+            backend = await self.get_backend()
+            await self._on_delete_hook()
+            await self._run_in_kv_executor(
+                backend.delete, await self.get_schema_name(), self.id
+            )
             logger.debug(f"Deleted {self.__class__.__name__}:{self.id}")
         except Exception as e:
             logger.error(f"Failed to delete {self.__class__.__name__}:{self.id}: {e}")
             raise
 
-    async def delete_async(self) -> None:
-        """Delete this object from the backend store."""
-        await to_thread(self.delete)
+    @classmethod
+    async def atomic_update_field(cls, record_id: str, field: str, value: Any) -> bool:
+        """Atomically update a single JSON field. Returns False if key missing."""
+        backend = await cls.get_backend()
+        if not hasattr(backend, "atomic_update_field"):
+            raise NotImplementedError(
+                f"{type(backend).__name__} does not support atomic_update_field"
+            )
+        return await cls._run_in_kv_executor(
+            backend.atomic_update_field,
+            await cls.get_schema_name(),
+            record_id,
+            field,
+            value,
+        )
 
-    def reload(self) -> None:
+    @classmethod
+    async def atomic_append_to_field(
+        cls, record_id: str, field: str, value: Any
+    ) -> bool:
+        """Atomically append to a JSON array field. Returns False if key missing."""
+        backend = await cls.get_backend()
+        if not hasattr(backend, "atomic_append_to_field"):
+            raise NotImplementedError(
+                f"{type(backend).__name__} does not support atomic_append_to_field"
+            )
+        return await cls._run_in_kv_executor(
+            backend.atomic_append_to_field,
+            await cls.get_schema_name(),
+            record_id,
+            field,
+            value,
+        )
+
+    async def reload(self) -> None:
         """Reload this object's data from the backend store.
 
         Updates the current instance with fresh data from the backend.
@@ -473,31 +544,31 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             ObjectDoesNotExist: If the record doesn't exist in the backend.
         """
         try:
-            backend = self.get_backend()
-            backend.reload(self.get_schema_name(), self)
-            logger.debug(f"Reloaded {self.__class__.__name__}:{self.id}")
+            backend = await self.get_backend()
+            await self._run_in_kv_executor(
+                backend.reload, await self.get_schema_name(), self
+            )
             self._mark_as_loaded()
+            logger.debug(f"Reloaded {self.__class__.__name__}:{self.id}")
         except Exception as e:
             logger.error(f"Failed to reload {self.__class__.__name__}:{self.id}: {e}")
             raise
 
-    async def reload_async(self) -> None:
-        """Reload this object's data from the backend store."""
-        await to_thread(self.reload)
-
-    def refresh(self) -> None:
+    async def refresh(self) -> None:
         """Alias for reload(). Refresh data from the backend."""
-        self.reload()
+        await self.reload()
 
-    def exists(self) -> bool:
+    async def exists(self) -> bool:
         """Check if this object exists in the backend store.
 
         Returns:
             True if the record exists, False otherwise.
         """
         try:
-            backend = self.get_backend()
-            return backend.exists(self.get_schema_name(), self.id)
+            backend = await self.get_backend()
+            return await self._run_in_kv_executor(
+                backend.exists, await self.get_schema_name(), self.id
+            )
         except Exception as e:
             logger.error(
                 f"Failed to check existence of {self.__class__.__name__}:{self.id}: {e}"
@@ -505,7 +576,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             return False
 
     @classmethod
-    def get(cls, record_id: str) -> T:
+    async def get(cls, record_id: str) -> T:
         """Get an object by its ID from the backend store.
 
         Args:
@@ -518,8 +589,10 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             ObjectDoesNotExist: If the record doesn't exist.
         """
         try:
-            backend = cls.get_backend()
-            instance = backend.get(cls.get_schema_name(), record_id, cls)
+            backend = await cls.get_backend()
+            instance = await cls._run_in_kv_executor(
+                backend.get, await cls.get_schema_name(), record_id, cls
+            )
             instance._mark_as_loaded()
             logger.debug(f"Retrieved {cls.__name__}:{record_id}")
             return instance
@@ -528,11 +601,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             raise
 
     @classmethod
-    async def get_async(cls, record_id: str) -> T:
-        return await to_thread(cls.get, record_id=record_id)
-
-    @classmethod
-    def get_or_none(cls, record_id: str) -> Optional[T]:
+    async def get_or_none(cls, record_id: str) -> Optional[T]:
         """Get an object by ID, returning None if it doesn't exist.
 
         Args:
@@ -542,16 +611,12 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             An instance of the class, or None if not found.
         """
         try:
-            return cls.get(record_id)
+            return await cls.get(record_id)
         except ObjectDoesNotExist:
             return None
 
     @classmethod
-    async def get_or_none_async(cls, record_id: str) -> Optional[T]:
-        return await to_thread(cls.get_or_none, record_id=record_id)
-
-    @classmethod
-    def filter(cls: Type[T], **filters: Any) -> "ResultStream[T]":
+    async def filter(cls: Type[T], **filters: Any) -> "ResultStream[T]":
         """Filter objects by the given criteria.
 
         Args:
@@ -561,17 +626,14 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             Stream of instances matching the filters.
 
         Example:
-            >>> active_users = User.filter(status="active")
-            >>> admins = User.filter(role="admin", status="active")
+            >>> active_users = await User.filter(status="active")
+            >>> admins = await User.filter(role="admin", status="active")
         """
         try:
-            backend = cls.get_backend()
-            instances = backend.filter(cls.get_schema_name(), cls, **filters)
-
-            # Mark all instances as loaded
-            for instance in instances:
-                instance._mark_as_loaded()
-
+            backend = await cls.get_backend()
+            instances = await cls._run_in_kv_executor(
+                backend.filter, await cls.get_schema_name(), cls, **filters
+            )
             logger.debug(f"Filtered {cls.__name__}: found {len(instances)} records")
             return instances
         except Exception as e:
@@ -579,24 +641,16 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             raise
 
     @classmethod
-    async def filter_async(cls, **filters: Any) -> "ResultStream[T]":
-        return await to_thread(cls.filter, **filters)
-
-    @classmethod
-    def all(cls) -> "ResultStream[T]":
+    async def all(cls) -> "ResultStream[T]":
         """Get all objects of this class from the backend.
 
         Returns:
             List of all instances.
         """
-        return cls.filter()
+        return await cls.filter()
 
     @classmethod
-    async def all_async(cls) -> "ResultStream[T]":
-        return await to_thread(cls.all)
-
-    @classmethod
-    def count(cls, **filters: Any) -> int:
+    async def count(cls, **filters: Any) -> int:
         """Count objects matching the given filters.
 
         Args:
@@ -606,18 +660,16 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             Number of matching records.
         """
         try:
-            backend = cls.get_backend()
-            return backend.count(cls.get_schema_name(), **filters)
+            backend = await cls.get_backend()
+            return await cls._run_in_kv_executor(
+                backend.count, await cls.get_schema_name(), **filters
+            )
         except Exception as e:
             logger.error(f"Failed to count {cls.__name__}: {e}")
             raise
 
     @classmethod
-    async def count_async(cls, **filters: Any) -> int:
-        return await to_thread(cls.count, **filters)
-
-    @classmethod
-    def exists_in_backend(cls, record_id: str) -> bool:
+    async def exists_in_backend(cls, record_id: str) -> bool:
         """Check if a record with the given ID exists.
 
         Args:
@@ -627,18 +679,15 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             True if exists, False otherwise.
         """
         try:
-            backend = cls.get_backend()
-            return backend.exists(cls.get_schema_name(), record_id)
+            backend = await cls.get_backend()
+            return await cls._run_in_kv_executor(
+                backend.exists, await cls.get_schema_name(), record_id
+            )
         except Exception as e:
-            logger.error(f"Failed to check existence: {e}")
             return False
 
     @classmethod
-    async def exists_in_backend_async(cls, record_id: str) -> bool:
-        return await to_thread(cls.exists_in_backend, record_id=record_id)
-
-    @classmethod
-    def bulk_create(cls, instances: List[T]) -> None:
+    async def bulk_create(cls, instances: List[T]) -> None:
         """Create multiple instances in a single batch operation.
 
         Args:
@@ -648,16 +697,18 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             Exception: If bulk creation fails.
         """
         try:
-            backend = cls.get_backend()
+            backend = await cls.get_backend()
 
             if hasattr(backend, "bulk_insert"):
                 # Use native bulk insert if available
                 records = {instance.id: instance for instance in instances}
-                backend.bulk_insert(cls.get_schema_name(), records)
+                await cls._run_in_kv_executor(
+                    backend.bulk_insert, await cls.get_schema_name(), records
+                )
             else:
                 # Fallback: insert one by one
                 for instance in instances:
-                    instance.save(force_insert=True)
+                    await instance.save(force_insert=True)
 
             # Mark all as loaded
             for instance in instances:
@@ -669,7 +720,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             raise
 
     @classmethod
-    def bulk_delete(cls, record_ids: List[str]) -> None:
+    async def bulk_delete(cls, record_ids: List[str]) -> None:
         """Delete multiple records in a single batch operation.
 
         Args:
@@ -679,15 +730,19 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             Exception: If bulk deletion fails.
         """
         try:
-            backend = cls.get_backend()
+            backend = await cls.get_backend()
 
             if hasattr(backend, "bulk_delete"):
                 # Use native bulk delete if available
-                backend.bulk_delete(cls.get_schema_name(), record_ids)
+                await cls._run_in_kv_executor(
+                    backend.bulk_delete, await cls.get_schema_name(), record_ids
+                )
             else:
                 # Fallback
                 for record_id in record_ids:
-                    backend.delete(cls.get_schema_name(), record_id)
+                    await cls._run_in_kv_executor(
+                        backend.delete, await cls.get_schema_name(), record_id
+                    )
 
             logger.info(f"Bulk deleted {len(record_ids)} {cls.__name__} records")
         except Exception as e:
@@ -695,34 +750,36 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             raise
 
     @classmethod
-    def clear_all(cls) -> None:
+    async def clear_all(cls) -> None:
         """Delete all records of this class from the backend.
 
         Warning: This is a destructive operation!
         """
         try:
-            backend = cls.get_backend()
+            backend = await cls.get_backend()
             if hasattr(backend, "clear_schema"):
-                backend.clear_schema(cls.get_schema_name())
+                await cls._run_in_kv_executor(
+                    backend.clear_schema, await cls.get_schema_name()
+                )
             else:
                 # Fallback: get all IDs and delete
-                all_instances = cls.all()
-                record_ids = [instance.id for instance in all_instances]
-                cls.bulk_delete(record_ids)  # type: ignore
+                all_instances = await cls.all()
+                record_ids = [instance.id async for instance in all_instances]
+                await cls.bulk_delete(record_ids)  # type: ignore
 
             logger.warning(f"Cleared all {cls.__name__} records from backend")
         except Exception as e:
             logger.error(f"Failed to clear {cls.__name__} records: {e}")
             raise
 
-    @contextmanager
-    def atomic(self):
+    @asynccontextmanager
+    async def atomic(self):
         """Context manager for atomic operations.
 
         Changes are only saved if the context exits successfully.
 
         Example:
-            >>> with user.atomic():
+            >>> async with user.atomic():
             ...     user.status = "inactive"
             ...     user.last_login = datetime.now()
             ...     # Changes saved only if no exception
@@ -730,7 +787,7 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
         original_state = self.__getstate__()
         try:
             yield self
-            self.save()
+            await self.save()
         except Exception as e:
             # Restore the original state on error
             self.__setstate__(original_state)
@@ -738,34 +795,52 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
             raise
 
     @classmethod
-    @contextmanager
-    def transaction(cls):
+    @asynccontextmanager
+    async def transaction(cls):
         """Context manager for backend transactions.
 
         Only supported by backends with transaction support.
 
         Example:
-            >>> with User.transaction():
-            ...     user1.save()
-            ...     user2.save()
+            >>> async with User.transaction():
+            ...     await user1.save()
+            ...     await user2.save()
             ...     # Both saved atomically
         """
-        backend = cls.get_backend()
-        connector = backend.connector
+        backend = await cls.get_backend()
+        connector = getattr(backend, "connector", None)
 
-        # Check if the backend supports transactions
-        if not hasattr(connector, "transaction"):
+        if connector and hasattr(connector, "transaction"):
+            # Run sync transaction context in executor thread
+            loop = asyncio.get_running_loop()
+            tx_ctx = connector.transaction()
+
+            # Enter transaction in executor thread
+            await loop.run_in_executor(_KV_BACKEND_EXECUTOR, tx_ctx.__enter__)
+            try:
+                yield
+                # Commit in executor thread
+                await loop.run_in_executor(
+                    _KV_BACKEND_EXECUTOR, tx_ctx.__exit__, None, None, None
+                )
+            except BaseException as exc:
+                # Rollback in executor thread
+                await loop.run_in_executor(
+                    _KV_BACKEND_EXECUTOR,
+                    tx_ctx.__exit__,
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                )
+                raise
+        else:
             logger.warning(
-                f"Backend {backend.__class__.__name__} doesn't support transactions"
+                "Backend %s does not support transactions",
+                type(backend).__name__,
             )
-            yield
-            return
-
-        # Use backend's transaction support
-        with connector.transaction():
             yield
 
     def __repr__(self) -> str:
         """String representation of the object."""
-        exists_str = "exists" if self.exists() else "new"
+        exists_str = "exists" if self._is_loaded_from_backend() else "new"
         return f"<{self.__class__.__name__}:{self.id} [{exists_str}]>"

@@ -6,7 +6,7 @@ from .conditional import StandardDescriptor
 from .exceptions import PointyParseError
 from .operator import PipeType
 from .options import Options
-from .protocols import TaskGroupingProtocol, TaskProtocol
+from .protocols import TaskGroupingProtocol, TaskProtocol, TaskType
 from .visitor import ASTVisitorInterface
 
 logger = logging.getLogger(__name__)
@@ -268,7 +268,7 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_map(self, node: ast.MapNode):
         pass
 
-    def generate(self) -> typing.Optional[TaskProtocol]:
+    def generate(self) -> typing.Optional[TaskType]:
         if self._current_task is None:
             return None
         return self._current_task.get_root()

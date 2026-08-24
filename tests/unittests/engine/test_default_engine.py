@@ -35,7 +35,7 @@ from volnux.engine.base import (
     WorkflowEngine,
 )
 from volnux.engine.checkpoint_config import CheckPointConfig, CheckPointFrequency
-from volnux.execution.state_manager import ExecutionStatus
+from volnux.execution.status import ExecutionStatus
 from volnux.parser.protocols import GroupingStrategy
 from volnux.task.group import PipelineTaskGrouping
 

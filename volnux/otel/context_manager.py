@@ -205,20 +205,18 @@ class SpanHelper:
             span: The OpenTelemetry span
             execution_context: The execution context with state
         """
-        from volnux.execution.state_manager import ExecutionStatus
+        from volnux.execution.status import ExecutionStatus
 
-        state = execution_context.state
-
-        if state.status == ExecutionStatus.COMPLETED:
+        if execution_context.status == ExecutionStatus.COMPLETED:
             span.set_status(Status(StatusCode.OK))
-        elif state.status == ExecutionStatus.FAILED:
+        elif execution_context.status == ExecutionStatus.FAILED:
             span.set_status(Status(StatusCode.ERROR, "Execution failed"))
             # Add errors as events
-            for error in state.errors:
+            for error in execution_context.errors:
                 span.record_exception(error)
-        elif state.status == ExecutionStatus.CANCELLED:
+        elif execution_context.status == ExecutionStatus.CANCELLED:
             span.set_status(Status(StatusCode.ERROR, "Execution cancelled"))
-        elif state.status == ExecutionStatus.ABORTED:
+        elif execution_context.status == ExecutionStatus.ABORTED:
             span.set_status(Status(StatusCode.ERROR, "Execution aborted"))
 
     @staticmethod

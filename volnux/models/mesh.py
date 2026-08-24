@@ -3,10 +3,10 @@ from typing import Optional
 
 from formax import MiniAnnotated, Attrib, InitStrategy
 
-from volnux.backends.formax_fk import (
+from volnux.backends.fields import (
     ForeignKeyField,
     FKConfig,
-    ForeignKey,
+    # ForeignKey,
     OnDelete,
     FKConstraint,
 )

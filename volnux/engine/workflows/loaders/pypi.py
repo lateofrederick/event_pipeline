@@ -7,8 +7,6 @@ from typing import Any, List, Optional, Union
 
 from volnux import Event
 from volnux.event.base import EventType
-
-from ..source import SourceCredentials
 from volnux.exceptions import SubprocessTimeoutError
 from volnux.utils import run_command
 from volnux.concurrency.async_utils import to_thread
@@ -16,6 +14,7 @@ from volnux.manifest.utils import build_authenticated_url, redact_credentials
 
 
 if typing.TYPE_CHECKING:
+    from ..source import SourceCredentials
     from ..registry import WorkflowRegistry
 
 logger = logging.getLogger(__name__)
@@ -62,7 +61,7 @@ class LoadFromPyPi(Event):
         location: Union[str, Path],
         registry: "WorkflowRegistry",
         version: Optional[str] = None,
-        credentials: Optional[SourceCredentials] = None,
+        credentials: Optional["SourceCredentials"] = None,
         timeout: int = 30_000,
         index_url: Optional[str] = None,
         **kwargs: Any,
@@ -145,7 +144,7 @@ class LoadFromPyPi(Event):
     @staticmethod
     def _build_pip_command(
         package_spec: str,
-        credentials: Optional[SourceCredentials],
+        credentials: Optional["SourceCredentials"],
         index_url: Optional[str],
     ) -> List[Union[str, bytes]]:
         """

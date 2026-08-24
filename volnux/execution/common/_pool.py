@@ -580,9 +580,9 @@ class VolnuxPoolManager:
                      cancellation via remove_task().
 
         Raises:
-            RuntimeError:                  If not initialised or shut down.
-            TypeError:                     If task_func is not callable.
-            PriorityTaskQueue.QueueFull:   If max_queue_size is set and full.
+            RuntimeError: If not initialised or shut down.
+            TypeError:  If task_func is not callable.
+            PriorityTaskQueue.QueueFull: If max_queue_size is set and full.
         """
         self._assert_ready()
 

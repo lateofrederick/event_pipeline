@@ -2,7 +2,6 @@ import logging
 import orjson as json
 from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING
 
-from formax import BaseModel
 from pymemcache.exceptions import MemcacheError
 
 from volnux.backends.connectors.memcache import MemcacheConnector

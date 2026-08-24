@@ -101,22 +101,10 @@ class PostgresStoreBackend(
         """
         super().__init__(**connector_config)
 
-        # Ensure a connection is established
-        if not self.connector.is_connected():
-            self.connector.connect()
+        self._ensure_connected()
 
         # Schema existence cache to avoid repeated information_schema queries
         self._schema_cache: Dict[str, bool] = {}
-
-    def _ensure_connected(self) -> None:
-        """Ensure the PostgreSQL connection is active.
-
-        Raises:
-            ConnectionError: If a connection cannot be re-established.
-        """
-        if not self.connector.is_connected():
-            logger.warning("PostgreSQL connection lost, attempting to reconnect...")
-            self.connector.connect()
 
     @contextmanager
     def _get_cursor(self):
@@ -230,71 +218,154 @@ class PostgresStoreBackend(
         return False
 
     def create_schema(
-        self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
+        self,
+        schema_name: str,
+        record_class: Type["KeyValueStoreIntegrationMixin"],
+        **kwargs,
     ) -> None:
-        """Create a schema (table) based on a record's structure.
+        """Create a table with native FK, datetime, and list column support.
 
-        Generates CREATE TABLE DDL from the model's type annotations.
-        Each field becomes a typed column. An additional '_record_state'
-        JSONB column stores the complete serialized record for fidelity.
-
-        A GIN index is created on the _record_state column to support
-        JSONB queries if needed.
-
-        Args:
-            schema_name: The name of the schema to create.
-            record: A sample record used to derive column definitions.
-
-        Raises:
-            SqlOperationError: If schema creation fails.
+        Uses depth-first creation for FK dependencies. Mutual references
+        fall back to software enforcement. No _record_state column.
         """
+        from ..fields import OnDelete
+
+        _creating = kwargs.get("_creating", set())
+
         self._ensure_connected()
+
+        if schema_name in _creating:
+            return
+
+        _creating.add(schema_name)
 
         try:
             columns = ["id TEXT PRIMARY KEY"]
-            record_type_hints = get_type_hints(record.__class__)
+            fk_constraints: List[str] = []
+            record_type_hints = get_type_hints(record_class)
 
             for field_name, field_type in record_type_hints.items():
-                # Skip private/internal fields
                 if field_name.startswith("_"):
                     continue
 
-                pg_type = self._map_field_to_pg_type(field_type)
-                is_optional = self._is_optional_field(field_type)
+                field_type, attrib = self.decompose_field_type(field_type)
+                metadata = attrib.metadata if attrib else {}
+                meta_field_type = metadata.get("type")
 
-                column_def = f"{field_name} {pg_type}"
+                is_unique = metadata.get("unique", False)
+                is_optional = self._is_optional_field(field_type) or metadata.get(
+                    "nullable", False
+                )
+
+                if meta_field_type == "foreignkey":
+                    has_native_fk = metadata.get("has_native_fk", False)
+
+                    if has_native_fk:
+                        target_model: Optional[
+                            Type["KeyValueStoreIntegrationMixin"]
+                        ] = metadata.get("target_model")
+                        if target_model is None:
+                            raise ValueError(
+                                f"Target model missing for FK '{field_name}'"
+                            )
+
+                        target_schema = self.resolve_physical_target(
+                            target_model.get_storage_route()
+                        )
+                        col_name = f"{field_name}_object_id"
+                        col_def = f"{col_name} TEXT" + (
+                            "" if is_optional else " NOT NULL"
+                        )
+                        columns.append(col_def)
+
+                        if target_schema in _creating:
+                            logger.warning(
+                                "Mutual FK dependency: %s <-> %s. "
+                                "Omitting native FK for '%s'; software enforcement active.",
+                                schema_name,
+                                target_schema,
+                                field_name,
+                            )
+                            continue
+
+                        if not self.schema_exists(schema_name):
+                            self.create_schema(
+                                target_schema, target_model, _creating=_creating
+                            )
+                            logger.info(
+                                "Auto-created schema '%s' required by FK '%s.%s'",
+                                target_schema,
+                                record_class.__name__,
+                                field_name,
+                            )
+
+                        on_delete: "OnDelete" = metadata.get(
+                            "on_delete", OnDelete.PROTECT
+                        )
+                        on_delete_sql = {
+                            OnDelete.CASCADE: "CASCADE",
+                            OnDelete.SET_NULL: "SET NULL",
+                            OnDelete.SET_DEFAULT: "SET DEFAULT",
+                            OnDelete.PROTECT: "NO ACTION",
+                            OnDelete.DO_NOTHING: "NO ACTION",
+                        }.get(on_delete, "NO ACTION")
+
+                        fk_constraints.append(
+                            f"FOREIGN KEY ({col_name}) REFERENCES {target_schema}(id) "
+                            f"ON DELETE {on_delete_sql}"
+                        )
+                    else:
+                        # Software-enforced FK: Formax-Py descriptor serializes
+                        # to JSON string via pre_formatter. Stored as opaque JSONB.
+
+                        columns.append(
+                            f"{field_name} JSONB" + ("" if is_optional else " NOT NULL")
+                        )
+                    continue
+
+                if meta_field_type == "list":
+                    col_def = f"{field_name} JSONB" + (
+                        "" if is_optional else " NOT NULL"
+                    )
+                    columns.append(col_def)
+                    continue
+
+                if meta_field_type == "datetime":
+                    pg_type = "TIMESTAMP WITH TIME ZONE"
+                elif meta_field_type == "date":
+                    pg_type = "DATE"
+                else:
+                    pg_type = self._map_field_to_pg_type(field_type)
+
+                col_def = f"{field_name} {pg_type}"
                 if not is_optional:
-                    column_def += " NOT NULL"
+                    col_def += " NOT NULL"
+                if is_unique:
+                    col_def += " UNIQUE"
+                columns.append(col_def)
 
-                columns.append(column_def)
-
-            # Add the serialized state column (always JSONB for PostgreSQL)
-            columns.append("_record_state JSONB NOT NULL")
-
-            create_sql = f"CREATE TABLE {schema_name} ({', '.join(columns)})"
+            columns.extend(fk_constraints)
+            create_sql = (
+                f"CREATE TABLE IF NOT EXISTS {schema_name} ({', '.join(columns)})"
+            )
 
             with self._transaction():
                 with self._get_cursor() as cursor:
                     cursor.execute(create_sql)
 
-            # Create GIN index on the JSONB column for potential JSON queries
-            index_sql = (
-                f"CREATE INDEX IF NOT EXISTS idx_{schema_name}_record_state "
-                f"ON {schema_name} USING GIN (_record_state)"
-            )
-            with self._get_cursor() as cursor:
-                cursor.execute(index_sql)
-
             self._invalidate_schema_cache(schema_name)
             logger.info(
-                "Created schema '%s' with %d columns and GIN index",
-                schema_name,
-                len(columns),
+                "Created schema '%s' with %d columns", schema_name, len(columns)
             )
 
         except Exception as e:
             logger.error("Error creating schema '%s': %s", schema_name, e)
-            raise SqlOperationError(f"Error creating schema '{schema_name}': {e}")
+            raise SqlOperationError(
+                f"Error creating schema '{schema_name}': {e}"
+            ) from e
+
+        finally:
+            _creating.discard(schema_name)
 
     def drop_schema(self, schema_name: str) -> None:
         """Drop a schema (table) from the database.
@@ -342,161 +413,6 @@ class PostgresStoreBackend(
             logger.error("Error listing schemas: %s", e)
             raise SqlOperationError(f"Error listing schemas: {e}")
 
-    def _serialize_record(self, record: "KeyValueStoreIntegrationMixin") -> str:
-        """Serialize a record to a JSON-compatible string for JSONB storage.
-
-        Uses orjson for performance if available, falling back to json.
-        The serialized state is stored as a JSONB value, not bytes.
-
-        Args:
-            record: The record to serialize.
-
-        Returns:
-            JSON string representation of the record state.
-
-        Raises:
-            SerializationError: If serialization fails.
-        """
-        try:
-            state = record.__getstate__()
-            # Try orjson first for performance
-            try:
-                import orjson
-
-                return orjson.dumps(state, default=str).decode("utf-8")
-            except ImportError:
-                return json.dumps(state, default=str)
-        except Exception as e:
-            logger.error("Failed to serialize record: %s", e)
-            raise SerializationError(f"Serialization failed: {e}")
-
-    def _deserialize_record(
-        self, data: Any, record_klass: Type["KeyValueStoreIntegrationMixin"]
-    ) -> "KeyValueStoreIntegrationMixin":
-        """Deserialize data to a record object.
-
-        Handles both JSONB objects (dicts) and JSON strings from the database.
-
-        Args:
-            data: The serialized record data (dict from JSONB, or string).
-            record_klass: The class to instantiate.
-
-        Returns:
-            Deserialized record instance.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            # PostgreSQL JSONB columns return dicts directly
-            if isinstance(data, dict):
-                state = data
-            elif isinstance(data, str):
-                try:
-                    import orjson
-
-                    state = orjson.loads(data)
-                except ImportError:
-                    state = json.loads(data)
-            else:
-                raise SerializationError(f"Unexpected data type: {type(data)}")
-
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except SerializationError:
-            raise
-        except Exception as e:
-            logger.error("Failed to deserialize record: %s", e)
-            raise SerializationError(f"Deserialization failed: {e}")
-
-    def _prepare_record_data(
-        self, record: "KeyValueStoreIntegrationMixin", record_key: str
-    ) -> Dict[str, Any]:
-        """Prepare record data for database insertion.
-
-        Extracts field values from the record state and serializes the
-        complete state to JSONB. Fields matching RESERVED_FIELDS are
-        excluded from individual columns.
-
-        Args:
-            record: The record to prepare.
-            record_key: The key for the record.
-
-        Returns:
-            Dictionary mapping column names to values.
-        """
-        state = record.__getstate__()
-        record_data: Dict[str, Any] = {"id": record_key}
-
-        for field_name, value in state.items():
-            if field_name in self.RESERVED_FIELDS:
-                continue
-
-            if isinstance(value, (dict, list)):
-                # Store complex types as JSONB
-                try:
-                    import orjson
-
-                    record_data[field_name] = orjson.dumps(value, default=str).decode(
-                        "utf-8"
-                    )
-                except ImportError:
-                    record_data[field_name] = json.dumps(value, default=str)
-            elif isinstance(value, Enum):
-                record_data[field_name] = value.value
-            else:
-                record_data[field_name] = value
-
-        # Store complete serialized state as JSONB
-        try:
-            import orjson
-
-            record_data["_record_state"] = orjson.dumps(state, default=str).decode(
-                "utf-8"
-            )
-        except ImportError:
-            record_data["_record_state"] = json.dumps(state, default=str)
-
-        return record_data
-
-    def create_native_fk_constraint(
-        self,
-        source_backend: "KeyValueStoreBackendBase",
-        source_schema: str,
-        source_field: str,
-        target_schema: str,
-        target_field: str,
-        on_delete: "OnDelete",
-        nullable: bool,
-    ) -> None:
-        """Create a foreign key constraint between two tables."""
-        from ..formax_fk import OnDelete
-
-        constraint_name = f"fk_{source_schema}_{source_field}_{target_schema}"
-
-        on_delete_sql = {
-            OnDelete.CASCADE: "CASCADE",
-            OnDelete.SET_NULL: "SET NULL",
-            OnDelete.SET_DEFAULT: "SET DEFAULT",
-            OnDelete.PROTECT: "NO ACTION",  # Database will raise error
-            OnDelete.DO_NOTHING: "NO ACTION",
-        }.get(on_delete, "NO ACTION")
-
-        ddl = (
-            f"ALTER TABLE {source_schema} "
-            f"ADD CONSTRAINT {constraint_name} "
-            f"FOREIGN KEY ({source_field}_object_id) "
-            f"REFERENCES {target_schema}(id) "
-            f"ON DELETE {on_delete_sql} "
-            f"{'NOT VALID' if not source_backend._validate_immediately else ''}"
-        )
-
-        with self.connector.transaction():
-            cursor = self.connector.get_cursor()
-            cursor.execute(ddl)
-            cursor.close()
-
     def supports_foreign_keys(self) -> bool:
         """Check if the backend supports foreign key constraints.
 
@@ -538,60 +454,51 @@ class PostgresStoreBackend(
         record: "KeyValueStoreIntegrationMixin",
         ttl: Optional[int] = None,
     ) -> None:
-        """Insert a new record into the store.
-
-        Ensures the schema exists before inserting. If the schema doesn't
-        exist, it is created automatically from the record structure.
-
-        Args:
-            schema_name: The schema to insert into.
-            record_key: The unique key for the record.
-            record: The record object to insert.
-            ttl: Time to live in seconds (not currently implemented for PostgreSQL).
-
-        Raises:
-            ObjectExistError: If a record with the same key already exists.
-            SerializationError: If serialization fails.
-            SqlOperationError: If insertion fails.
         """
-        self._ensure_connected()
+        Inserts a record into the specified schema in the database. If the record already exists, it raises
+        an `ObjectExistError`. This operation ensures that the schema is prepared before the insertion and
+        executes the insertion atomically. Logs warnings and errors as required.
 
+        :param schema_name: The name of the schema where the record should be inserted.
+        :param record_key: The unique key associated with the record.
+        :param record: The record instance to be inserted, adhering to the KeyValueStoreIntegrationMixin.
+        :param ttl: Optional time-to-live for the record. Ignored as TTL is not supported for PostgreSQL.
+        :return: None
+        :raises ObjectExistError: If the record with the given key already exists in the specified schema.
+        :raises SerializationError: If an unexpected serialization error occurs during the operation.
+        :raises SqlOperationError: For any other errors encountered during the insert operation.
+        """
         if ttl is not None:
-            logger.warning("TTL is not supported for PostgreSQL backend; ignoring")
+            logger.warning("TTL not supported for PostgreSQL; ignoring")
 
         try:
-            # Auto-create schema if it doesn't exist
-            self.ensure_schema(schema_name, record)
-
-            if self.exists(schema_name, record_key):
-                raise ObjectExistError(
-                    f"Record '{record_key}' already exists in schema '{schema_name}'"
-                )
-
+            self.ensure_schema(schema_name, record.__class__)
             record_data = self._prepare_record_data(record, record_key)
-            columns = list(record_data.keys())
-            placeholders = [f"%({col})s" for col in columns]
+            cols = list(record_data.keys())
+            placeholders = [f"%({c})s" for c in cols]
 
-            insert_sql = (
-                f"INSERT INTO {schema_name} ({', '.join(columns)}) "
-                f"VALUES ({', '.join(placeholders)})"
+            sql = (
+                f"INSERT INTO {schema_name} ({', '.join(cols)}) "
+                f"VALUES ({', '.join(placeholders)}) "
+                f"ON CONFLICT (id) DO NOTHING"
             )
 
             with self._transaction():
                 with self._get_cursor() as cursor:
-                    cursor.execute(insert_sql, record_data)
+                    cursor.execute(sql, record_data)
+                    if cursor.rowcount == 0:
+                        raise ObjectExistError(
+                            f"Record '{record_key}' already exists in schema '{schema_name}'"
+                        )
 
-            logger.debug(
-                "Inserted record '%s' into schema '%s'", record_key, schema_name
-            )
-
+            logger.debug("Inserted '%s' into '%s'", record_key, schema_name)
         except ObjectExistError:
             raise
         except SerializationError:
             raise
         except Exception as e:
             logger.error("Error inserting record: %s", e)
-            raise SqlOperationError(f"Error inserting record: {e}")
+            raise SqlOperationError(f"Error inserting record: {e}") from e
 
     def update(
         self,
@@ -669,7 +576,7 @@ class PostgresStoreBackend(
 
         try:
             # Auto-create schema if it doesn't exist
-            self.ensure_schema(schema_name, record)
+            self.ensure_schema(schema_name, record.__class__)
 
             record_data = self._prepare_record_data(record, record_key)
             columns = list(record_data.keys())
@@ -760,8 +667,8 @@ class PostgresStoreBackend(
         try:
             with self._get_cursor() as cursor:
                 cursor.execute(
-                    f"SELECT _record_state FROM {schema_name} WHERE id = %s",
-                    (str(record_key),),
+                    f"SELECT * FROM {schema_name} WHERE id = %s",
+                    (record_key,),
                 )
                 row = cursor.fetchone()
 
@@ -770,12 +677,9 @@ class PostgresStoreBackend(
                     f"Record '{record_key}' does not exist in schema '{schema_name}'"
                 )
 
-            record = self._deserialize_record(row[0], record_klass)
-            logger.debug(
-                "Retrieved record '%s' from schema '%s'", record_key, schema_name
+            return self._deserialize_record(
+                self._sqlite_row_and_tuple_to_dict(row, cursor), record_klass
             )
-            return record
-
         except ObjectDoesNotExist:
             raise
         except SerializationError:
@@ -801,191 +705,91 @@ class PostgresStoreBackend(
             SerializationError: If deserialization fails.
             SqlOperationError: If reload fails.
         """
-        if not hasattr(record, "id"):
-            raise ValueError("Record must have an 'id' attribute for reload")
-
-        record_key = str(record.id)
-        self._ensure_connected()
-
-        try:
-            with self._get_cursor() as cursor:
-                cursor.execute(
-                    f"SELECT _record_state FROM {schema_name} WHERE id = %s",
-                    (record_key,),
-                )
-                row = cursor.fetchone()
-
-            if row is None:
-                raise ObjectDoesNotExist(
-                    f"Record '{record_key}' no longer exists in schema '{schema_name}'"
-                )
-
-            state = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-            record.__setstate__(state)
-
-            logger.debug(
-                "Reloaded record '%s' from schema '%s'", record_key, schema_name
+        fresh = self.get(schema_name, record.id, record.__class__)
+        if not fresh:
+            raise ObjectDoesNotExist(
+                f"Record '{record.id}' no longer exists in schema '{schema_name}'"
             )
-            return record
-
-        except ObjectDoesNotExist:
-            raise
-        except SerializationError:
-            raise
-        except Exception as e:
-            logger.error("Error reloading record: %s", e)
-            raise SqlOperationError(f"Error reloading record: {e}")
+        record.__setstate__(fresh.__getstate__())
+        return record
 
     @staticmethod
-    def load_record(
-        record_state: bytes, record_klass: Type["KeyValueStoreIntegrationMixin"]
-    ) -> "KeyValueStoreIntegrationMixin":
-        """Load a record from its serialized state.
-
-        Args:
-            record_state: The serialized record data.
-            record_klass: The class to instantiate the record with.
-
-        Returns:
-            The instantiated record object.
-
-        Raises:
-            SerializationError: If deserialization fails.
-        """
-        try:
-            if isinstance(record_state, bytes):
-                record_state = record_state.decode("utf-8")
-
-            if isinstance(record_state, str):
-                try:
-                    import orjson
-
-                    state = orjson.loads(record_state)
-                except ImportError:
-                    state = json.loads(record_state)
-            elif isinstance(record_state, dict):
-                state = record_state
-            else:
-                raise SerializationError(
-                    f"Unexpected record state type: {type(record_state)}"
-                )
-
-            record = record_klass.__new__(record_klass)
-            record.__setstate__(state)
-            return record
-        except SerializationError:
-            raise
-        except Exception as e:
-            logger.error("Failed to load record: %s", e)
-            raise SerializationError(f"Failed to load record: {e}")
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def _build_sql_filter(self, filter_kwargs: Dict[str, Any]) -> Tuple[str, List[Any]]:
-        """Build SQL WHERE clause from filter kwargs.
-
-        Supports Django-style field lookups:
-            - exact / no suffix: field = value
-            - __contains: field LIKE '%value%'
-            - __startswith: field LIKE 'value%'
-            - __endswith: field LIKE '%value'
-            - __gt: field > value
-            - __gte: field >= value
-            - __lt: field < value
-            - __lte: field <= value
-            - __ne: field != value
-            - __in: field IN (value1, value2, ...)
-            - __isnull: field IS NULL / IS NOT NULL
-            - __icontains, __istartswith, __iendswith: Case-insensitive using ILIKE
-
-        Args:
-            filter_kwargs: Dictionary of field__lookup -> value pairs.
-
-        Returns:
-            Tuple of (WHERE clause string, list of parameters).
-        """
         if not filter_kwargs:
             return "TRUE", []
 
-        conditions = []
-        parameters = []
-
-        operator_map = {
-            "exact": "= %s",
-            "contains": "LIKE %s",
-            "startswith": "LIKE %s",
-            "endswith": "LIKE %s",
-            "icontains": "ILIKE %s",
-            "istartswith": "ILIKE %s",
-            "iendswith": "ILIKE %s",
-            "gt": "> %s",
-            "gte": ">= %s",
-            "lt": "< %s",
-            "lte": "<= %s",
-            "ne": "!= %s",
-        }
-
-        contains_operators = {
-            "contains",
-            "startswith",
-            "endswith",
-            "icontains",
-            "istartswith",
-            "iendswith",
-        }
+        conditions: List[str] = []
+        parameters: List[Any] = []
 
         for key, value in filter_kwargs.items():
             if "__" in key:
                 field, operator = key.rsplit("__", 1)
 
                 if operator == "in":
-                    if not isinstance(value, (list, tuple)):
-                        value = [value]
+                    if not isinstance(value, (list, tuple)) or not value:
+                        conditions.append("FALSE")
+                        continue
                     placeholders = ", ".join(["%s"] * len(value))
                     conditions.append(f"{field} IN ({placeholders})")
                     parameters.extend(value)
 
                 elif operator == "isnull":
-                    if value:
-                        conditions.append(f"{field} IS NULL")
-                    else:
-                        conditions.append(f"{field} IS NOT NULL")
+                    conditions.append(f"{field} IS {'NULL' if value else 'NOT NULL'}")
 
-                elif operator in operator_map:
-                    sql_op = operator_map[operator]
-                    if operator in contains_operators:
-                        if operator.startswith("i"):
-                            # Already ILIKE, wrap value with % as needed
-                            if "contains" in operator:
-                                parameters.append(f"%{value}%")
-                            elif "startswith" in operator:
-                                parameters.append(f"{value}%")
-                            elif "endswith" in operator:
-                                parameters.append(f"%{value}")
-                        else:
-                            if "contains" in operator:
-                                parameters.append(f"%{value}%")
-                            elif "startswith" in operator:
-                                parameters.append(f"{value}%")
-                            elif "endswith" in operator:
-                                parameters.append(f"%{value}")
-                    else:
-                        parameters.append(value)
-                    conditions.append(f"{field} {sql_op}")
+                elif operator in (
+                    "contains",
+                    "icontains",
+                    "startswith",
+                    "istartswith",
+                    "endswith",
+                    "iendswith",
+                ):
+                    escaped = self._escape_like(str(value))
+                    ilike = operator.startswith("i")
+                    kw = "ILIKE" if ilike else "LIKE"
 
+                    if "startswith" in operator:
+                        pattern = f"{escaped}%"
+                    elif "endswith" in operator:
+                        pattern = f"%{escaped}"
+                    else:
+                        pattern = f"%{escaped}%"
+
+                    conditions.append(f"{field} {kw} %s ESCAPE '\\'")
+                    parameters.append(pattern)
+
+                elif operator == "exact":
+                    conditions.append(f"{field} = %s")
+                    parameters.append(value)
+                elif operator == "gt":
+                    conditions.append(f"{field} > %s")
+                    parameters.append(value)
+                elif operator == "gte":
+                    conditions.append(f"{field} >= %s")
+                    parameters.append(value)
+                elif operator == "lt":
+                    conditions.append(f"{field} < %s")
+                    parameters.append(value)
+                elif operator == "lte":
+                    conditions.append(f"{field} <= %s")
+                    parameters.append(value)
+                elif operator == "ne":
+                    conditions.append(f"{field} != %s")
+                    parameters.append(value)
                 else:
-                    logger.warning(
-                        "Unknown filter operator '%s', using exact match", operator
-                    )
+                    logger.warning("Unknown filter operator: %s", operator)
                     conditions.append(f"{field} = %s")
                     parameters.append(value)
             else:
-                # No operator suffix: exact match
                 if isinstance(value, Enum):
                     value = value.value
                 conditions.append(f"{key} = %s")
                 parameters.append(value)
 
-        where_clause = " AND ".join(conditions)
-        return where_clause, parameters
+        return " AND ".join(conditions), parameters
 
     def filter(
         self,
@@ -1014,7 +818,7 @@ class PostgresStoreBackend(
         Raises:
             ObjectDoesNotExist: If schema doesn't exist.
             SerializationError: If deserialization fails.
-            SqlOperationError: If query fails.
+            SqlOperationError: If the query fails.
         """
         self._ensure_connected()
 
@@ -1043,21 +847,6 @@ class PostgresStoreBackend(
                 cursor.execute(query, parameters)
                 rows = cursor.fetchall()
 
-            # results = []
-            # for row in rows:
-            #     try:
-            #         record = self._deserialize_record(row[0], record_klass)
-            #         results.append(record)
-            #     except SerializationError as e:
-            #         logger.warning(
-            #             "Skipping corrupted record in '%s': %s", schema_name, e
-            #         )
-            #         continue
-            #
-            # logger.debug(
-            #     "Filtered %d records from schema '%s'", len(results), schema_name
-            # )
-            # return results
             return self._create_result_stream(
                 record_keys=[row[0] for row in rows], record_klass=record_klass
             )
@@ -1068,11 +857,17 @@ class PostgresStoreBackend(
             logger.error("Error filtering records: %s", e)
             raise SqlOperationError(f"Error filtering records: {e}")
 
-    def count(self, schema_name: str, **filter_kwargs: Any) -> int:
+    def count(
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
+    ) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:
             schema_name: The schema to count within.
+            record_klass: The class to instantiate the record with.
             **filter_kwargs: Optional field lookup filters.
 
         Returns:
@@ -1131,7 +926,7 @@ class PostgresStoreBackend(
         try:
             # Use the first record to ensure schema exists
             first_record = next(iter(records.values()))
-            self.ensure_schema(schema_name, first_record)
+            self.ensure_schema(schema_name, first_record.__class__)
 
             # Prepare all records
             all_data = []

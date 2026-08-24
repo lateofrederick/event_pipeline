@@ -118,9 +118,9 @@ class ContextDelta:
 
         :param context: The live ExecutionContext to update.
         """
-        # Deferred to avoid circular imports — ExecutionContext and
-        # ExecutionStatus live in a module that imports from this one.
-        from volnux.execution.state_manager import ExecutionStatus
+        # Deferred to avoid circular imports — ExecutionContext lives in a
+        # module that imports from this one.
+        from volnux.execution.status import ExecutionStatus
         from volnux.result import EventResult
 
         # Apply small-mode results

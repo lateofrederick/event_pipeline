@@ -17,7 +17,6 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from formax import BaseModel
 from formax.typing import get_type
 
 from volnux.backends.connectors.sqlite import SqliteConnector
@@ -65,20 +64,9 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         """
         super().__init__(**connector_config)
 
-        if not self.connector.is_connected():
-            self.connector.connect()
+        self._ensure_connected()
 
         self._schema_cache: Dict[str, bool] = {}
-
-    def _ensure_connected(self) -> None:
-        """Ensure the SQLite connection is active.
-
-        Raises:
-            ConnectionError: If a connection cannot be established.
-        """
-        if not self.connector.is_connected():
-            logger.warning("SQLite connection lost, attempting to reconnect...")
-            self.connector.connect()
 
     def _invalidate_schema_cache(self, schema_name: Optional[str] = None) -> None:
         """Invalidate the schema cache.
@@ -152,9 +140,10 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         self,
         schema_name: str,
         record_class: Type["KeyValueStoreIntegrationMixin"],
-        _creating: Optional[set] = None,
+        **kwargs,
     ) -> None:
-        """Create a schema (table) based on a record's structure.
+        """
+        Create a schema (table) based on a record's structure.
 
         Uses a two-phase approach for FK dependencies: dependent schemas are
         created first (columns only, no FKs), then FK constraints are added
@@ -165,16 +154,17 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         Args:
             schema_name: The name of the schema to create.
             record_class: A sample record to derive the schema from.
-            _creating: Internal set tracking schemas currently being created,
-                       used to detect and break mutual FK dependency cycles.
+            kwargs: Additional keyword arguments.
+                    _creating: Internal set tracking schemas currently being created,
+                                used to detect and break mutual FK dependency cycles.
 
         Raises:
             SqlOperationError: If schema creation fails.
         """
         self._ensure_connected()
 
-        if _creating is None:
-            _creating = set()
+        # Create isolated tracking set at top-level call only
+        _creating: Set[str] = kwargs.get("_creating", set())
 
         # Mark this schema as in-progress before processing its fields,
         # so recursive calls for dependent schemas can detect the cycle.
@@ -185,7 +175,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
             fields = ["id TEXT PRIMARY KEY"]
             fk_constraints: List[str] = []
-
             record_type_hints = get_type_hints(record_class)
 
             for field_name, field_type in record_type_hints.items():
@@ -193,91 +182,97 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
                     continue
 
                 field_type, attrib = self.decompose_field_type(field_type)
-                sql_type = self._map_python_type_to_sql(field_type)
-                is_optional = self._is_optional_field(field_type)
 
                 metadata = attrib.metadata if attrib else {}
+                meta_field_type = metadata.get("type")
                 is_unique = metadata.get("unique", False)
-                has_native_fk = metadata.get("has_native_fk", False)
+                is_optional = self._is_optional_field(field_type) or metadata.get(
+                    "nullable", False
+                )
 
-                if has_native_fk:
-                    on_delete: "OnDelete" = metadata.get("on_delete", OnDelete.PROTECT)
-                    on_delete_sql = {
-                        OnDelete.CASCADE: "CASCADE",
-                        OnDelete.SET_NULL: "SET NULL",
-                        OnDelete.SET_DEFAULT: "SET DEFAULT",
-                        OnDelete.PROTECT: "NO ACTION",
-                        OnDelete.DO_NOTHING: "NO ACTION",
-                    }.get(on_delete, "NO ACTION")
+                if meta_field_type == "foreignkey":
+                    has_native_fk = metadata.get("has_native_fk", False)
 
-                    target_model = metadata.get("target_model")
-                    if target_model is None:
-                        raise ValueError(
-                            f"Target model not specified for foreign key '{field_name}'"
-                        )
+                    if has_native_fk:
+                        target_model: Optional[
+                            Type["KeyValueStoreIntegrationMixin"]
+                        ] = metadata.get("target_model")
+                        if target_model is None:
+                            raise ValueError(
+                                f"Target model missing for FK '{field_name}'"
+                            )
 
-                    target_schema = target_model.get_schema_name()
-
-                    if target_schema in _creating:
-                        # Mutual dependency detected — omit the FK constraint and
-                        # fall back to software enforcement via _on_delete_hook.
-                        logger.warning(
-                            f"Mutual FK dependency detected between '{schema_name}' and "
-                            f"'{target_schema}'. Omitting native FK constraint for "
-                            f"'{field_name}'; referential integrity enforced in software."
+                        target_schema = self.resolve_physical_target(
+                            target_model.get_storage_route()
                         )
                         col_name = f"{field_name}_object_id"
-                        field_def = f"{col_name} TEXT"
-                        if not is_optional:
-                            field_def += " NOT NULL"
+                        field_def = f"{col_name} TEXT" + (
+                            "" if is_optional else " NOT NULL"
+                        )
                         fields.append(field_def)
+
+                        if target_schema in _creating:
+                            logger.warning(
+                                "Mutual FK dependency: %s <-> %s. "
+                                "Omitting native FK for '%s'; software enforcement active.",
+                                schema_name,
+                                target_schema,
+                                field_name,
+                            )
+                            continue
+
+                        if not self.schema_exists(target_schema):
+                            self.create_schema(
+                                target_schema, target_model, _creating=_creating
+                            )
+                            logger.info(
+                                f"Auto-created schema '{target_schema}' required by FK "
+                                f"'{record_class.__name__}.{field_name}'"
+                            )
+
+                        on_delete: "OnDelete" = metadata.get(
+                            "on_delete", OnDelete.PROTECT
+                        )
+                        on_delete_sql = {
+                            OnDelete.CASCADE: "CASCADE",
+                            OnDelete.SET_NULL: "SET NULL",
+                            OnDelete.SET_DEFAULT: "SET DEFAULT",
+                            OnDelete.PROTECT: "NO ACTION",
+                            OnDelete.DO_NOTHING: "NO ACTION",
+                        }.get(on_delete, "NO ACTION")
+
+                        fk_constraints.append(
+                            f"FOREIGN KEY ({col_name}) REFERENCES {target_schema}(id) "
+                            f"ON DELETE {on_delete_sql}"
+                        )
                         continue
-
-                    if not self.schema_exists(target_schema):
-                        # target_record = target_model.__new__(target_model)
-                        self.create_schema(
-                            target_schema, target_model, _creating=_creating
-                        )
-                        logger.info(
-                            f"Auto-created schema '{target_schema}' required by FK "
-                            f"'{record_class.__name__}.{field_name}'"
-                        )
-
-                    col_name = f"{field_name}_object_id"
-                    field_def = f"{col_name} TEXT"
-                    if not is_optional:
-                        field_def += " NOT NULL"
-
-                    fields.append(field_def)
-                    fk_constraints.append(
-                        f"FOREIGN KEY ({col_name}) REFERENCES {target_schema}(id) "
-                        f"ON DELETE {on_delete_sql}"
-                    )
-                    continue
+                    else:
+                        # Software level Constraint. It contains a JSON describing the relationship
+                        # {"object_id": "dfd","model_path": "volnux.model.Workflow","backend_alias": "default"}
+                        sql_type = "TEXT"
+                elif meta_field_type == "list":
+                    sql_type = "TEXT"
+                elif meta_field_type in ["datetime", "date"]:
+                    sql_type = "TEXT"
+                else:
+                    sql_type = self._map_python_type_to_sql(field_type)
 
                 field_def = f"{field_name} {sql_type}"
                 if not is_optional:
                     field_def += " NOT NULL"
                 if is_unique:
                     field_def += " UNIQUE"
-
                 fields.append(field_def)
 
             fields.extend(fk_constraints)
-            fields_str = ", ".join(fields)
-            create_table_sql = (
-                f"CREATE TABLE IF NOT EXISTS {schema_name} ({fields_str})"
+            create_sql = (
+                f"CREATE TABLE IF NOT EXISTS {schema_name} ({', '.join(fields)})"
             )
-
-            self.execute_query(create_table_sql, fetch_method=None)
-
-            _creating.discard(schema_name)
+            print(create_sql)
+            self.execute_query(create_sql, fetch_method=None)
             self._invalidate_schema_cache(schema_name)
-            logger.info(f"Created schema '{schema_name}' with {len(fields)} fields")
 
-        except (sqlite3.Error, Exception) as e:
-            if schema_name in _creating:
-                _creating.discard(schema_name)
+        except Exception as e:
             logger.error(f"Error creating schema '{schema_name}': {e}")
             raise SqlOperationError(f"Error creating schema: {e}") from e
 
@@ -326,41 +321,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             logger.error(f"Error listing schemas: {e}")
             raise SqlOperationError(f"Error listing schemas: {e}")
 
-    def create_native_fk_constraint(
-        self,
-        source_backend: "KeyValueStoreBackendBase",
-        source_schema: str,
-        source_field: str,
-        target_schema: str,
-        target_field: str,
-        on_delete: "OnDelete",
-        nullable: bool,
-    ) -> None:
-        """Create a foreign key constraint between two tables."""
-        from ..fields import OnDelete
-
-        on_delete_sql = {
-            OnDelete.CASCADE: "CASCADE",
-            OnDelete.SET_NULL: "SET NULL",
-            OnDelete.SET_DEFAULT: "SET DEFAULT",
-            OnDelete.PROTECT: "NO ACTION",  # Database will raise error
-            OnDelete.DO_NOTHING: "NO ACTION",
-        }.get(on_delete, "NO ACTION")
-
-        constraint_name = f"fk_{source_schema}_{source_field}_{target_schema}"
-
-        ddl = (
-            f"ALTER TABLE {source_schema} "
-            f"ADD CONSTRAINT {constraint_name} "
-            f"FOREIGN KEY ({source_field}_object_id) "
-            f"REFERENCES {target_schema}(id) "
-            f"ON DELETE {on_delete_sql}"
-        )
-        with self.connector.transaction():
-            cursor = self.connector.get_cursor()
-            cursor.execute(ddl)
-            cursor.close()
-
     def supports_foreign_keys(self) -> bool:
         return True
 
@@ -399,51 +359,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             finally:
                 if cursor:
                     cursor.close()
-
-    def _prepare_record_data(
-        self, record: "KeyValueStoreIntegrationMixin", record_key: str
-    ) -> Dict[str, Any]:
-        """Prepare record data for database insertion.
-
-        Args:
-            record: The record to prepare.
-            record_key: The key for the record.
-
-        Returns:
-            Dictionary of field names to values.
-        """
-        record_data: Dict[str, Any] = {"id": record_key}
-
-        for field_name, value in record.__getstate__().items():
-            if field_name in self.RESERVED_FIELDS:
-                continue
-
-            if isinstance(value, (dict, list)):
-                record_data[field_name] = json.dumps(value)
-            elif value is not None:
-                record_data[field_name] = value
-            else:
-                record_data[field_name] = None
-
-        record_data["_record_state"] = self._serialize_record(record)
-
-        return record_data
-
-    def _convert_key_type(self, record_key: Union[str, int]) -> Union[str, int]:
-        """Convert the record key to the appropriate type.
-
-        Args:
-            record_key: The key to convert.
-
-        Returns:
-            Converted key (tries int, falls back to str).
-        """
-        if isinstance(record_key, str):
-            try:
-                return int(record_key)
-            except ValueError:
-                return record_key
-        return record_key
 
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
@@ -496,7 +411,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         self._ensure_connected()
 
         try:
-            self.ensure_schema(schema_name, record)
+            self.ensure_schema(schema_name, record.__class__)
 
             if self.exists(schema_name, record_key):
                 raise ObjectExistError(
@@ -531,7 +446,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
     def update(
         self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
-    ) -> None:
+    ) -> Optional[int]:
         """Update an existing record in the store.
 
         Args:
@@ -545,7 +460,8 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             SqlOperationError: If the update fails.
         """
         self._ensure_connected()
-        record_key = str(self._convert_key_type(record_key))
+
+        cursor = None
 
         if not self.exists(schema_name, record_key):
             raise ObjectDoesNotExist(
@@ -553,7 +469,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             )
 
         try:
-
             record_data = self._prepare_record_data(record, record_key)
 
             set_fields = [
@@ -573,17 +488,20 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             with self.connector.transaction():
                 cursor = self.connector.get_cursor()
                 cursor.execute(update_sql, values)
-                cursor.close()
-
-            logger.debug(f"Updated record '{record_key}' in schema '{schema_name}'")
+                return cursor.rowcount
 
         except SerializationError:
             raise
         except sqlite3.Error as e:
             logger.error(f"Error updating record: {e}")
             raise SqlOperationError(f"Error updating record: {e}")
+        finally:
+            if cursor:
+                cursor.close()
 
-    def upsert(self, schema_name: str, record_key: str, record: BaseModel) -> None:
+    def upsert(
+        self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
+    ) -> Optional[int]:
         """Insert or update a record (upsert operation).
 
         Args:
@@ -597,8 +515,10 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         """
         self._ensure_connected()
 
+        cursor = None
+
         try:
-            self.ensure_schema(schema_name, record)
+            self.ensure_schema(schema_name, record.__class__)
 
             record_data = self._prepare_record_data(record, record_key)
 
@@ -619,17 +539,18 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             with self.connector.transaction():
                 cursor = self.connector.get_cursor()
                 cursor.execute(upsert_sql, values)
-                cursor.close()
-
-            logger.debug(f"Upserted record '{record_key}' in schema '{schema_name}'")
+                return cursor.rowcount
 
         except SerializationError:
             raise
         except sqlite3.Error as e:
             logger.error(f"Error upserting record: {e}")
             raise SqlOperationError(f"Error upserting record: {e}")
+        finally:
+            if cursor:
+                cursor.close()
 
-    def delete(self, schema_name: str, record_key: str) -> None:
+    def delete(self, schema_name: str, record_key: str) -> Optional[int]:
         """Delete a record from the store.
 
         Args:
@@ -641,27 +562,23 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             SqlOperationError: If deletion fails.
         """
         self._ensure_connected()
-        record_key = str(self._convert_key_type(record_key))
+
+        cursor = None
 
         try:
             with self.connector.transaction():
                 cursor = self.connector.get_cursor()
                 cursor.execute(f"DELETE FROM {schema_name} WHERE id = ?", (record_key,))
 
-                if cursor.rowcount == 0:
-                    raise ObjectDoesNotExist(
-                        f"Record '{record_key}' does not exist in schema '{schema_name}'"
-                    )
-
-                cursor.close()
-
-            logger.debug(f"Deleted record '{record_key}' from schema '{schema_name}'")
-
+                return cursor.rowcount
         except ObjectDoesNotExist:
             raise
         except sqlite3.Error as e:
             logger.error(f"Error deleting record: {e}")
             raise SqlOperationError(f"Error deleting record: {e}")
+        finally:
+            if cursor:
+                cursor.close()
 
     def get(
         self,
@@ -685,22 +602,22 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             SqlOperationError: If retrieval fails.
         """
         self._ensure_connected()
-        record_key = str(self._convert_key_type(record_key))
+
+        cursor = None
 
         try:
             cursor = self.connector.get_cursor()
-            cursor.execute(
-                f"SELECT _record_state FROM {schema_name} WHERE id = ?", (record_key,)
-            )
+            cursor.execute(f"SELECT * FROM {schema_name} WHERE id = ?", (record_key,))
             row = cursor.fetchone()
-            cursor.close()
 
             if row is None:
                 raise ObjectDoesNotExist(
                     f"Record '{record_key}' does not exist in schema '{schema_name}'"
                 )
 
-            record = self._deserialize_record(row[0], record_klass)
+            record = self._deserialize_record(
+                self._sqlite_row_and_tuple_to_dict(row, cursor), record_klass
+            )
             logger.debug(f"Retrieved record '{record_key}' from schema '{schema_name}'")
             return record
 
@@ -711,60 +628,84 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         except sqlite3.Error as e:
             logger.error(f"Error getting record: {e}")
             raise SqlOperationError(f"Error getting record: {e}")
+        finally:
+            if cursor:
+                cursor.close()
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """Escape SQL LIKE metacharacters to prevent wildcard injection."""
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def _build_sql_filter(self, filter_kwargs: Dict[str, Any]) -> Tuple[str, List[Any]]:
-        """Build SQL WHERE clause from filter kwargs.
-
-        Args:
-            filter_kwargs: Dictionary of field filters.
-
-        Returns:
-            Tuple of (where_clause, parameters).
-        """
         if not filter_kwargs:
             return "1", []
 
-        conditions = []
-        parameters = []
+        conditions: List[str] = []
+        parameters: List[Any] = []
 
         for key, value in filter_kwargs.items():
             if "__" in key:
                 field, operator = key.rsplit("__", 1)
 
-                operator_map = {
-                    "exact": ("= ?", [value]),
-                    "contains": ("LIKE ?", [f"%{value}%"]),
-                    "startswith": ("LIKE ?", [f"{value}%"]),
-                    "endswith": ("LIKE ?", [f"%{value}"]),
-                    "icontains": ("LIKE ? COLLATE NOCASE", [f"%{value}%"]),
-                    "istartswith": ("LIKE ? COLLATE NOCASE", [f"{value}%"]),
-                    "iendswith": ("LIKE ? COLLATE NOCASE", [f"%{value}"]),
-                    "gt": ("> ?", [value]),
-                    "gte": (">= ?", [value]),
-                    "lt": ("< ?", [value]),
-                    "lte": ("<= ?", [value]),
-                    "ne": ("!= ?", [value]),
-                    "isnull": ("IS NULL" if value else "IS NOT NULL", []),
-                }
-
                 if operator == "in":
+                    if not value:
+                        conditions.append("0")  # Empty IN = no matches
+                        continue
                     placeholders = ",".join(["?" for _ in value])
                     conditions.append(f"{field} IN ({placeholders})")
                     parameters.extend(value)
-                elif operator in operator_map:
-                    sql_op, params = operator_map[operator]
-                    conditions.append(f"{field} {sql_op}")
-                    parameters.extend(params)
+
+                elif operator in (
+                    "contains",
+                    "icontains",
+                    "startswith",
+                    "istartswith",
+                    "endswith",
+                    "iendswith",
+                ):
+                    escaped = self._escape_like(str(value))
+                    nocase = " COLLATE NOCASE" if operator.startswith("i") else ""
+
+                    if "startswith" in operator:
+                        pattern = f"{escaped}%"
+                    elif "endswith" in operator:
+                        pattern = f"%{escaped}"
+                    else:
+                        pattern = f"%{escaped}%"
+
+                    conditions.append(f"{field} LIKE ?{nocase} ESCAPE '\\'")
+                    parameters.append(pattern)
+
+                elif operator == "exact":
+                    conditions.append(f"{field} = ?")
+                    parameters.append(value)
+                elif operator == "gt":
+                    conditions.append(f"{field} > ?")
+                    parameters.append(value)
+                elif operator == "gte":
+                    conditions.append(f"{field} >= ?")
+                    parameters.append(value)
+                elif operator == "lt":
+                    conditions.append(f"{field} < ?")
+                    parameters.append(value)
+                elif operator == "lte":
+                    conditions.append(f"{field} <= ?")
+                    parameters.append(value)
+                elif operator == "ne":
+                    conditions.append(f"{field} != ?")
+                    parameters.append(value)
+                elif operator == "isnull":
+                    conditions.append(f"{field} IS {'NULL' if value else 'NOT NULL'}")
                 else:
-                    logger.warning(f"Unknown filter operator: {operator}")
+                    logger.warning("Unknown filter operator: %s", operator)
                     conditions.append(f"{field} = ?")
                     parameters.append(value)
             else:
                 conditions.append(f"{key} = ?")
                 parameters.append(value)
 
-        where_clause = " AND ".join(conditions)
-        return where_clause, parameters
+        return " AND ".join(conditions), parameters
 
     def filter(
         self,
@@ -795,6 +736,8 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         """
         self._ensure_connected()
 
+        cursor = None
+
         if not self.schema_exists(schema_name):
             raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
 
@@ -820,19 +763,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             cursor = self.connector.get_cursor()
             cursor.execute(query, parameters)
             rows = cursor.fetchall()
-            cursor.close()
-
-            # results = []
-            # for row in rows:
-            #     try:
-            #         record = self._deserialize_record(row[0], record_klass)
-            #         results.append(record)
-            #     except SerializationError as e:
-            #         logger.warning(f"Skipping corrupted record in '{schema_name}': {e}")
-            #         continue
-            #
-            # logger.debug(f"Filtered {len(results)} records from schema '{schema_name}'")
-            # return results
 
             return self._create_result_stream(
                 record_keys=[row[0] for row in rows], record_klass=record_klass
@@ -843,12 +773,21 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         except sqlite3.Error as e:
             logger.error(f"Error filtering records: {e}")
             raise SqlOperationError(f"Error filtering records: {e}")
+        finally:
+            if cursor is not None:
+                cursor.close()
 
-    def count(self, schema_name: str, **filter_kwargs: Any) -> int:
+    def count(
+        self,
+        schema_name: str,
+        record_klass: Type["KeyValueStoreIntegrationMixin"],
+        **filter_kwargs: Any,
+    ) -> int:
         """Count records in a schema, optionally filtered.
 
         Args:
             schema_name: The schema to count within.
+            record_klass: The record class to count.
             **filter_kwargs: Optional attribute-value pairs to filter by.
 
         Returns:
@@ -859,6 +798,8 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             SqlOperationError: If the count fails.
         """
         self._ensure_connected()
+
+        cursor = None
 
         if not self.schema_exists(schema_name):
             raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
@@ -873,13 +814,15 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             cursor = self.connector.get_cursor()
             cursor.execute(query, parameters)
             result = cursor.fetchone()
-            cursor.close()
 
             return int(result[0]) if result else 0
 
         except sqlite3.Error as e:
             logger.error(f"Error counting records: {e}")
             raise SqlOperationError(f"Error counting records: {e}")
+        finally:
+            if cursor:
+                cursor.close()
 
     def reload(
         self, schema_name: str, record: "KeyValueStoreIntegrationMixin"
@@ -901,27 +844,24 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         if not hasattr(record, "id"):
             raise ValueError("Record must have an 'id' attribute for reload")
 
-        record_key = str(self._convert_key_type(record.id))
+        record_key = record.id
         self._ensure_connected()
+
+        cursor = None
 
         try:
             cursor = self.connector.get_cursor()
-            cursor.execute(
-                f"SELECT _record_state FROM {schema_name} WHERE id = ?", (record_key,)
-            )
+            cursor.execute(f"SELECT * FROM {schema_name} WHERE id = ?", (record_key,))
             row = cursor.fetchone()
-            cursor.close()
 
             if row is None:
                 raise ObjectDoesNotExist(
                     f"Record '{record_key}' no longer exists in schema '{schema_name}'"
                 )
 
-            state = json.loads(row[0])
-            record.__setstate__(state)
-
-            logger.debug(f"Reloaded record '{record_key}' from schema '{schema_name}'")
-            return record
+            return self._deserialize_record(
+                self._sqlite_row_and_tuple_to_dict(row, cursor), record.__class__
+            )
 
         except ObjectDoesNotExist:
             raise
@@ -930,3 +870,6 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         except sqlite3.Error as e:
             logger.error(f"Error reloading record: {e}")
             raise SqlOperationError(f"Error reloading record: {e}")
+        finally:
+            if cursor:
+                cursor.close()

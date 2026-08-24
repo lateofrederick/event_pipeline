@@ -3,7 +3,7 @@ import logging
 import sys
 from abc import ABCMeta, abstractmethod, ABC
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 
 from volnux.exceptions import CommandError
 from volnux.event.registry import Registry

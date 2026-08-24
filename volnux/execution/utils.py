@@ -3,7 +3,7 @@ import typing
 
 from volnux.result_evaluators import EventEvaluationResult
 
-from .state_manager import ExecutionStatus
+from .status import ExecutionStatus
 
 if typing.TYPE_CHECKING:
     from .context import ExecutionContext
@@ -38,10 +38,9 @@ def evaluate_context_execution_results(
     Returns:
         typing.Optional[EventEvaluationResult]: Summary of the execution results
     """
-    context_state = context.state
-    if context_state.status != ExecutionStatus.COMPLETED:
+    if context.status != ExecutionStatus.COMPLETED:
         return None
     evaluator = context.get_result_evaluator()
     if evaluator is None:
         return None
-    return evaluator.evaluate(context_state.results)
+    return evaluator.evaluate(context.results)

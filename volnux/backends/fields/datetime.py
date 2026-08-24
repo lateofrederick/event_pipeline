@@ -162,7 +162,6 @@ class DateField:
     def __new__(cls, *args, **kwargs):
         raise TypeError("DateField cannot be instantiated")
 
-    @typing._tp_cache
     def __class_getitem__(cls, params) -> MiniAnnotated:
         config = parse_params(params, field_type=cls.__name__)
 

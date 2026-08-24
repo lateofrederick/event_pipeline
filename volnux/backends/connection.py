@@ -44,6 +44,14 @@ class ConnectionConfig:
     ssl_enabled: bool = False
     extra_params: Dict[str, Any] = field(default_factory=dict)
 
+    def __eq__(self, value: object, /) -> bool:
+        return (
+            isinstance(value, ConnectionConfig)
+            and self.host == value.host
+            and self.port == value.port
+            and self.database == value.database
+        )
+
     def get_connection_string(self, scheme: str = "unknown") -> str:
         """Generate a connection string URI.
 
@@ -89,12 +97,6 @@ class ConnectionConfig:
         return config
 
 
-class ConnectionError(Exception):
-    """Raised when connection operations fail."""
-
-    pass
-
-
 class BackendConnectorBase(ABC, Generic[CursorType]):
     """Abstract base class for backend database and service connectors.
 
@@ -108,6 +110,9 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
     Attributes:
         config: The connection configuration object.
     """
+
+    # URI scheme
+    scheme: str
 
     def __init__(
         self,
@@ -147,6 +152,15 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
             f"Initialized {self.__class__.__name__} connector for "
             f"{host}:{port}/{database or 'default'}"
         )
+
+    def get_uri(self) -> str:
+        """
+        Return the connection URI for the backend.
+
+        Returns:
+            str: The connection URI.
+        """
+        return self.config.get_connection_string(self.scheme)
 
     @abstractmethod
     def connect(self) -> None:
@@ -301,7 +315,7 @@ class BackendConnectorBase(ABC, Generic[CursorType]):
             "connector_type": self.__class__.__name__,
         }
 
-    def __eq__(self, other: "BackendConnectorBase") -> bool:
+    def __eq__(self, other: object) -> bool:
         """Equality check for connectors based on configuration."""
         if not isinstance(other, BackendConnectorBase):
             return False

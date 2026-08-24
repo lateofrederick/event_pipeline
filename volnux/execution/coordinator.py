@@ -7,21 +7,38 @@ from typing import Any, Optional, Tuple
 
 from volnux.exceptions import (
     SwitchTask,
-    ExternalCommunicationSuspensionRequest,
+    # ExternalCommunicationSuspensionRequest,
     StopProcessingError,
+    SuspendTask,
 )
-from volnux.execution.context import ExecutionContext
+from volnux.execution.context import ExecutionContext, ExecutionStatus
 from volnux.execution.result import ResultProcessor
-from volnux.execution.state_manager import ExecutionStatus
 from volnux.flows import setup_execution_flow
 from volnux.mixins.event.communication.datastructures import (
     ExternalCommunicationQueueEntry,
 )
 
+# NEW: Import the sub-phase suspension signal
+# from volnux.mixins.event.checkpointing import SubPhaseSuspension
+
 if typing.TYPE_CHECKING:
     from volnux.flows.base import BaseFlow
 
 logger = logging.getLogger(__name__)
+
+
+# @dataclass
+# class ExternalCommunicationQueueEntry:
+#     request_id: str
+#     workflow_name: str
+#     workflow_id: str
+#     task_id: str
+#     sub_phase_name: Optional[str] = None  # NEW: None for legacy communicate()
+#     checkpoint_key: Optional[str] = None
+#     request_title: Optional[str] = None
+#     request_payload: Any = None
+#     options: Optional[Dict[str, Any]] = None
+#     timeout_at: Optional[str] = None
 
 
 class ExecutionError(Exception):
@@ -41,7 +58,7 @@ class ExecutionCoordinator:
     Coordinates execution of tasks based on task hierarchy.
 
     Manages the lifecycle of task execution including setup, running,
-    error handling, and cleanup operations.
+    error handling, suspension (HITL + sub_phase), and cleanup operations.
     """
 
     def __init__(
@@ -50,29 +67,12 @@ class ExecutionCoordinator:
         result_processor: Optional[ResultProcessor] = None,
         timeout: Optional[float] = None,
     ):
-        """
-        Initialize the ExecutionCoordinator.
-
-        Args:
-            execution_context: The execution context containing task configuration
-            result_processor: Custom result processor (creates default if None)
-            timeout: Optional timeout in seconds for execution
-        """
         self.execution_context = execution_context
         self._result_processor = result_processor or ResultProcessor()
         self._timeout = timeout
         self._flow = None
 
     def _setup_execution_flow(self) -> "BaseFlow":
-        """
-        Setup the execution flow based on task dependencies.
-
-        Returns:
-            Configured execution flow ready for running
-
-        Raises:
-            ValueError: If the execution context is invalid
-        """
         try:
             logger.info("Setting up execution flow")
             flow = setup_execution_flow(self.execution_context)
@@ -82,18 +82,24 @@ class ExecutionCoordinator:
             logger.error(f"Failed to setup execution flow: {e}", exc_info=True)
             raise ValueError(f"Invalid execution context: {e}") from e
 
+    async def _process_suspension_request(self, request: SuspendTask):
+        if request.suspension_type == SuspendTask.SuspensionType.PREEMPTION:
+            # goes to waiting queue
+            pass
+        elif request.suspension_type == SuspendTask.SuspensionType.CANCELLATION:
+            # Goes to dead letter queue
+            pass
+        elif request.suspension_type in [
+            SuspendTask.SuspensionType.HITL,
+            SuspendTask.SuspensionType.EXTERNAL_EVENT,
+            SuspendTask.SuspensionType.CONDITION,
+        ]:
+            # Goes to external event waiting queue. When the event is received, the tasks is place in the waiting queue baased on piroity
+            pass
+        else:
+            raise ValueError(f"Invalid suspension type: {request.suspension_type}")
+
     async def _execute_async(self) -> Tuple[Any, Any]:
-        """
-        Execute the tasks asynchronously.
-
-        Returns:
-            Tuple of (results, errors) from task execution
-
-        Raises:
-            ExecutionTimeoutError: If execution exceeds timeout
-            ExecutionError: If execution fails due to runtime errors
-            Exception: If execution fails critically
-        """
         flow = self._setup_execution_flow()
         self._flow = flow
 
@@ -104,7 +110,6 @@ class ExecutionCoordinator:
             await self.execution_context.update_status_async(ExecutionStatus.RUNNING)
             logger.info("Starting task execution")
 
-            # Run with optional timeout - if timeout set
             run_coro = flow.run()
             future = (
                 await asyncio.wait_for(run_coro, timeout=self._timeout)
@@ -122,7 +127,6 @@ class ExecutionCoordinator:
                 logger.info("Execution completed successfully")
 
             error_results = await self._result_processor.process_errors(errors)
-
             results.extend(error_results)
 
             await self.execution_context.bulk_update_async(
@@ -130,36 +134,31 @@ class ExecutionCoordinator:
             )
             self.execution_context.metrics.end_time = time.time()
 
-            # check if requests were raised
-            execution_state = await self.execution_context.state_async
-
-            stop_processing_requested = execution_state.get_stop_processing_request()
+            stop_processing_requested = (
+                self.execution_context.get_stop_processing_request()
+            )
             if stop_processing_requested:
                 raise stop_processing_requested
 
-            external_com_request = (
-                execution_state.get_external_communication_suspension_request()
-            )
-            if external_com_request:
-                raise external_com_request
+            suspension_request = self.execution_context.get_suspension_request()
+            if suspension_request:
+                raise suspension_request
 
             switch_request = typing.cast(
-                SwitchTask, execution_state.get_switch_request()
+                SwitchTask, self.execution_context.get_switch_request()
             )
-
             if switch_request is not None:
                 results.add(switch_request.result)
-
                 current_task_profile = (
                     self.execution_context.get_decision_task_profile()
                 )
-
                 if current_task_profile is not None:
                     if not current_task_profile.get_descriptor(
                         switch_request.next_task_descriptor
                     ):
                         logger.error(
-                            f"Task profile has no configured descriptor {switch_request.next_task_descriptor}"
+                            f"Task profile has no configured descriptor "
+                            f"{switch_request.next_task_descriptor}"
                         )
                         await self.execution_context.cancel_async()
                         switch_request.descriptor_configured = False
@@ -170,6 +169,19 @@ class ExecutionCoordinator:
                         "No decision task profile found for switch task handling"
                     )
 
+            return results, errors
+
+        except SuspendTask as sps:
+            logger.info(
+                "Coordinator: workflow '%s' task '%s' suspended at sub_phase '%s'",
+                self.execution_context.workflow_name,
+                sps.get_phase(),
+                sps.get_phase(),
+            )
+
+            await self._process_suspension_request(sps)
+
+            await self.execution_context.paused_async()
             return results, errors
 
         except asyncio.TimeoutError as e:
@@ -189,55 +201,13 @@ class ExecutionCoordinator:
         except StopProcessingError as e:
             logger.info(f"Execution stopped due to stop condition: {e}")
             await self.execution_context.cancel_async()
-
-        except ExternalCommunicationSuspensionRequest as hitl_req:
-            # Do not re-queue the task. Instead, enqueue it in the HITL queue
-            # and release execution resources entirely. The bootloader will
-            # restart execution when the human responses.
-
-            logger.info(
-                "Coordinator: workflow '%s' task '%s' suspended for human input "
-                "(request_id=%s, title='%s')",
-                self.execution_context.workflow_name,
-                hitl_req.task_id,
-                hitl_req.request_id,
-                hitl_req.title,
-            )
-
-            # Build queue entry
-            entry = ExternalCommunicationQueueEntry(
-                request_id=hitl_req.request_id,
-                workflow_name=self.execution_context.workflow_name,
-                workflow_id=self.execution_context.workflow_id,
-                task_id=hitl_req.task_id,
-                checkpoint_key=await self._get_latest_checkpoint_key(hitl_req.task_id),
-                request_title=hitl_req.title,
-                request_payload=hitl_req.payload,
-                options=hitl_req.options,
-                timeout_at=self._compute_timeout(hitl_req.timeout_hours),
-            )
-
-            await entry.save_async(
-                ttl=hitl_req.timeout_hours * 3600 if hitl_req.timeout_hours else None
-            )
-
-            # # Notify human via configured adapter
-            # await self._human_interface_adapter.notify(
-            #     request=hitl_req,
-            # )
-            #
-            # # Mark workflow as suspended — releases execution resources
-            # await self._mark_workflow_suspended(
-            #     workflow_id=workflow_id,
-            #     reason="waiting_for_human",
-            #     entry_id=entry.entry_id,
-            # )
-            await self.execution_context.paused_async()
+            return results, errors
 
         except Exception as e:
             logger.error(f"Unexpected execution error: {e}", exc_info=True)
             await self.execution_context.failed_async()
             raise
+
         finally:
             if self._flow:
                 await self._flow.close()
@@ -245,17 +215,9 @@ class ExecutionCoordinator:
         return results, errors
 
     async def _get_latest_checkpoint_key(self, task_id: str) -> typing.Optional[str]:
-        """
-        Persist a fresh context snapshot and return its lookup key, so a
-        HITL queue entry points at state saved right before suspension.
-
-        ContextSnapshot (rehydrator/engine/snapshot.py) is keyed by
-        state_id within its own schema namespace, and rehydration
-        (RehydrationManager.wake) rehydrates the *full* workflow state from
-        this key — not a narrower per-task snapshot.
-        """
         logger.debug(
-            "Persisting checkpoint for suspended task '%s' before HITL wait", task_id
+            "Persisting checkpoint for suspended task '%s' before suspension wait",
+            task_id,
         )
         await self.execution_context.persist()
         return self.execution_context.state_id
@@ -263,26 +225,14 @@ class ExecutionCoordinator:
     def _compute_timeout(
         self, timeout_hours: typing.Optional[float]
     ) -> typing.Optional[str]:
-        """ISO timestamp for when a HITL request times out, or None for
-        no timeout."""
         if not timeout_hours:
             return None
         return (datetime.now(timezone.utc) + timedelta(hours=timeout_hours)).isoformat()
 
     async def execute_async(self) -> Tuple[Any, Any]:
-        """
-        Execute tasks asynchronously.
-
-        Returns:
-            Tuple of (results, errors) from task execution
-
-        Raises:
-            Exception: If execution fails
-        """
         return await self._execute_async()
 
     async def cancel(self) -> None:
-        """Cancel the currently running execution."""
         if self._flow:
             logger.warning("Cancelling execution flow")
             await self._flow.cancel()

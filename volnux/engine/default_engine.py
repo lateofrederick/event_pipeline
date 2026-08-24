@@ -5,7 +5,7 @@ from collections import deque
 
 from volnux.exceptions import TaskSwitchingError
 from volnux.execution.context import ExecutionContext
-from volnux.execution.state_manager import ExecutionState, ExecutionStatus
+from volnux.execution.status import ExecutionStatus
 from volnux.parser.operator import PipeType
 from volnux.parser.protocols import GroupingStrategy, TaskType
 from volnux.execution.pipeline import Pipeline
@@ -427,17 +427,14 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     # Dispatch task profiles for execution
                     await execution_context.dispatch()
 
-                    # Get execution state
-                    execution_state = await execution_context.state_async
-
                     # Checkpoint after task completion
                     await self._checkpoint_after_task(
                         execution_context,
-                        success=execution_state.status == ExecutionStatus.COMPLETED,
+                        success=execution_context.status == ExecutionStatus.COMPLETED,
                     )
 
-                    if self._should_terminate(execution_state):
-                        status = self._map_termination_status(execution_state.status)
+                    if self._should_terminate(execution_context):
+                        status = self._map_termination_status(execution_context.status)
                         return EngineResult(
                             status=status,
                             final_context=self.final_context,
@@ -447,7 +444,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                     # Handle task switching
                     switched = self._handle_task_switch(
                         task=executable_node.task,
-                        execution_state=execution_state,
+                        execution_context=execution_context,
                         previous_context=executable_node.previous_context,
                         queue=self.task_queue,
                     )
@@ -579,7 +576,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         task_profiles = list(parallel_tasks) if parallel_tasks else task
 
         if previous_context is None:
-            # --- ENTRY NODE OF THIS ENGINE / SUB-ENGINE ---
+            # ENTRY NODE OF THIS ENGINE / SUB-ENGINE
             if self.is_root_engine():
                 # ROOT ENGINE ENTRY: Create root context & set fractal tree root
                 context = await ExecutionContext.create_context(
@@ -614,7 +611,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
                 )
 
         else:
-            # --- SUBSEQUENT NODES WITHIN THE SAME ENGINE (HORIZONTAL PEERS) ---
+            # SUBSEQUENT NODES WITHIN THE SAME ENGINE (HORIZONTAL PEERS)
             # HORIZONTAL LINK: Peer creation on the same execution depth layer
             context = await ExecutionContext.create_context(
                 pipeline=pipeline,
@@ -639,17 +636,17 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         return context
 
-    def _should_terminate(self, execution_state: ExecutionState) -> bool:
+    def _should_terminate(self, execution_context: ExecutionContext) -> bool:
         """
         Check if execution should stop due to cancellation/abortion.
 
         Args:
-            execution_state: Current execution state
+            execution_context: Current execution context
 
         Returns:
             True if execution should terminate early
         """
-        should_stop = execution_state.status in {
+        should_stop = execution_context.status in {
             ExecutionStatus.CANCELLED,
             ExecutionStatus.ABORTED,
             ExecutionStatus.PAUSED,
@@ -657,7 +654,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         }
 
         if should_stop and self.enable_debug_logging:
-            logger.debug(f"[Engine] Early termination: {execution_state.status}")
+            logger.debug(f"[Engine] Early termination: {execution_context.status}")
 
         return should_stop
 
@@ -674,7 +671,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
     def _handle_task_switch(
         self,
         task: TaskType,
-        execution_state: ExecutionState,
+        execution_context: ExecutionContext,
         queue: typing.Deque[TaskNode],
         previous_context: typing.Optional[ExecutionContext] = None,
     ) -> bool:
@@ -686,7 +683,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
 
         Args:
             task: Current task
-            execution_state: State with potential switch request
+            execution_context: Context with potential switch request
             previous_context: Context to reuse for switched task
             queue: Work queue to prepend a switched task
 
@@ -696,7 +693,7 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Raises:
             TaskSwitchingError: If the target descriptor doesn't exist
         """
-        switch_request = execution_state.get_switch_request()
+        switch_request = execution_context.get_switch_request()
 
         if not switch_request or not switch_request.descriptor_configured:  # type: ignore
             return False
@@ -808,16 +805,16 @@ class DefaultWorkflowEngine(WorkflowEngine):
         Args:
             pipeline: Workflow pipeline
         """
-        if not self._sink_queue:
+        if not self.sink_queue:
             return
 
         if self.enable_debug_logging:
             logger.debug(
-                f"[Engine: {self._engine_id}] Processing {len(self._sink_queue)} sink nodes"
+                f"[Engine: {self._engine_id}] Processing {len(self.sink_queue)} sink nodes"
             )
 
-        while self._sink_queue:
-            sink_task = self._sink_queue.popleft()
+        while self.sink_queue:
+            sink_task = self.sink_queue.popleft()
 
             try:
                 # Create standalone context for sink node

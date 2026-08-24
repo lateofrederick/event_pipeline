@@ -3,6 +3,12 @@ from formax import BaseModel, ValidationFlags, MiniAnnotated, Attrib
 
 from volnux.backends.storage_route import StorageRoute
 from volnux.config import VolnuxConfig
+from volnux.context import (
+    get_current_correlation_id,
+    get_current_project_id,
+    get_current_workflow_id,
+    get_current_node_id,
+)
 from volnux.backends.fields import DateTimeField, DTConfig
 from volnux.mixins.messaging import MessagingBackendIntegrationMixin
 
@@ -42,18 +48,15 @@ class StreamChunk(MessagingBackendIntegrationMixin, BaseModel):
     created_at: DateTimeField[DTConfig(auto_now=True, tz_aware=True)]
 
     # project identifier
-    node_id: MiniAnnotated[
-        str, Attrib(default_factory=lambda: project_config.get("NODE_ID"))
-    ]
-    project_id: MiniAnnotated[
-        str, Attrib(default_factory=lambda: project_config.get("PROJECT_ID"))
-    ]
+    node_id: MiniAnnotated[str, Attrib(default_factory=get_current_node_id)]
+    project_id: MiniAnnotated[str, Attrib(default_factory=get_current_project_id)]
 
     class Config:
         validation = ValidationFlags.NONE
 
     @classmethod
     def get_storage_route(cls) -> StorageRoute:
+        config = cls.get_volnux_config()
         return StorageRoute(
             components=[
                 "volnux",
@@ -65,11 +68,10 @@ class StreamChunk(MessagingBackendIntegrationMixin, BaseModel):
                 "events",
             ],
             routing_keys=lambda: {
-                "project_id": project_config.PROJECT_ID,
-                "node_id": project_config.NODE_ID,
-                # TODO: fetch workflow_id and correlation id from runtime
-                "workflow_id": "",
-                "correlation_id": "",
+                "project_id": config.PROJECT_ID,
+                "node_id": config.get_node_id(),
+                "workflow_id": typing.cast(str, get_current_workflow_id()),
+                "correlation_id": typing.cast(str, get_current_correlation_id()),
             },
         )
 

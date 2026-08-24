@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from volnux.backends.connection import BackendConnectorBase, ConnectionError
+from volnux.backends.connection import BackendConnectorBase
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,9 @@ class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
     # SQLite-specific defaults
     DEFAULT_TIMEOUT = 30.0
     DEFAULT_ISOLATION_LEVEL = None  # Autocommit mode
+
+    # uri scheme
+    scheme = "sqlite"
 
     def __init__(
         self,

@@ -3,16 +3,16 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 from volnux.backends.db_utils import migrate_models
-from volnux.config import VolnuxConfig, WorkflowConfig
+from volnux.engine.workflows.workflow import WorkflowConfig
 from volnux.models import (
     Organization,
     Team,
     User,
     Workflow,
     WorkflowVersion,
-    KeyValueStoreIntegrationMixin,
 )
-from volnux.registry import WorkflowRegistry
+from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
+from volnux.engine.workflows.registry import WorkflowRegistry, get_workflow_registry
 
 logger = logging.getLogger("volnux.cli.migrator")
 
@@ -38,7 +38,7 @@ class VolnuxProjectMigrator:
         self, config: Any, workflow_registry: Optional[WorkflowRegistry] = None
     ):
         self.config = config
-        self.workflow_registry = workflow_registry or WorkflowRegistry.get_instance()
+        self.workflow_registry = workflow_registry or get_workflow_registry()
 
     async def execute_full_migration(self, skip_workflows: bool = False) -> None:
         """
@@ -46,13 +46,10 @@ class VolnuxProjectMigrator:
         """
         logger.info("Starting Volnux database migration...")
 
-        # Phase 1: Polymorphic Schema DDL Migration
         await self._migrate_schema()
 
-        # Phase 2: Bootstrap Defaults (Org, Team, User)
         org, team, user = await self._seed_bootstrap_entities()
 
-        # Phase 3: Sync WorkflowConfigs directly from the WorkflowRegistry
         if not skip_workflows:
             await self._sync_workflows_from_registry(org, team, user)
 
@@ -65,7 +62,7 @@ class VolnuxProjectMigrator:
         logger.info("[Phase 1/3] Applying schema migrations for governance models...")
         for model in self.MIGRATION_MODELS:
             try:
-                migrate_models(model)
+                await migrate_models(model)
                 logger.debug("Migrated schema for model: %s", model.__name__)
             except Exception as e:
                 logger.error(
@@ -81,29 +78,28 @@ class VolnuxProjectMigrator:
             "[Phase 2/3] Seeding default organization, team, and system user..."
         )
 
-        # 1. Default Organization
         org_slug = self.config.get("DEFAULT_ORG_SLUG", "default-org")
-        org = await Organization.filter(slug=org_slug).first()
+        org = await Organization.filter_async(slug=org_slug).first()
         if not org:
-            org = await Organization.create(name="Default Organization", slug=org_slug)
+            org = Organization(name="Default Organization", slug=org_slug)
+            await org.save_async()
             logger.info("Created default Organization: '%s'", org_slug)
 
-        # 2. Default Team
         team_slug = self.config.get("DEFAULT_TEAM_SLUG", "default-team")
-        team = await Team.filter(slug=team_slug, organization=org.id).first()
+        team = await Team.filter_async(slug=team_slug, organization=org.id).first()
         if not team:
-            team = await Team.create(
-                name="Default Team", slug=team_slug, organization=org
-            )
+            team = Team(name="Default Team", slug=team_slug, organization=org)
+            await team.save_async()
             logger.info("Created default Team: '%s'", team_slug)
 
-        # 3. Default CLI System User
         user_email = self.config.get("DEFAULT_USER_EMAIL", "cli@volnux.local")
-        user = await User.filter(email=user_email).first()
+        user_qs = await User.filter_async(email=user_email)
+        user = user_qs.first()
         if not user:
-            user = await User.create(
-                username="cli_developer", email=user_email, is_system=True
+            user = User(
+                name="cli_developer", email=user_email, is_active=True, organization=org
             )
+            await user.save_async()
             logger.info("Created default CLI User: '%s'", user_email)
 
         return org, team, user
@@ -118,10 +114,10 @@ class VolnuxProjectMigrator:
         logger.info("[Phase 3/3] Syncing workflows from WorkflowRegistry...")
 
         # Ensure registry is populated if not loaded already
-        if not self.workflow_registry.is_loaded():
-            await self.workflow_registry.load_all(make_ready=False)
+        if not self.workflow_registry.is_ready():
+            raise RuntimeError("WorkflowRegistry is not ready. Please load it first.")
 
-        workflows: Dict[str, WorkflowConfig] = self.workflow_registry.get_workflows()
+        workflows = self.workflow_registry.get_workflow_configs()
 
         if not workflows:
             logger.warning(
@@ -129,28 +125,25 @@ class VolnuxProjectMigrator:
             )
             return
 
-        for wf_name, config_instance in workflows.items():
+        for wfconfig in workflows:
             try:
-                # Extract Pointy AST object and raw DSL text
-                ast_obj, pty_text = config_instance.get_pointy_ast()
+                ast_obj, pty_text = wfconfig.get_pointy_ast()
                 ast_hash = hashlib.sha256(pty_text.encode("utf-8")).hexdigest()
 
-                # 1. Upsert Master Workflow Record
-                workflow = await Workflow.filter(
-                    name=wf_name, organization=org.id
+                workflow = await Workflow.filter_async(
+                    name=wfconfig.name, organization=org.id
                 ).first()
 
                 if not workflow:
-                    workflow = await Workflow.create(
-                        name=wf_name,
+                    workflow = Workflow(
+                        name=wfconfig.name,
                         organization=org,
                         team=team,
                         created_by=user,
                         is_active=True,
                     )
-                    logger.info("Registered new Workflow: '%s'", wf_name)
+                    logger.info("Registered new Workflow: '%s'", wfconfig.name)
 
-                # 2. Check if exact AST version hash already exists
                 version_record = await WorkflowVersion.filter(
                     workflow=workflow.id, ast_hash=ast_hash
                 ).first()

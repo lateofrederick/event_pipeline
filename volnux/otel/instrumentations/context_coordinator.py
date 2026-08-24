@@ -12,6 +12,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from volnux.otel.context_manager import OTelContextManager, SpanHelper
 from volnux.otel.tracer_setup import get_tracer
+from volnux.execution.coordinator import ExecutionTimeoutError
 
 if typing.TYPE_CHECKING:
     from volnux.execution.context import ExecutionContext
@@ -67,10 +68,9 @@ def instrument_execution_context_dispatch(original_dispatch):
                 span.add_event("context.dispatch_completed")
                 span.set_attribute("context.duration_ms", self.metrics.duration * 1000)
 
-                state = self.state
-                span.set_attribute("context.results_count", len(state.results))
-                span.set_attribute("context.errors_count", len(state.errors))
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.results_count", len(self.results))
+                span.set_attribute("context.errors_count", len(self.errors))
+                span.set_attribute("context.status", self.status.value)
 
                 SpanHelper.set_status_from_execution(span, self)
 
@@ -96,10 +96,10 @@ def instrument_execution_context_spawn_child(original_spawn_child):
     """
 
     @functools.wraps(original_spawn_child)
-    def instrumented_spawn_child(self: "ExecutionContext", task_profiles):
+    async def instrumented_spawn_child(self: "ExecutionContext", task_profiles):
         tracer = get_tracer()
         if not tracer:
-            return original_spawn_child(self, task_profiles)
+            return await original_spawn_child(self, task_profiles)
 
         with tracer.start_as_current_span(
             "context.spawn_child",
@@ -108,7 +108,7 @@ def instrument_execution_context_spawn_child(original_spawn_child):
             try:
                 _add_execution_context_attributes(span, self)
                 span.set_attribute("child.task_count", len(task_profiles))
-                result = original_spawn_child(self, task_profiles)
+                result = await original_spawn_child(self, task_profiles)
 
                 span.set_attribute("child.context_id", result.id)
                 span.set_attribute("child.depth", result.get_depth())
@@ -142,10 +142,9 @@ def instrument_execution_context_update_status(original_update_status):
                 span.set_attribute("context.new_status", new_status.value)
                 result = original_update_status(self, new_status)
 
-                state = self.state
-                span.set_attribute("context.current_status", state.status.value)
-                span.set_attribute("context.errors_count", len(state.errors))
-                span.set_attribute("context.results_count", len(state.results))
+                span.set_attribute("context.current_status", self.status.value)
+                span.set_attribute("context.errors_count", len(self.errors))
+                span.set_attribute("context.results_count", len(self.results))
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -176,10 +175,9 @@ def instrument_execution_context_update_status_async(original_update_status_asyn
                 span.set_attribute("context.new_status", new_status.value)
                 result = await original_update_status_async(self, new_status)
 
-                state = await self.state_async
-                span.set_attribute("context.current_status", state.status.value)
-                span.set_attribute("context.errors_count", len(state.errors))
-                span.set_attribute("context.results_count", len(state.results))
+                span.set_attribute("context.current_status", self.status.value)
+                span.set_attribute("context.errors_count", len(self.errors))
+                span.set_attribute("context.results_count", len(self.results))
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -237,8 +235,7 @@ def instrument_execution_context_add_result(original_add_result):
                 _add_execution_context_attributes(span, self)
                 span.set_attribute("context.result_type", result.__class__.__name__)
                 response = original_add_result(self, result)
-                state = self.state
-                span.set_attribute("context.results_count", len(state.results))
+                span.set_attribute("context.results_count", len(self.results))
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -267,8 +264,7 @@ def instrument_execution_context_cancel(original_cancel):
             try:
                 _add_execution_context_attributes(span, self)
                 result = original_cancel(self)
-                state = self.state
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -297,8 +293,7 @@ def instrument_execution_context_cancel_async(original_cancel_async):
             try:
                 _add_execution_context_attributes(span, self)
                 result = await original_cancel_async(self)
-                state = await self.state_async
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -327,8 +322,7 @@ def instrument_execution_context_abort(original_abort):
             try:
                 _add_execution_context_attributes(span, self)
                 result = original_abort(self)
-                state = self.state
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -357,8 +351,7 @@ def instrument_execution_context_abort_async(original_abort_async):
             try:
                 _add_execution_context_attributes(span, self)
                 result = await original_abort_async(self)
-                state = await self.state_async
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -387,8 +380,7 @@ def instrument_execution_context_failed(original_failed):
             try:
                 _add_execution_context_attributes(span, self)
                 result = original_failed(self)
-                state = self.state
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.ERROR, "context marked failed"))
                 return result
             except Exception as e:
@@ -417,8 +409,7 @@ def instrument_execution_context_failed_async(original_failed_async):
             try:
                 _add_execution_context_attributes(span, self)
                 result = await original_failed_async(self)
-                state = await self.state_async
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.ERROR, "context marked failed"))
                 return result
             except Exception as e:
@@ -482,8 +473,7 @@ def instrument_execution_context_persist(original_persist):
             try:
                 _add_execution_context_attributes(span, self)
                 result = await original_persist(self)
-                state = await self.state_async
-                span.set_attribute("context.status", state.status.value)
+                span.set_attribute("context.status", self.status.value)
                 span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
@@ -556,7 +546,9 @@ def instrument_coordinator_execute_async(original_execute_async):
                 span.add_event("coordinator_completed_async")
                 span.set_status(Status(StatusCode.OK))
                 return result
-            except asyncio.TimeoutError as e:
+            # _execute_async() already translates a raw asyncio.TimeoutError
+            # into ExecutionTimeoutError internally, so that's what surfaces here.
+            except (asyncio.TimeoutError, ExecutionTimeoutError) as e:
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, "Execution timeout"))
                 raise

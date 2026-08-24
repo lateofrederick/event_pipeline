@@ -1,6 +1,5 @@
 import logging
-import threading
-from contextlib import contextmanager
+import asyncio
 from typing import (
     Any,
     ClassVar,
@@ -8,10 +7,11 @@ from typing import (
     Optional,
     Type,
     TypeVar,
-    cast,
     TYPE_CHECKING,
-    Generator,
+    Callable,
+    AsyncGenerator,
 )
+from contextlib import asynccontextmanager
 
 from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.exceptions import (
@@ -22,6 +22,7 @@ from volnux.backends.storage_route import StorageRoute
 from volnux.import_utils import import_string
 from volnux.mixins.identity import ObjectIdentityMixin
 from volnux.utils import get_obj_klass_import_str
+from volnux.concurrency.async_utils import to_thread
 
 if TYPE_CHECKING:
     from volnux.config import VolnuxConfig
@@ -44,23 +45,28 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
     """
 
     # Class-level backend store instance (shared across all instances)
-    _backend_store: ClassVar[Optional[KeyValueStoreBackendBase]] = None
-    _backend_config: ClassVar[Optional[Dict[str, Any]]] = None
-    _lock: ClassVar[threading.RLock] = threading.RLock()
+    _backend_store: ClassVar[Optional["KeyValueStoreBackendBase"]]
+    _backend_config: ClassVar[Optional[Dict[str, Any]]]
+    _backend_lock: ClassVar[asyncio.Lock]
+    _backend_initialized: ClassVar[bool]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._backend_store = None
+        cls._backend_config = None
+        cls._backend_lock = asyncio.Lock()
+        cls._backend_initialized = False
 
     def __post_init__(
         self,
+        *args,
         **kwargs: Any,
     ) -> None:
         """
         Base post-initialization hook. Ensures backend connectivity upon model instantiation.
-
-        Subclasses can override this method, call super().__post_init__(...), and append
-        paradigm-specific initialization logic.
         """
-
-        if self._backend_store is None:
-            self._initialize_backend()
+        super().__post_init__(*args, **kwargs)
+        # ObjectIdentityMixin.__init__(self)
 
         # Paradigm-specific hook for subclasses
         self._after_backend_init(**kwargs)
@@ -73,12 +79,12 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
         pass
 
     @classmethod
-    @contextmanager
-    def change_backend(
+    @asynccontextmanager
+    async def change_backend(
         cls: Type[T],
-        storage_backend: KeyValueStoreBackendBase,
-    ) -> Generator[Type[T], None, None]:
-        """Temporarily or permanently switch the class-level storage backend.
+        storage_backend: "KeyValueStoreBackendBase",
+    ) -> AsyncGenerator[Type[T], None]:
+        """ "Temporarily or permanently switch the class-level storage backend.
 
         Acts as a thread-safe context manager. Inside the ``with`` block,
         all operations on this class (and its instances) use the provided
@@ -94,14 +100,16 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
             ...
             >>> user = User.get("user_123")  # Automatically restored to real_backend
         """
-        with cls._lock:
-            previous_backend = cls._backend_store
-
+        async with cls._backend_lock:
+            previous_store = cls._backend_store
+            previous_initialized = cls._backend_initialized
             try:
                 cls._backend_store = storage_backend
+                cls._backend_initialized = True
                 yield cls
             finally:
-                cls._backend_store = previous_backend
+                cls._backend_store = previous_store
+                cls._backend_initialized = previous_initialized
 
     def __getstate__(self) -> Dict[str, Any]:
         """Prepare an object for serialization.
@@ -167,50 +175,62 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
         return cls.get_volnux_config().KEY_VALUE_STORE_CONFIG
 
     @classmethod
-    def _initialize_backend(cls) -> None:
-        """Initialize the backend store instance for this class.
-
-        Reads ENGINE and CONNECTOR_CONFIG from get_backend_config() and
-        instantiates the backend store driver.
-        """
+    async def _initialize_backend(cls) -> None:
+        """Async backend initialization. MUST be called under _backend_lock."""
         try:
             backend_config = cls.get_backend_config()
             cls._backend_config = backend_config
 
-            backend_class_path: Optional[str] = backend_config.get("ENGINE")
-            if not backend_class_path:
+            engine_path: Optional[str] = backend_config.get("ENGINE")
+            if not engine_path:
                 raise ImproperlyConfigured(
                     f"Backend ENGINE not configured for {cls.__name__}"
                 )
 
-            backend_class = import_string(backend_class_path)
-            connector_config = cast(
-                Dict[str, Any], backend_config.get("CONNECTOR_CONFIG", {})
-            )
+            backend_class = import_string(engine_path)
+            if not issubclass(backend_class, KeyValueStoreBackendBase):
+                raise ImproperlyConfigured(
+                    f"{backend_class.__name__} is not a KeyValueStoreBackendBase subclass"
+                )
 
+            connector_config = backend_config.get("CONNECTOR_CONFIG", {})
             cls._backend_store = backend_class(**connector_config)
 
-            # Ensure underlying connector is connected
-            if hasattr(cls._backend_store, "connector") and hasattr(
-                cls._backend_store.connector, "connect"
-            ):
-                if not cls._backend_store.connector.is_connected():
-                    cls._backend_store.connector.connect()
+            if hasattr(cls._backend_store, "connector"):
+                connector = cls._backend_store.connector
+                if hasattr(connector, "connect"):
+                    is_connected: Optional[Callable[[], bool]] = getattr(
+                        connector, "is_connected", None
+                    )
+                    if (
+                        is_connected is None or not is_connected()
+                    ):  # type: Optional[Callable[[], bool]]
+                        await to_thread(connector.connect)
 
+            cls._backend_initialized = True
             logger.info(
-                f"Initialized backend store: {backend_class.__name__} for class {cls.__name__}"
+                "Initialized backend %s for %s",
+                backend_class.__name__,
+                cls.__name__,
             )
-
         except Exception as e:
-            logger.error(f"Failed to initialize backend for {cls.__name__}: {e}")
-            raise ImproperlyConfigured(f"Backend initialization failed: {e}") from e
+            logger.error("Failed to initialize backend for %s: %s", cls.__name__, e)
+            raise ImproperlyConfigured(f"Backend init failed: {e}") from e
 
     @classmethod
-    def get_backend(cls) -> Any:
+    async def get_backend(cls) -> "KeyValueStoreBackendBase":
         """Get or initialize the shared backend store instance."""
-        if cls._backend_store is None:
-            cls._initialize_backend()
-        return cls._backend_store
+        if cls._backend_initialized:
+            return cls._backend_store  # type: ignore[return-value]
+
+        async with cls._backend_lock:
+            # Double-checked locking under async lock
+            if cls._backend_initialized:
+                return cls._backend_store  # type: ignore[return-value]
+
+            await cls._initialize_backend()
+
+        return cls._backend_store  # type: ignore[return-value]
 
     @classmethod
     def get_storage_route(cls) -> StorageRoute:
@@ -218,26 +238,30 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
         return StorageRoute(components=["volnux", cls.__name__])
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         """Get the resolved schema name/channel for this class."""
-        backend = cls.get_backend()
+        backend = await cls.get_backend()
         return cls.get_storage_route().resolve(backend)
 
     @classmethod
-    def close_backend(cls) -> None:
+    async def close_backend(cls) -> None:
         """Close backend connections upon application shutdown."""
-        if cls._backend_store is not None:
-            try:
-                if hasattr(cls._backend_store, "close"):
-                    cls._backend_store.close()
-                elif hasattr(cls._backend_store, "connector") and hasattr(
-                    cls._backend_store.connector, "disconnect"
-                ):
-                    cls._backend_store.connector.disconnect()
+        async with cls._backend_lock:
+            if not cls._backend_initialized:
+                return
 
-                logger.info(f"Closed backend connection for {cls.__name__}")
+            try:
+                if cls._backend_store is not None:
+                    if hasattr(cls._backend_store, "close"):
+                        await to_thread(cls._backend_store.close)
+                    elif hasattr(cls._backend_store, "connector"):
+                        connector = cls._backend_store.connector
+                        if hasattr(connector, "disconnect"):
+                            await to_thread(connector.disconnect)
+                    logger.info("Closed backend for %s", cls.__name__)
             except Exception as e:
-                logger.warning(f"Error closing backend for {cls.__name__}: {e}")
+                logger.warning("Error closing backend for %s: %s", cls.__name__, e)
             finally:
                 cls._backend_store = None
                 cls._backend_config = None
+                cls._backend_initialized = False

@@ -196,9 +196,9 @@ class RehydrationManager:
         self, context: "ExecutionContext", snapshot: ContextSnapshot
     ) -> None:
         """
-        Restore the ExecutionState from snapshot.
+        Restore hot execution state from snapshot directly onto the context.
         """
-        from volnux.execution.state_manager import ExecutionState, ExecutionStatus
+        from volnux.execution.status import ExecutionStatus
 
         # Deserialize errors
         # Note: We can't reconstruct full Exception objects, so we store as strings
@@ -213,15 +213,14 @@ class RehydrationManager:
             else None
         )
 
-        # Update state manager
-        state = ExecutionState(
-            status=ExecutionStatus[snapshot.status],
-            errors=errors,
-            results=results,
-            aggregated_result=aggregated_result,
-        )
-
-        context.get_state_manager().update_state(context.state_id, state)
+        context.status = ExecutionStatus[snapshot.status]
+        context.errors = errors
+        context.results = results
+        context.aggregated_result = aggregated_result
+        # Establish a live KV record under the (already identity-swapped)
+        # context id, now that construction itself no longer touches the
+        # backend.
+        await context.save_async()
 
         # Restore metrics
         context.metrics.start_time = snapshot.metrics["start_time"]

@@ -1,6 +1,5 @@
-import json
 import logging
-from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING, cast
 
 from redis.exceptions import RedisError
 
@@ -9,8 +8,10 @@ from volnux.backends.store import KeyValueStoreBackendBase
 from volnux.backends.messaging.stores.redis import (
     RedisStorePubSubMixin,
     RedisStorePushPopMixin,
+    RedisStreamCapabilityMixin,
 )
 from volnux.exceptions import ObjectDoesNotExist, ObjectExistError, SerializationError
+from volnux.backends.q_compiler import create_filter_predicate
 
 if TYPE_CHECKING:
     from volnux.result.stream import ResultStream
@@ -21,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class RedisStoreBackend(
-    RedisStorePubSubMixin, RedisStorePushPopMixin, KeyValueStoreBackendBase
+    RedisStreamCapabilityMixin,
+    RedisStorePubSubMixin,
+    RedisStorePushPopMixin,
+    KeyValueStoreBackendBase,
 ):
     """Redis-backed key-value store implementation.
 
@@ -63,19 +67,7 @@ class RedisStoreBackend(
         super().__init__(**connector_config)
         self.scan_count = scan_count
 
-        # Ensure connection on initialization
-        if not self.connector.is_connected():
-            self.connector.connect()
-
-    def _ensure_connected(self) -> None:
-        """Ensure the Redis connection is active.
-
-        Raises:
-            ConnectionError: If a connection cannot be established.
-        """
-        if not self.connector.is_connected():
-            logger.warning("Redis connection lost, attempting to reconnect...")
-            self.connector.connect()
+        self._ensure_connected()
 
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
@@ -117,28 +109,30 @@ class RedisStoreBackend(
             SerializationError: If serialization fails.
             ConnectionError: If Redis operation fails.
         """
-        if self.exists(schema_name, record_key):
-            raise ObjectExistError(
-                f"Record '{record_key}' already exists in schema '{schema_name}'"
-            )
-
         try:
             self._ensure_connected()
+
             serialized = self._serialize_record(record)
+            if not isinstance(serialized, str):
+                serialized = serialized.decode()
 
-            with self.connector.get_pipeline(transaction=True) as pipe:  # type: ignore[attr-unresolved]
-                pipe.hset(schema_name, record_key, serialized)
-                if ttl is not None:
-                    pipe.expire(schema_name, ttl)
+            was_set = self.connector.cursor.hsetnx(schema_name, record_key, serialized)
+            if not was_set:
+                raise ObjectExistError(
+                    f"Record '{record_key}' already exists in schema '{schema_name}'"
+                )
 
-                pipe.execute()
+            if ttl is not None:
+                self.connector.cursor.expire(schema_name, ttl)
 
-            logger.debug(f"Inserted record '{record_key}' into schema '{schema_name}'")
+            logger.debug("Inserted '%s' into '%s'", record_key, schema_name)
+        except ObjectExistError:
+            raise
         except SerializationError:
             raise
         except RedisError as e:
-            logger.error(f"Redis error during insert: {e}")
-            raise ConnectionError(f"Failed to insert record: {e}")
+            logger.error("Redis error during insert: %s", e)
+            raise ConnectionError(f"Failed to insert record: {e}") from e
 
     def update(
         self, schema_name: str, record_key: str, record: "KeyValueStoreIntegrationMixin"
@@ -155,25 +149,30 @@ class RedisStoreBackend(
             SerializationError: If serialization fails.
             ConnectionError: If Redis operation fails.
         """
-        if not self.exists(schema_name, record_key):
-            raise ObjectDoesNotExist(
-                f"Record '{record_key}' does not exist in schema '{schema_name}'"
-            )
-
         try:
             self._ensure_connected()
             serialized = self._serialize_record(record)
+            if not isinstance(serialized, str):
+                serialized = serialized.decode()
 
-            with self.connector.get_pipeline(transaction=True) as pipe:  # type: ignore[attr-unresolved]
-                pipe.hset(schema_name, record_key, serialized)
-                pipe.execute()
+            pipe = self.connector.cursor.pipeline(transaction=True)
+            pipe.hexists(schema_name, record_key)
+            pipe.hset(schema_name, record_key, serialized)
+            results = pipe.execute()
 
-            logger.debug(f"Updated record '{record_key}' in schema '{schema_name}'")
+            if not results[0]:
+                raise ObjectDoesNotExist(
+                    f"Record '{record_key}' does not exist in schema '{schema_name}'"
+                )
+
+            logger.debug("Updated '%s' in '%s'", record_key, schema_name)
+        except ObjectDoesNotExist:
+            raise
         except SerializationError:
             raise
         except RedisError as e:
-            logger.error(f"Redis error during update: {e}")
-            raise ConnectionError(f"Failed to update record: {e}")
+            logger.error("Redis error during update: %s", e)
+            raise ConnectionError(f"Failed to update record: {e}") from e
 
     def delete(self, schema_name: str, record_key: str) -> None:
         """Delete a record from the store.
@@ -186,29 +185,27 @@ class RedisStoreBackend(
             ObjectDoesNotExist: If the record does not exist.
             ConnectionError: If Redis operation fails.
         """
-        if not self.exists(schema_name, record_key):
-            raise ObjectDoesNotExist(
-                f"Record '{record_key}' does not exist in schema '{schema_name}'"
-            )
 
         try:
             self._ensure_connected()
-
-            with self.connector.get_pipeline(transaction=True) as pipe:
-                pipe.hdel(schema_name, record_key)
-                pipe.execute()
-
-            logger.debug(f"Deleted record '{record_key}' from schema '{schema_name}'")
+            deleted = self.connector.cursor.hdel(schema_name, record_key)
+            if deleted == 0:
+                raise ObjectDoesNotExist(
+                    f"Record '{record_key}' does not exist in schema '{schema_name}'"
+                )
+            logger.debug("Deleted '%s' from '%s'", record_key, schema_name)
+        except ObjectDoesNotExist:
+            raise
         except RedisError as e:
-            logger.error(f"Redis error during delete: {e}")
-            raise ConnectionError(f"Failed to delete record: {e}")
+            logger.error("Redis error during delete: %s", e)
+            raise ConnectionError(f"Failed to delete record: {e}") from e
 
     def get(
         self,
         schema_name: str,
         record_key: Union[str, int],
         record_klass: Type["KeyValueStoreIntegrationMixin"],
-    ) -> Optional["KeyValueStoreIntegrationMixin"]:
+    ) -> "KeyValueStoreIntegrationMixin":
         """Retrieve a single record from the store.
 
         Args:
@@ -224,32 +221,22 @@ class RedisStoreBackend(
             SerializationError: If deserialization fails.
             ConnectionError: If Redis operation fails.
         """
-        record_key_str = str(record_key)
-
-        if not self.exists(schema_name, record_key_str):
-            raise ObjectDoesNotExist(
-                f"Record '{record_key_str}' does not exist in schema '{schema_name}'"
-            )
-
+        key = str(record_key)
         try:
             self._ensure_connected()
-            serialized = self.connector.cursor.hget(schema_name, record_key_str)
-
+            serialized = self.connector.cursor.hget(schema_name, key)
             if serialized is None:
                 raise ObjectDoesNotExist(
-                    f"Record '{record_key_str}' not found in schema '{schema_name}'"
+                    f"Record '{key}' does not exist in schema '{schema_name}'"
                 )
-
-            record = self._deserialize_record(serialized, record_klass)
-            logger.debug(
-                f"Retrieved record '{record_key_str}' from schema '{schema_name}'"
-            )
-            return record
+            return self._deserialize_record(serialized, record_klass)
+        except ObjectDoesNotExist:
+            raise
         except SerializationError:
             raise
         except RedisError as e:
-            logger.error(f"Redis error during get: {e}")
-            raise ConnectionError(f"Failed to get record: {e}")
+            logger.error("Redis error during get: %s", e)
+            raise ConnectionError(f"Failed to get record: {e}") from e
 
     def filter(
         self,
@@ -279,7 +266,7 @@ class RedisStoreBackend(
         try:
             self._ensure_connected()
 
-            predicate = self._create_filter_predicate(**filter_kwargs)
+            predicate = create_filter_predicate(**filter_kwargs)
             matching_records: List[str] = []
 
             # Use HSCAN for efficient iteration over large datasets
@@ -293,12 +280,11 @@ class RedisStoreBackend(
                     try:
                         record = self._deserialize_record(value, record_klass)
                         if predicate(record):
-                            matching_records.append(record.id)
+                            matching_records.append(key)
                     except SerializationError as e:
                         logger.warning(
                             f"Skipping corrupted record '{key}' in schema '{schema_name}': {e}"
                         )
-                        continue
 
                 if cursor == 0:
                     break
@@ -306,11 +292,9 @@ class RedisStoreBackend(
             logger.debug(
                 f"Filtered {len(matching_records)} records from schema '{schema_name}'"
             )
-            qs = self._create_result_stream(
+            return self._create_result_stream(
                 record_keys=matching_records, record_klass=record_klass
             )
-            qs._predicates.append(predicate)
-            return qs
         except RedisError as e:
             logger.error(f"Redis error during filter: {e}")
             raise ConnectionError(f"Failed to filter records: {e}")
@@ -338,10 +322,10 @@ class RedisStoreBackend(
             self._ensure_connected()
 
             if not filter_kwargs:
-                return self.connector.cursor.hlen(schema_name)
+                return cast(int, self.connector.cursor.hlen(schema_name))
 
             matching_records = self.filter(schema_name, record_klass, **filter_kwargs)
-            return matching_records.count()
+            return len(matching_records)
         except RedisError as e:
             logger.error(f"Redis error during count: {e}")
             raise ConnectionError(f"Failed to count records: {e}")
@@ -375,17 +359,15 @@ class RedisStoreBackend(
 
         try:
             self._ensure_connected()
-            serialized = self.connector.cursor.hget(schema_name, record_key)
+            serialized: bytes = self.connector.cursor.hget(schema_name, record_key)  # type: ignore
 
             if serialized is None:
                 raise ObjectDoesNotExist(
                     f"Record '{record_key}' not found in schema '{schema_name}'"
                 )
 
-            state = json.loads(serialized)
-            record.__setstate__(state)
-
-            logger.debug(f"Reloaded record '{record_key}' from schema '{schema_name}'")
+            fresh = self._deserialize_record(serialized, record.__class__)
+            record.__setstate__(fresh.__getstate__())
             return record
         except SerializationError:
             raise
@@ -415,28 +397,25 @@ class RedisStoreBackend(
         """
         try:
             self._ensure_connected()
-
-            serialized_data = {}
+            pipe = self.connector.cursor.pipeline(transaction=True)
             for key, record in records.items():
-                serialized_data[key] = self._serialize_record(record)
+                serialized = self._serialize_record(record)
+                pipe.hsetnx(schema_name, key, serialized)
+            if ttl is not None:
+                pipe.expire(schema_name, ttl)
+            results = pipe.execute()
 
-            # Bulk insert using HMSET via pipeline
-            with self.connector.get_pipeline(transaction=True) as pipe:
-                for key, data in serialized_data.items():
-                    pipe.hset(schema_name, key, data)
-
-                pipe.execute()
-
+            hsetnx_results = results[:-1] if ttl else results
+            inserted = sum(1 for r in hsetnx_results if r)
             logger.info(
-                f"Bulk inserted {len(records)} records into schema '{schema_name}'"
+                "Bulk inserted %d/%d into '%s'", inserted, len(records), schema_name
             )
-
-            return len(records)
+            return inserted
         except SerializationError:
             raise
         except RedisError as e:
-            logger.error(f"Redis error during bulk insert: {e}")
-            raise ConnectionError(f"Failed to bulk insert records: {e}")
+            logger.error("Redis error during bulk insert: %s", e)
+            raise ConnectionError(f"Failed to bulk insert: {e}") from e
 
     def bulk_delete(self, schema_name: str, record_keys: List[str]) -> None:
         """Delete multiple records in a single operation.
@@ -450,19 +429,14 @@ class RedisStoreBackend(
         """
         try:
             self._ensure_connected()
-
-            with self.connector.get_pipeline(transaction=True) as pipe:
-                for key in record_keys:
-                    pipe.hdel(schema_name, key)
-
-                pipe.execute()
-
-            logger.info(
-                f"Bulk deleted {len(record_keys)} records from schema '{schema_name}'"
-            )
+            pipe = self.connector.cursor.pipeline(transaction=True)
+            for key in record_keys:
+                pipe.hdel(schema_name, key)
+            pipe.execute()
+            logger.info("Bulk deleted %d from '%s'", len(record_keys), schema_name)
         except RedisError as e:
-            logger.error(f"Redis error during bulk delete: {e}")
-            raise ConnectionError(f"Failed to bulk delete records: {e}")
+            logger.error("Redis error during bulk delete: %s", e)
+            raise ConnectionError(f"Failed to bulk delete: {e}") from e
 
     def clear_schema(self, schema_name: str) -> None:
         """Delete all records in a schema.

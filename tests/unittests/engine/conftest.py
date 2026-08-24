@@ -149,10 +149,9 @@ _ctx_mod = MagicMock()
 _ctx_mod.ExecutionContext = MagicMock
 sys.modules["volnux.execution.context"] = _ctx_mod
 
-_sm_mod = MagicMock()
-_sm_mod.ExecutionState = MagicMock
-_sm_mod.ExecutionStatus = MagicMock
-sys.modules["volnux.execution.state_manager"] = _sm_mod
+_status_mod = MagicMock()
+_status_mod.ExecutionStatus = MagicMock
+sys.modules["volnux.execution.status"] = _status_mod
 
 _utils_mod = MagicMock()
 _utils_mod.evaluate_context_execution_results = MagicMock()
