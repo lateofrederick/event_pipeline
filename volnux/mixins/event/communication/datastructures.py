@@ -59,7 +59,7 @@ class ExternalCommunicationQueueEntry(KeyValueStoreIntegrationMixin):
         return {"redis": {"host": "localhost", "port": 6379, "db": 0}}
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         return "volnux:workflow:external_communication:queue"
 
 
@@ -85,5 +85,5 @@ class ExternalCommunicationResponse(KeyValueStoreIntegrationMixin):
         return {"redis": {"host": "localhost", "port": 6379, "db": 0}}
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         return "volnux:workflow:external_communication:response"

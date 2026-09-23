@@ -247,7 +247,7 @@ class ControlFlowEvent(EventBase):
 
             timeout: typing.Optional[float] = attributes.get("timeout")
 
-            input_data = self._extract_input_data(
+            input_data = await self._extract_input_data(
                 collection_data=attributes.get("collection")
             )
 
@@ -345,7 +345,7 @@ class ControlFlowEvent(EventBase):
             f"{self.__class__.__name__} must implement _aggregate_results()"
         )
 
-    def _extract_input_data(
+    async def _extract_input_data(
         self, collection_data: typing.Optional[typing.List[typing.Any]] = None
     ) -> ResultStream[EventResult]:
         """
@@ -371,7 +371,7 @@ class ControlFlowEvent(EventBase):
                 q_predicates=[],
                 chunk_size=1000,
                 transaction_id=f"meta-{self.id}",
-                persisted_backend=EventResult.get_backend(),
+                persisted_backend=await EventResult.get_backend(),
                 memory_backend=None,
             )
 

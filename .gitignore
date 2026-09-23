@@ -181,5 +181,9 @@ pointy_test.py
 executor_test.py
 manager_test.py
 
+# PLY-generated parser tables — regenerated on import, pure build noise
+volnux/parser/parsetab.py
+volnux/parser/parser.out
+
 refactor-plan.md
 executor.md

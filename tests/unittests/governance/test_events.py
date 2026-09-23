@@ -6,6 +6,8 @@ this contract and projects whatever arrives. They are pure — no transport, no
 provisioned backend.
 """
 
+import asyncio
+
 from volnux.governance.events import GOVERNANCE_SCHEMA, EventType, GovernanceEvent
 
 
@@ -24,7 +26,7 @@ def test_event_types_are_namespaced_by_subject():
 def test_schema_name_is_the_shared_queue_identity():
     # Producer and consumer must agree on this exact string or nothing is
     # delivered; it is keyed off the model, not configured per deployment.
-    assert GovernanceEvent.get_schema_name() == GOVERNANCE_SCHEMA
+    assert asyncio.run(GovernanceEvent.get_schema_name()) == GOVERNANCE_SCHEMA
     assert GOVERNANCE_SCHEMA == "volnux:governance:events"
 
 

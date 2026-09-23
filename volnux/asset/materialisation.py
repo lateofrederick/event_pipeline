@@ -42,5 +42,5 @@ class AssetMaterialisation(KeyValueStoreIntegrationMixin, BaseModel):
         return hash(self.id)
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         return "volnux_AssetMaterialisation"

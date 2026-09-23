@@ -27,7 +27,7 @@ _CLOSE_SENTINEL = object()
 
 class RedisStorePubSubMixin(PubSubCapabilityMixin):
 
-    connector: RedisConnector
+    connector: "RedisConnector"
 
     async def publish(self, channel: str, record: Record) -> int:
         try:
@@ -208,7 +208,7 @@ class RedisStoreSubscriptionContext(AsyncSubscriptionContext):
             **{
                 "channel": channel,
                 "pattern": pattern,
-                "data": self.backend._deserialise_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
+                "data": self.backend._deserialize_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
                 "raw": msg["data"],
             }
         )
@@ -216,7 +216,7 @@ class RedisStoreSubscriptionContext(AsyncSubscriptionContext):
 
 class RedisStorePushPopMixin(PushPopCapabilityMixin):
 
-    connector: RedisConnector
+    connector: "RedisConnector"
 
     # Connections left free for non-blocking commands (push/publish/etc.)
     # so that BLPOP/BRPOP callers can never claim the whole pool.
@@ -283,7 +283,7 @@ class RedisStorePushPopMixin(PushPopCapabilityMixin):
                     return None
                 _, raw = result
 
-            return self._deserialise_record(raw, record_class) if raw is not None else None  # type: ignore
+            return self._deserialize_record(raw, record_class) if raw is not None else None  # type: ignore
         except RedisError as exc:
             raise ConnectionError(f"Failed to pop from {key}: {exc}") from exc
 
@@ -344,7 +344,7 @@ class RedisStorePushPopMixin(PushPopCapabilityMixin):
             cursor = self.connector.get_cursor()
 
             raws = await asyncio.to_thread(cursor.lrange, key, start, stop)
-            return [self._deserialise_record(r, record_class) for r in raws]  # type: ignore
+            return [self._deserialize_record(r, record_class) for r in raws]  # type: ignore
         except RedisError as exc:
             raise ConnectionError(
                 f"Failed to get queue range for {key}: {exc}"
@@ -354,7 +354,7 @@ class RedisStorePushPopMixin(PushPopCapabilityMixin):
 class RedisStreamCapabilityMixin(StreamCapabilityMixin):
     """Redis Streams implementation of the append-only durable event log."""
 
-    connector: RedisConnector
+    connector: "RedisConnector"
 
     async def stream_append(
         self,
@@ -540,7 +540,7 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
                 results.append(
                     StreamEntry(
                         entry_id=eid,
-                        record=self._deserialise_record(payload, record_class),  # type: ignore[attr-unresolved]
+                        record=self._deserialize_record(payload, record_class),  # type: ignore[attr-unresolved]
                         group_name=group_name,
                         consumer_id=consumer_id,
                     )
@@ -648,7 +648,7 @@ class RedisStreamCapabilityMixin(StreamCapabilityMixin):
                 results.append(
                     StreamEntry(
                         entry_id=eid,
-                        record=self._deserialise_record(payload, record_class),  # type: ignore[attr-unresolved]
+                        record=self._deserialize_record(payload, record_class),  # type: ignore[attr-unresolved]
                         group_name=group_name,
                         consumer_id=consumer_id,
                     )

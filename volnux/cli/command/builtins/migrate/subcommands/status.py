@@ -20,6 +20,12 @@ class StatusSubCommand(SubCommand):
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         pass  # No arguments needed for status
 
+    @staticmethod
+    async def _resolve_model(model: Type) -> tuple:
+        backend = await model.get_backend()
+        schema_name = await model.get_schema_name()
+        return backend, schema_name
+
     def handle(self, *args, **options) -> Optional[str]:
         all_models, skipped = resolve_models()
 
@@ -29,8 +35,7 @@ class StatusSubCommand(SubCommand):
 
         for model in all_models:
             try:
-                backend = model.get_backend()
-                schema_name = model.get_schema_name()
+                backend, schema_name = asyncio.run(self._resolve_model(model))
                 backend_cls = backend.__class__.__name__
 
                 # Check if schema exists by calling ensure_schema with dry_run

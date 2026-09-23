@@ -8,6 +8,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from enum import IntEnum
 from typing import Any, Dict
 
@@ -130,7 +131,10 @@ class TestEventCheckpointSnapshot:
 
     # class-level utility methods
     def test_get_schema_name(self) -> None:
-        assert EventCheckpointSnapshot.get_schema_name() == "volnux:event:checkpoint"
+        assert (
+            asyncio.run(EventCheckpointSnapshot.get_schema_name())
+            == "volnux:event:checkpoint"
+        )
 
     def test_get_backend_config(self) -> None:
         config = EventCheckpointSnapshot.get_backend_config()

@@ -66,7 +66,7 @@ class TaskSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         validation = ValidationFlags.NONE
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         return "volnux:snapshot:task"
 
     async def restore(self) -> "TaskType":
@@ -158,7 +158,7 @@ class ContextSnapshot(KeyValueStoreIntegrationMixin, BaseModel):
         validation = ValidationFlags.NONE
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         return "volnux:snapshot:context"
 
     def to_dict(self) -> typing.Dict[str, typing.Any]:

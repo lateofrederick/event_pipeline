@@ -202,7 +202,7 @@ class InMemorySubscriptionContext(AsyncSubscriptionContext):
         return Message(
             channel=msg["channel"],
             pattern=msg.get("pattern"),
-            data=self.backend._deserialise_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
+            data=self.backend._deserialize_record(msg["data"], self.record_class),  # type: ignore[attr-unresolved]
             raw=msg,
         )
 
@@ -254,7 +254,7 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
             return None
 
         raw = await q.pop(side, timeout)
-        return self._deserialise_record(raw, record_class) if raw is not None else None  # type: ignore[attr-unresolved]
+        return self._deserialize_record(raw, record_class) if raw is not None else None  # type: ignore[attr-unresolved]
 
     async def pop_many(
         self,
@@ -292,7 +292,7 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
                 return []  # Timeout expired
 
             # We got the first item!
-            results = [self._deserialise_record(first_item_raw, record_class)]  # type: ignore[attr-unresolved]
+            results = [self._deserialize_record(first_item_raw, record_class)]  # type: ignore[attr-unresolved]
         else:
             results = []
 
@@ -307,7 +307,7 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
             if raw is None:
                 break
 
-            results.append(self._deserialise_record(raw, record_class))  # type: ignore[attr-unresolved]
+            results.append(self._deserialize_record(raw, record_class))  # type: ignore[attr-unresolved]
             items_popped += 1
 
         return results
@@ -330,4 +330,4 @@ class InMemoryPushPopMixin(PushPopCapabilityMixin):
             return []
 
         raws = q.range(start, stop)
-        return [self._deserialise_record(r) for r in raws]  # type: ignore[attr-unresolved]
+        return [self._deserialize_record(r) for r in raws]  # type: ignore[attr-unresolved]

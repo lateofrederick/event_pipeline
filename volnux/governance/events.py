@@ -95,7 +95,7 @@ class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
     project_id: MiniAnnotated[str, Attrib(default_factory=lambda: volnux_config.get('PROJECT_ID'))]
 
     @classmethod
-    def get_schema_name(cls) -> str:
+    async def get_schema_name(cls) -> str:
         return GOVERNANCE_SCHEMA
 
     def get_state(self) -> Dict[str, Any]:

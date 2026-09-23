@@ -16,7 +16,7 @@ def ensure_pubsub(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[
 
     @functools.wraps(func)
     async def wrapper(cls: Any, *args: Any, **kwargs: Any) -> T:
-        backend = cls.get_backend()
+        backend = await cls.get_backend()
         require_pubsub(backend, cls.__name__)
         return await func(cls, backend, *args, **kwargs)
 
@@ -32,7 +32,7 @@ def ensure_pushpop(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable
 
     @functools.wraps(func)
     async def wrapper(cls: Any, *args: Any, **kwargs: Any) -> T:
-        backend = cls.get_backend()
+        backend = await cls.get_backend()
         require_pushpop(backend, cls.__name__)
         return await func(cls, backend, *args, **kwargs)
 
@@ -48,7 +48,7 @@ def ensure_streaming(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitab
 
     @functools.wraps(func)
     async def wrapper(cls: Any, *args: Any, **kwargs: Any) -> T:
-        backend = cls.get_backend()
+        backend = await cls.get_backend()
         require_streaming(backend, cls.__name__)
         return await func(cls, backend, *args, **kwargs)
 

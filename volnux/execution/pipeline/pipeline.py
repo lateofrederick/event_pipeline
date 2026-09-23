@@ -456,6 +456,13 @@ class Pipeline(ObjectIdentityMixin, InternalMetadataMixin, metaclass=PipelineMet
                        ``force_rerun`` is False.
         """
         from volnux.engine import run_workflow
+        from volnux.reporting import ensure_pipeline_reporters_installed
+
+        # A no-op after the first call, and importing nothing beyond
+        # volnux.config when PIPELINE_REPORTERS is unset — see
+        # volnux.reporting for what this does and does not cost a deployment
+        # that has not configured any reporter.
+        ensure_pipeline_reporters_installed()
 
         await pipeline_execution_start.emit_async(sender=self.__class__, pipeline=self)
 
