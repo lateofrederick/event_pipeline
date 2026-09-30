@@ -93,10 +93,13 @@ def _execution_id(source: Any) -> Optional[str]:
     This single function encodes the correlation-key decision for the whole
     bridge: everything downstream keys off whatever this returns, so a change of
     correlation strategy is localised here.
+
+    One ``Pipeline`` instance is one run, and its id is the run's id. The
+    platform backend makes that id match its governance ``Execution`` id by
+    stamping it at dispatch: ``WorkflowConfig.run_workflow`` pops the reserved
+    ``__execution_id__`` param and calls ``Pipeline.change_object_id`` before the
+    run starts. Run standalone (no backend), the id is simply the engine's own.
     """
-    # TODO(correlation): revisit the correlation-key choice. Using pipeline.id
-    # means "one Pipeline instance == one run", relying on the backend stamping
-    # the governance Execution id via Pipeline.change_object_id() at dispatch.
     return _safe_str(getattr(_pipeline_of(source), "id", None))
 
 
