@@ -23,6 +23,7 @@ from volnux.governance.sampling import EventSampler
 
 from .conftest import (
     ExplodingPublisher,
+    FakeContext,
     FakePipeline,
     FakeSignal,
     FakeSuspensionRequest,
@@ -118,6 +119,24 @@ def test_execution_id_is_the_pipeline_id_through_the_context(wired, context):
     handlers["pipeline_execution_end"](execution_context=context)
 
     assert publisher.sent[0].execution_id == "run-99"
+
+
+def test_a_context_that_lost_its_pipeline_reports_unknown_not_its_own_id(wired):
+    # ``ExecutionContext.get_state()`` excludes the pipeline — it is transient,
+    # non-serializable — and ``set_state`` never restores it, so a rehydrated
+    # context (HITL resume, cold reload) has none. The run id must then be
+    # ``None``: reporting the *context's* id instead would put the event in a
+    # different id space and silently mis-correlate it.
+    _reporter, publisher, handlers = wired
+    context = FakeContext()
+    context.pipeline = None
+    context.id = "context-42"
+
+    handlers["pipeline_execution_end"](execution_context=context)
+
+    event = publisher.sent[0]
+    assert event.execution_id is None
+    assert event.workflow_id == "wf-1"  # the workflow fields are unaffected
 
 
 @pytest.mark.parametrize(

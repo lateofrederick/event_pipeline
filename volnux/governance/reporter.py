@@ -75,40 +75,22 @@ def _safe_str(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
-def _pipeline_of(source: Any) -> Any:
-    """Return the pipeline for a Pipeline-or-ExecutionContext source.
+def _resolve(**kwargs: Any) -> Tuple[Any, Any]:
+    """The ``(pipeline, context)`` a signal delivered — one place, one rule.
 
-    ``pipeline_execution_start`` hands us the pipeline directly; the task and
-    end signals hand us an ``ExecutionContext`` whose ``.pipeline`` is the run.
+    Every wired signal names what it sends: ``execution_context`` for anything
+    *inside* a run (everything except ``pipeline_execution_start``), ``pipeline``
+    for the run itself (``pipeline_execution_start``), and both for
+    ``pipeline_stop``/``pipeline_shutdown``. So the name of the keyword is the
+    type — no inspecting the object to guess. Whichever the signal did not send
+    comes back as ``None``, and the context's pipeline is taken from the context
+    (it is declared ``Pipeline``, so absence means the context lost its transient
+    link — a rehydrated context — not that we were handed a pipeline).
     """
-    if source is None:
-        return None
-    pipeline = getattr(source, "pipeline", None)
-    return pipeline if pipeline is not None else source
-
-
-def _execution_id(source: Any) -> Optional[str]:
-    """The run correlation id — the pipeline's (settable) object id.
-
-    This single function encodes the correlation-key decision for the whole
-    bridge: everything downstream keys off whatever this returns, so a change of
-    correlation strategy is localised here.
-
-    One ``Pipeline`` instance is one run, and its id is the run's id. The
-    platform backend makes that id match its governance ``Execution`` id by
-    stamping it at dispatch: ``WorkflowConfig.run_workflow`` pops the reserved
-    ``__execution_id__`` param and calls ``Pipeline.change_object_id`` before the
-    run starts. Run standalone (no backend), the id is simply the engine's own.
-    """
-    return _safe_str(getattr(_pipeline_of(source), "id", None))
-
-
-def _workflow_id(context: Any) -> Optional[str]:
-    return _safe_str(getattr(context, "workflow_id", None))
-
-
-def _workflow_name(context: Any) -> Optional[str]:
-    return _safe_str(getattr(context, "workflow_name", None))
+    context = kwargs.get("execution_context")
+    if context is not None:
+        return getattr(context, "pipeline", None), context
+    return kwargs.get("pipeline"), None
 
 
 def _task_id(event: Any) -> Optional[str]:
@@ -135,25 +117,15 @@ def _task_id(event: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _source(**kwargs: Any) -> Any:
-    """The run object a signal delivered, whatever it chose to call it.
-
-    ``pipeline_execution_start`` sends the pipeline as ``pipeline``; every other
-    wired signal sends an ``ExecutionContext`` as ``execution_context``.
-    ``_pipeline_of`` normalises the two, so resolving the name is all that is
-    needed here.
-    """
-    return kwargs.get("execution_context") or kwargs.get("pipeline")
-
-
 def _event(
     event_type: str,
-    source: Any,
     *,
+    pipeline: Any = None,
+    context: Any = None,
     task_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
 ) -> GovernanceEvent:
-    """Build a validated event from a signal's source object.
+    """Build a validated event from what the signal delivered.
 
     Identity and time are stamped here rather than declared as model defaults:
     formax evaluates ``default_factory`` once when the class is created, so an
@@ -167,16 +139,19 @@ def _event(
     ``PROJECT_ID`` is guaranteed present, because the model's own factory would
     have failed at import if it were not.
 
-    Correlation fields that do not apply stay ``None`` — the model declares them
-    ``Optional`` precisely so this function never has to invent a sentinel.
+    Correlation: ``execution_id`` is the run's id (the platform stamps it at
+    dispatch), ``workflow_id``/``workflow_name`` come from the context — a
+    pipeline does not know its own workflow. A field with nothing to read stays
+    ``None``: the model declares them ``Optional`` precisely so this function
+    never has to invent a sentinel.
     """
     return GovernanceEvent(
         event_type=event_type,
         event_id=str(uuid.uuid4()),
         occurred_at=time.time(),
-        execution_id=_execution_id(source),
-        workflow_id=_workflow_id(source),
-        workflow_name=_workflow_name(source),
+        execution_id=_safe_str(getattr(pipeline, "id", None)),
+        workflow_id=_safe_str(getattr(context, "workflow_id", None)),
+        workflow_name=_safe_str(getattr(context, "workflow_name", None)),
         task_id=task_id,
         sequence=None,
         payload=payload or {},
@@ -189,14 +164,24 @@ def translate_execution(
     event_type: str, payload: Optional[Dict[str, Any]] = None, **kwargs: Any
 ) -> GovernanceEvent:
     """Execution-level signals: correlation only, plus an optional fixed payload."""
+    pipeline, context = _resolve(**kwargs)
     # Copy so the table's payload literal is never shared between events.
-    return _event(event_type, _source(**kwargs), payload=dict(payload) if payload else None)
+    return _event(
+        event_type,
+        pipeline=pipeline,
+        context=context,
+        payload=dict(payload) if payload else None,
+    )
 
 
 def translate_task(event_type: str, **kwargs: Any) -> GovernanceEvent:
     """Task-level signals: correlation plus the task the signal names."""
+    pipeline, context = _resolve(**kwargs)
     return _event(
-        event_type, _source(**kwargs), task_id=_task_id(kwargs.get("event"))
+        event_type,
+        pipeline=pipeline,
+        context=context,
+        task_id=_task_id(kwargs.get("event")),
     )
 
 
@@ -207,9 +192,11 @@ def translate_execution_failed(
     # execution level. It fires mid-run, before the unconditional
     # pipeline_execution_end (which maps to COMPLETED), so the backend
     # projector's terminal-state freeze keeps the run FAILED.
+    pipeline, context = _resolve(execution_context=execution_context)
     return _event(
         EventType.EXECUTION_FAILED,
-        execution_context,
+        pipeline=pipeline,
+        context=context,
         payload={"state": _safe_str(state)},
     )
 
@@ -224,9 +211,11 @@ def translate_task_retried(
     **_: Any,
 ) -> GovernanceEvent:
     resolved_task_id = _safe_str(task_id) or _task_id(event)
+    pipeline, context = _resolve(execution_context=execution_context)
     return _event(
         EventType.TASK_RETRIED,
-        execution_context,
+        pipeline=pipeline,
+        context=context,
         task_id=resolved_task_id,
         payload={
             "retry_count": retry_count,
@@ -241,9 +230,11 @@ def translate_hitl_requested(
 ) -> GovernanceEvent:
     # The suspension request carries the prompt/options and its own request_id
     # (the key the engine resumes on); those travel in the payload.
+    pipeline, context = _resolve(execution_context=execution_context)
     return _event(
         EventType.HITL_REQUESTED,
-        execution_context,
+        pipeline=pipeline,
+        context=context,
         task_id=_safe_str(getattr(request, "task_id", None)),
         payload={
             "request_id": _safe_str(getattr(request, "request_id", None)),

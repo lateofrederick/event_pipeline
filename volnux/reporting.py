@@ -30,16 +30,31 @@ guarantees the *configured list* runs at most once per process, not that any
 individual installer is deduplicated against another mechanism that also
 happens to call it.
 
+Where this runs
+---------------
+``volnux.setup.initialise_workflows()`` calls
+``ensure_pipeline_reporters_installed()`` right after the project's
+``init.py`` has been loaded — the process bootstrap every CLI command, the
+Celery worker init, the Kubernetes job runner and ``deploy/k8s/init.py`` go
+through. It is deliberately *not* called from ``Pipeline.start()``: installing
+process-global signal listeners and a delivery thread is a bootstrap concern,
+not something a run should do as a hidden side-effect.
+
+Library users that never call ``initialise_workflows()`` install reporters
+explicitly::
+
+    from volnux.reporting import ensure_pipeline_reporters_installed
+    ensure_pipeline_reporters_installed()
+
 Cost when unconfigured
 -----------------------
 Reading ``PIPELINE_REPORTERS`` is one lookup on an already-constructed
-``VolnuxConfig`` singleton — dozens of core mixins (connection pooling,
-checkpointing, retry) already force that construction well before any
-pipeline runs, so this adds no new I/O. Critically, this module imports
-nothing about *any* specific reporter (not even ``volnux.governance``): a
-deployment that never sets ``PIPELINE_REPORTERS`` pays for exactly one dict
-lookup and nothing else, so standalone framework users are unaffected whether
-or not this file is wired into ``Pipeline.start()``.
+``VolnuxConfig`` singleton, done once per process — dozens of core mixins
+(connection pooling, checkpointing, retry) already force that construction at
+bootstrap, so this adds no new I/O. Critically, this module imports nothing
+about *any* specific reporter (not even ``volnux.governance``): a deployment
+that never sets ``PIPELINE_REPORTERS`` pays for exactly one dict lookup and
+nothing else.
 """
 
 import logging
