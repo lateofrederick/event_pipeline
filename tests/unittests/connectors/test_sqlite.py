@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from volnux.backends.connection import ConnectionError
 from volnux.backends.connectors.sqlite import SqliteConnector
 
 

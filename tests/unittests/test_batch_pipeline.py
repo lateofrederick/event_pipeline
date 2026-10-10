@@ -10,13 +10,13 @@ import pytest
 from volnux import EventBase
 from volnux.exceptions import ImproperlyConfigured
 from volnux.fields import InputDataField
-from volnux.pipeline import (
+from volnux.execution.pipeline import Pipeline
+from volnux.execution.pipeline.batch import (
     BatchPipeline,
     BatchPipelineStatus,
-    Pipeline,
     _BatchProcessingMonitor,
 )
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 
 
 class Start(EventBase):
@@ -84,7 +84,7 @@ class TestBatchPipeline(unittest.TestCase):
         # Should only create one pipeline
         self.assertEqual(batch._configured_pipelines_count, 1)
 
-    @patch("volnux.pipeline.ProcessPoolExecutor")
+    @patch("volnux.execution.pipeline.batch.ProcessPoolExecutor")
     def test_parallel_execution(self, mock_executor):
         """Test parallel execution of multiple pipelines"""
         mock_executor.return_value.__enter__.return_value = Mock()

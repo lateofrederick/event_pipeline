@@ -37,7 +37,7 @@ for _mod in (
 # 2. Set up the formax mock (enhanced version supporting defaults & frozen).
 # ---------------------------------------------------------------------------
 
-typing.TYPE_CHECKING = True  # allow guarded imports in source
+typing.TYPE_CHECKING = False  # allow guarded imports in source
 
 
 class _FormaxField:

@@ -8,15 +8,15 @@ Validates:
 
 from __future__ import annotations
 
-from volnux.execution.checkpoint_constants import FRAMEWORK_EXCLUDED_ATTRS
+import pytest
+
+from volnux.execution.constants import EVENT_EXCLUDED_ATTRS
 
 
 class TestFrameworkExcludedAttrs:
-    # ------------------------------------------------------------------ type
     def test_is_frozenset(self) -> None:
-        assert isinstance(FRAMEWORK_EXCLUDED_ATTRS, frozenset)
+        assert isinstance(EVENT_EXCLUDED_ATTRS, frozenset)
 
-    # ------------------------------------------------- snapshot field names
     def test_contains_snapshot_fields(self) -> None:
         snapshot_fields = {
             "task_id",
@@ -32,11 +32,10 @@ class TestFrameworkExcludedAttrs:
             "max_retry_attempts",
             "attribs",
         }
-        assert snapshot_fields.issubset(FRAMEWORK_EXCLUDED_ATTRS), (
-            "Missing snapshot field names in FRAMEWORK_EXCLUDED_ATTRS"
-        )
+        assert snapshot_fields.issubset(
+            EVENT_EXCLUDED_ATTRS
+        ), "Missing snapshot field names in FRAMEWORK_EXCLUDED_ATTRS"
 
-    # --------------------------------------------------- init_arg key names
     def test_contains_init_arg_keys(self) -> None:
         init_arg_keys = {
             "execution_context",
@@ -47,11 +46,10 @@ class TestFrameworkExcludedAttrs:
             "sequence_number",
             "kwargs",
         }
-        assert init_arg_keys.issubset(FRAMEWORK_EXCLUDED_ATTRS), (
-            "Missing init_arg key names in FRAMEWORK_EXCLUDED_ATTRS"
-        )
+        assert init_arg_keys.issubset(
+            EVENT_EXCLUDED_ATTRS
+        ), "Missing init_arg key names in EVENT_EXCLUDED_ATTRS"
 
-    # ------------------------------------------------- framework internals
     def test_contains_framework_internals(self) -> None:
         internal_attrs = {
             "_pipeline",
@@ -62,25 +60,26 @@ class TestFrameworkExcludedAttrs:
             "_event_graph",
             "_parent_context",
         }
-        assert internal_attrs.issubset(FRAMEWORK_EXCLUDED_ATTRS), (
-            "Missing framework internal attrs in FRAMEWORK_EXCLUDED_ATTRS"
-        )
+        assert internal_attrs.issubset(
+            EVENT_EXCLUDED_ATTRS
+        ), "Missing framework internal attrs in EVENT_EXCLUDED_ATTRS"
 
-    # -------------------------------------- common user attrs are NOT excluded
-    @pytest.mark.parametrize("attr", [
-        "_page_number",
-        "_offset",
-        "_current_item",
-        "_accumulator",
-        "_total_count",
-        "_cache_key",
-        "_result_buffer",
-    ])
+    @pytest.mark.parametrize(
+        "attr",
+        [
+            "_page_number",
+            "_offset",
+            "_current_item",
+            "_accumulator",
+            "_total_count",
+            "_cache_key",
+            "_result_buffer",
+        ],
+    )
     def test_user_attrs_not_excluded(self, attr: str) -> None:
-        assert attr not in FRAMEWORK_EXCLUDED_ATTRS, (
-            f"User attribute '{attr}' is incorrectly in FRAMEWORK_EXCLUDED_ATTRS"
-        )
+        assert (
+            attr not in EVENT_EXCLUDED_ATTRS
+        ), f"User attribute '{attr}' is incorrectly in EVENT_EXCLUDED_ATTRS"
 
-    # -------------------------------------------------- no empty strings etc
     def test_no_empty_strings(self) -> None:
-        assert "" not in FRAMEWORK_EXCLUDED_ATTRS
+        assert "" not in EVENT_EXCLUDED_ATTRS

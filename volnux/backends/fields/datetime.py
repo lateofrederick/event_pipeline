@@ -1,5 +1,4 @@
 import datetime
-import typing
 from dataclasses import dataclass
 from typing import Any, Tuple, Optional
 from formax import MiniAnnotated, Attrib
@@ -12,12 +11,14 @@ class DTConfig:
     """Configuration for DateTimeField.
 
     Args:
+        field_name: Name of the field. Must match the name of the attribute in the model.
         auto_now: Automatically set the field to now every time the object is saved.
         auto_now_add: Automatically set the field to now when the object is first created.
         tz_aware: Enforce timezone-aware datetime objects (defaults to UTC if naive).
         nullable: Whether the datetime field can be None.
     """
 
+    field_name: str
     auto_now: bool = False
     auto_now_add: bool = False
     tz_aware: bool = True
@@ -30,7 +31,8 @@ def parse_params(params: Optional[Tuple[Any]], *, field_type) -> DTConfig:
     This function can be used to customize the behavior of DateTimeField.
     """
     if params is None:
-        return DTConfig()
+        # return DTConfig()
+        raise TypeError(f"{field_type}[...] expects a DTConfig instance")
     elif isinstance(params, DTConfig):
         return params
     elif (
@@ -56,9 +58,9 @@ class DateTimeField:
 
     Example:
         >>> class Workflow(BaseModel):
-        ...     created_at: DateTimeField[DTConfig(auto_now_add=True)]
-        ...     updated_at: DateTimeField[DTConfig(auto_now=True)]
-        ...     scheduled_for: DateTimeField[DTConfig(tz_aware=False, nullable=True)]
+        ...     created_at: DateTimeField[DTConfig("created_at", auto_now_add=True)]
+        ...     updated_at: DateTimeField[DTConfig("updated_at", auto_now=True)]
+        ...     scheduled_for: DateTimeField[DTConfig("scheduled_for", tz_aware=False, nullable=True)]
     """
 
     def __init_subclass__(cls, **kwargs):
@@ -67,7 +69,6 @@ class DateTimeField:
     def __new__(cls, *args, **kwargs):
         raise TypeError("DateTimeField cannot be instantiated")
 
-    @typing._tp_cache
     def __class_getitem__(cls, params) -> MiniAnnotated:
         config = parse_params(params, field_type=cls.__name__)
 
@@ -77,15 +78,26 @@ class DateTimeField:
             )
 
         validators = []
-        if config.nullable:
-            validators.append(formax_null_validator)
+        if not (config.auto_now or config.auto_now_add):
+            if not config.nullable:
+                validators.append(formax_null_validator)
 
         def pre_fmt(instance, value):
             """Serializes datetime to strict JSON primitive (ISO 8601 string)."""
             if value is None:
-                if not config.nullable:
-                    raise ValueError("Datetime field cannot be None.")
-                return None
+                if config.auto_now:
+                    value = datetime.datetime.now()
+                elif config.auto_now_add:
+                    # check that the field is set on the instance if not set generate a new date
+                    value: Optional[datetime.datetime] = getattr(
+                        instance, config.field_name
+                    )
+                    if value is None:
+                        value = datetime.datetime.now()
+                    elif value.tzinfo is not None:
+                        value = value.replace(tzinfo=None)
+                else:
+                    return None
 
             if not isinstance(value, datetime.datetime):
                 raise TypeError(
@@ -152,8 +164,8 @@ class DateField:
 
     Example:
         >>> class Invoice(BaseModel):
-        ...     issue_date: DateField[DTConfig(auto_now_add=True)]
-        ...     due_date: DateField[DTConfig(nullable=True)]
+        ...     issue_date: DateField[DTConfig("issue_date", auto_now_add=True)]
+        ...     due_date: DateField[DTConfig("due_date", nullable=True)]
     """
 
     def __init_subclass__(cls, **kwargs):
@@ -169,17 +181,24 @@ class DateField:
             raise ValueError("A DateField cannot be both auto_now and auto_now_add.")
 
         validators = []
-        if config.nullable:
-            validators.append(formax_null_validator)
+
+        if not (config.auto_now or config.auto_now_add):
+            if not config.nullable:
+                validators.append(formax_null_validator)
 
         def pre_fmt(instance, value):
             """Serializes date to strict JSON primitive (ISO 8601 date string)."""
             if value is None:
-                if not config.nullable:
-                    raise ValueError("Date field cannot be None.")
-                return None
+                if config.auto_now:
+                    value = datetime.date.today()
+                elif config.auto_now_add:
+                    # check that the field is set on the instance if not set generate a new date
+                    value = getattr(instance, config.field_name)
+                    if value is None:
+                        value = datetime.date.today()
+                else:
+                    return None
 
-            # We must explicitly strip the time component if a datetime is passed.
             if isinstance(value, datetime.datetime):
                 value = value.date()
 

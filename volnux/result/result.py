@@ -1,6 +1,7 @@
+import base64
 import logging
 import os
-import threading
+import pickle
 import typing
 import itertools
 from dataclasses import asdict, InitVar, dataclass
@@ -12,7 +13,7 @@ from formax import Attrib, BaseModel, MiniAnnotated, InitStrategy
 
 from volnux.mixins import KeyValueStoreIntegrationMixin
 from volnux.utils import get_obj_klass_import_str, get_obj_state
-from volnux.exceptions import MultiValueError
+from volnux.exceptions import MultiValueError, SerializationError
 from volnux.import_utils import import_string
 
 if typing.TYPE_CHECKING:
@@ -24,9 +25,75 @@ logger = logging.getLogger(__name__)
 
 T = typing.TypeVar("T", bound="KeyValueStoreIntegrationMixin")
 
-Result = typing.TypeVar(
-    "Result", bound=typing.Hashable
-)  # Placeholder for a Result type
+Result = typing.TypeVar("Result", bound=typing.Hashable)
+
+_CONTENT_TYPE_KEY = "content_type_import_str"
+_CONTENT_STATE_KEY = "state"
+_CONTENT_PICKLE_KEY = "pickle"
+
+
+def _supports_state_restore(content: Any) -> bool:
+    """True if ``content`` can be rebuilt from ``__new__`` + ``__setstate__``.
+
+    ``object`` provides a default ``__getstate__`` but no ``__setstate__``, so
+    only classes that define one (formax models, opted-in classes) qualify.
+    The class must also be importable by path, i.e. defined at module level.
+    """
+    klass = type(content)
+    if not callable(getattr(klass, "__setstate__", None)):
+        return False
+    try:
+        return import_string(get_obj_klass_import_str(content)) is klass
+    except Exception:
+        return False
+
+
+def _serialize_content(content: Any) -> Dict[str, Any]:
+    """Serialize non-builtin result content.
+
+    Content that restores from its state keeps the readable
+    ``{"content_type_import_str", "state"}`` form. Anything else (plain
+    classes, dataclasses, datetime, Decimal, OrderedDict, ...) is pickled and
+    base64-encoded so the state stays JSON-safe for persistent backends.
+    """
+    import_str = get_obj_klass_import_str(content)
+
+    if _supports_state_restore(content):
+        content_state = get_obj_state(content)
+        if content_state is not None:
+            return {_CONTENT_TYPE_KEY: import_str, _CONTENT_STATE_KEY: content_state}
+
+    try:
+        payload = pickle.dumps(content, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as e:
+        raise SerializationError(
+            f"EventResult content of type {import_str!r} cannot be serialized: {e}. "
+            "Use a builtin type, a formax model, or a module-level picklable class."
+        ) from e
+
+    return {
+        _CONTENT_TYPE_KEY: import_str,
+        _CONTENT_PICKLE_KEY: base64.b64encode(payload).decode("ascii"),
+    }
+
+
+def _deserialize_content(content: Dict[str, Any]) -> Any:
+    """Rebuild content produced by :func:`_serialize_content`."""
+    import_str = content[_CONTENT_TYPE_KEY]
+    try:
+        if _CONTENT_PICKLE_KEY in content:
+            # Only unpickle data this application wrote: pickle can execute
+            # code, so the persistence backend must be trusted.
+            return pickle.loads(base64.b64decode(content[_CONTENT_PICKLE_KEY]))
+
+        klass = import_string(import_str)
+        instance = klass.__new__(klass)  # type: ignore
+        instance.__setstate__(content[_CONTENT_STATE_KEY])
+        return instance
+    except Exception as e:
+        raise SerializationError(
+            f"Failed to restore EventResult content of type {import_str!r}: {e}"
+        ) from e
 
 
 class EventResult(KeyValueStoreIntegrationMixin, BaseModel):
@@ -69,33 +136,31 @@ class EventResult(KeyValueStoreIntegrationMixin, BaseModel):
         )
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
-        state = super().__getstate__().copy()
+        state = dict(super().get_state())
         state.pop("_objectid_lock", None)
 
         if self.content is not None:
             content_type = type(self.content)
             if not is_builtin_type(content_type):  # type: ignore
-                state["content"] = {
-                    "content_type_import_str": get_obj_klass_import_str(self.content),
-                    "state": get_obj_state(self.content),
-                }
+                state["content"] = _serialize_content(self.content)
 
         return state
 
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
+        state = dict(state)  # don't mutate the caller's state
         content = state.get("content")
 
-        if isinstance(content, dict) and "content_type_import_str" in content:
-            import_str = content["content_type_import_str"]
-            content_state = content["state"]
-            klass = import_string(import_str)
-            instance = klass.__new__(klass)  # type: ignore
-            instance.__setstate__(content_state)
-            state["content"] = instance
+        if isinstance(content, dict) and _CONTENT_TYPE_KEY in content:
+            state["content"] = _deserialize_content(content)
 
         state.pop("_objectid_lock", None)
-        self.__setstate__(state)
-        self._objectid_lock = threading.Lock()
+        record_id = state.pop("id", None) or state.get("_id")
+        # Same recursion hazard as get_state: __setstate__ calls set_state
+        super().set_state(state)
+        # Formax ignores the identity keys; restore them so a round-tripped
+        # result keeps the id it is keyed by in ResultSets and backends.
+        if record_id:
+            self.change_object_id(record_id)
 
     def is_error(self) -> bool:
         return self.error
@@ -104,9 +169,15 @@ class EventResult(KeyValueStoreIntegrationMixin, BaseModel):
         """Serialize event result"""
         content = None
         if isinstance(self.content, Exception):
+            # Exceptions don't deep-copy reliably, so asdict() runs without it
             content = self.content
             self.content = None
-        result_dict = asdict(self)
+            try:
+                result_dict = asdict(self)
+            finally:
+                self.content = content
+        else:
+            result_dict = asdict(self)
         if content is not None:
             if hasattr(content, "as_dict"):
                 content = content.as_dict()
@@ -116,409 +187,6 @@ class EventResult(KeyValueStoreIntegrationMixin, BaseModel):
         return result_dict
 
 
-# class EntityContentType:
-#     """Represents the content type information for an entity."""
-#
-#     def __init__(
-#         self,
-#         backend_import_str: typing.Optional[str] = None,
-#         entity_content_type: typing.Optional[str] = None,
-#     ):
-#         self.backend_import_str = backend_import_str
-#         self.entity_content_type = entity_content_type
-#
-#     @classmethod
-#     def add_entity_content_type(
-#         cls, entity: Result
-#     ) -> typing.Optional["EntityContentType"]:
-#         """Create an EntityContentType from an ObjectIdentityMixin instance."""
-#         if not entity or not getattr(entity, "id", None):
-#             return None
-#
-#         connector = getattr(entity, "_connector", None)
-#         backend_import_str = None
-#
-#         if connector:
-#             backend_import_str = get_obj_klass_import_str(connector)
-#
-#         return cls(
-#             backend_import_str=backend_import_str,
-#             entity_content_type=getattr(entity, "__object_import_str__", None),
-#         )
-#
-#     def get_backend(self) -> typing.Any:
-#         """Import and return the backend class."""
-#         if not self.backend_import_str:
-#             raise ValueError("No backend import string specified")
-#         return import_string(self.backend_import_str)
-#
-#     def get_content_type(self) -> typing.Any:
-#         """Import and return the content type class."""
-#         if not self.entity_content_type:
-#             raise ValueError("No entity content type specified")
-#         return import_string(self.entity_content_type)
-#
-#     def __eq__(self, other: typing.Any) -> bool:
-#         if not isinstance(other, EntityContentType):
-#             return False
-#         return (
-#             self.backend_import_str == other.backend_import_str
-#             and self.entity_content_type == other.entity_content_type
-#         )
-#
-#     def __hash__(self) -> int:
-#         return hash((self.backend_import_str, self.entity_content_type))
-#
-#     def __repr__(self) -> str:
-#         return f"<EntityContentType: backend={self.backend_import_str}, type={self.entity_content_type}>"
-#
-#
-# class ResultSet(typing.MutableSet[Result]):
-#     """A collection of Result objects with filtering and query capabilities."""
-#
-#     # Dictionary of filter operators and their implementation
-#     _FILTER_OPERATORS: typing.Final[typing.Set[str]] = {
-#         "contains",
-#         "startswith",
-#         "endswith",
-#         "icontains",
-#         "gt",
-#         "gte",
-#         "lt",
-#         "lte",
-#         "in",
-#         "exact",
-#         "isnull",
-#     }
-#
-#     def __init__(self, results: typing.Optional[typing.List[Result]] = None) -> None:
-#         self._content: typing.Dict[str, Result] = {}
-#         self._context_types: typing.Set[EntityContentType] = set()
-#
-#         if results is None:
-#             results = []
-#
-#         for result in results:
-#             self._content[self.get_hash(result)] = result
-#             self._insert_entity(result)
-#
-#     @staticmethod
-#     def get_hash(value: Result) -> str:
-#         try:
-#             return f"{hash(value)}"
-#         except TypeError as e:
-#             raise TypeError("Result must be hashable") from e
-#
-#     def __contains__(self, item: Result) -> bool:
-#         try:
-#             key = self.get_hash(item)
-#         except TypeError:
-#             return False
-#         return key in self._content
-#
-#     def __iter__(self) -> typing.Iterator[Result]:
-#         return iter(self._content.values())
-#
-#     def __len__(self) -> int:
-#         return len(self._content)
-#
-#     def __getitem__(self, index: int) -> Result:
-#         """Access a result by index."""
-#         return list(self._content.values())[index]
-#
-#     def _insert_entity(self, record: Result) -> None:
-#         """
-#         Insert an entity and track its content type.
-#
-#         Args:
-#             record: The Result object to insert.
-#         """
-#         self._content[self.get_hash(record)] = typing.cast(Result, record)
-#         content_type = EntityContentType.add_entity_content_type(record)
-#         if content_type and content_type not in self._context_types:
-#             self._context_types.add(content_type)
-#
-#     def add(self, value: typing.Union[Result, "ResultSet"]) -> None:
-#         """
-#         Add a result or merge another ResultSet.
-#         Args:
-#             value: Result or ResultSet to add.
-#         """
-#         if isinstance(value, ResultSet):
-#             self._content.update(value._content)
-#             self._context_types.update(value._context_types)
-#         else:
-#             self._content[self.get_hash(value)] = value
-#             self._insert_entity(value)
-#
-#     def extend(self, results: typing.Collection[Result]) -> None:
-#         """
-#         Add multiple items to set.
-#         Args:
-#             results: Collection of Result objects to add.
-#         """
-#         for result in results:
-#             self.add(result)
-#
-#     def clear(self) -> None:
-#         """Remove all results."""
-#         self._content.clear()
-#         self._context_types.clear()
-#
-#     def discard(self, value: typing.Union[Result, "ResultSet"]) -> None:
-#         """Remove a result or results from another ResultSet."""
-#         if isinstance(value, ResultSet):
-#             for res in value:
-#                 self._content.pop(self.get_hash(res), None)
-#         else:
-#             self._content.pop(self.get_hash(value), None)
-#
-#     def copy(self) -> "ResultSet":
-#         """Create a shallow copy of this ResultSet."""
-#         new = ResultSet([])
-#         new._content = self._content.copy()
-#         new._context_types = self._context_types.copy()
-#         return new
-#
-#     def get(self, **filters: typing.Any) -> Result:
-#         """
-#         Get a single result matching the filters.
-#         Raises MultiValueError if more than one result is found.
-#         """
-#         qs = self.filter(**filters)
-#         if len(qs) == 0:
-#             raise KeyError(f"No result found matching filters: {filters}")
-#         if len(qs) > 1:
-#             raise MultiValueError(
-#                 f"More than one result found for filters {filters}: {len(qs)}!=1"
-#             )
-#         return qs[0]
-#
-#     def get_entry_by_hash(self, hash_id: typing.Union[str, int]) -> Result:
-#         """
-#         Retrieves an entry from a dictionary of content using the provided hash identifier.
-#
-#         :param hash_id: The unique hash identifier for the entry to be retrieved.
-#         :type hash_id: str
-#         :return: The entry associated with the provided hash identifier.
-#         :rtype: Result
-#         :raises KeyError: If no entry is found with the given hash identifier.
-#         """
-#         key = str(hash_id) if isinstance(hash_id, int) else hash_id
-#         entry = self._content.get(key)
-#         if entry is None:
-#             raise KeyError(f"No result found with hash {hash_id}")
-#         return entry
-#
-#     def filter(self, **filter_params: typing.Any) -> "ResultSet":
-#         """
-#         Filter results by attribute values with support for nested fields.
-#
-#         Features:
-#         - Basic attribute matching (user=x)
-#         - Nested dictionary lookups (profile__name=y)
-#         - List/iterable searching (tags__contains=z)
-#         - Special lookup operators:
-#             - __contains: Check if value is in a list/iterable
-#             - __startswith: String starts with value
-#             - __endswith: String ends with value
-#             - __icontains: Case-insensitive contains
-#             - __gt, __gte, __lt, __lte: Comparisons
-#             - __in: Check if field value is in provided list
-#             - __exact: Exact matching (default behavior)
-#             - __isnull: Check if field is None
-#
-#         Examples:
-#         - rs.filter(name="Alice") - Basic field matching
-#         - rs.filter(user__profile__city="New York") - Nested dict lookup
-#         - rs.filter(tags__contains="urgent") - Check if list contains value
-#         - rs.filter(name__startswith="A") - String prefix matching
-#         """
-#         filtered_results = []
-#
-#         for result in self._content.values():
-#             if self._matches_filters(result, filter_params):
-#                 filtered_results.append(result)
-#
-#         return ResultSet(filtered_results)
-#
-#     def _matches_filters(
-#         self, result: Result, filters: typing.Dict[str, typing.Any]
-#     ) -> bool:
-#         """
-#         Check if a result matches all filters, supporting nested lookups and operators.
-#
-#         Args:
-#             result: The result object to check
-#             filters: Dictionary of filter parameters
-#
-#         Returns:
-#             True if the result matches all filters, False otherwise
-#         """
-#         for key, value in filters.items():
-#             # Check if this is a special lookup with operator
-#             if "__" in key:
-#                 parts = key.split("__")
-#                 if parts[-1] in self._FILTER_OPERATORS:
-#                     field_path_list, operator = parts[:-1], parts[-1]
-#                     field_path: str = "__".join(field_path_list)
-#                     if not self._check_operator(result, field_path, operator, value):
-#                         return False
-#                 else:
-#                     # This is a nested lookup without operator
-#                     if not self._check_nested_field(result, key.split("__"), value):
-#                         return False
-#             else:
-#                 # Simple field comparison
-#                 try:
-#                     field_value = getattr(result, key, None)
-#                     if field_value != value:
-#                         return False
-#                 except (TypeError, ValueError):
-#                     return False
-#
-#         return True
-#
-#     def _get_field_value(
-#         self, obj: typing.Any, field_path: typing.List[str]
-#     ) -> typing.Any:
-#         """
-#         Get a value from potentially nested objects.
-#
-#         Args:
-#             obj: The object to extract value from
-#             field_path: List of field names to traverse
-#
-#         Returns:
-#             The value at the end of the path or None if not found
-#         """
-#         current = obj
-#
-#         for field in field_path:
-#             # Handle dictionary access
-#             if hasattr(current, "__getitem__") and isinstance(current, dict):
-#                 try:
-#                     current = current[field]
-#                     continue
-#                 except (KeyError, TypeError):
-#                     pass
-#
-#             # Handle object attribute access
-#             if hasattr(current, field):
-#                 current = getattr(current, field)
-#                 continue
-#
-#             # Nothing found
-#             return None
-#
-#         return current
-#
-#     def _check_nested_field(
-#         self, obj: typing.Any, field_path: typing.List[str], expected_value: typing.Any
-#     ) -> bool:
-#         """
-#         Check if a nested field matches the expected value.
-#
-#         Args:
-#             obj: The object to check
-#             field_path: Path to the field
-#             expected_value: Value to compare against
-#
-#         Returns:
-#             True if the field exists and matches the value
-#         """
-#         actual_value = self._get_field_value(obj, field_path)
-#         return actual_value == expected_value  # type: ignore
-#
-#     def _check_operator(
-#         self, obj: typing.Any, field_path: str, operator: str, filter_value: typing.Any
-#     ) -> bool:
-#         """
-#         Apply a filter operator to a field.
-#         Args:
-#             obj: The object to check
-#             field_path: Path to the field (as string with __ separators)
-#             operator: The operator to apply
-#             filter_value: Value to compare against
-#         Returns:
-#             True if the condition is met, False otherwise
-#         """
-#         actual_value = self._get_field_value(obj, field_path.split("__"))
-#
-#         if operator in ("startswith", "endswith", "icontains") and not isinstance(
-#             actual_value, str
-#         ):
-#             return False
-#
-#         # Handle None case for all operators except isnull
-#         if actual_value is None and operator != "isnull":
-#             return False
-#
-#         # Apply the appropriate operator
-#         if operator == "contains":
-#             if hasattr(actual_value, "__contains__"):
-#                 return filter_value in actual_value
-#             return False
-#
-#         elif operator == "startswith":
-#             return isinstance(actual_value, str) and actual_value.startswith(
-#                 filter_value
-#             )
-#
-#         elif operator == "endswith":
-#             return isinstance(actual_value, str) and actual_value.endswith(filter_value)
-#
-#         elif operator == "icontains":
-#             if not isinstance(actual_value, str) or not isinstance(filter_value, str):
-#                 return False
-#             return filter_value.lower() in actual_value.lower()
-#
-#         elif operator == "gt":
-#             return actual_value > filter_value
-#
-#         elif operator == "gte":
-#             return actual_value >= filter_value
-#
-#         elif operator == "lt":
-#             return actual_value < filter_value
-#
-#         elif operator == "lte":
-#             return actual_value <= filter_value
-#
-#         elif operator == "in":
-#             return actual_value in filter_value
-#
-#         elif operator == "exact":
-#             return actual_value == filter_value
-#
-#         elif operator == "isnull":
-#             return (actual_value is None) == filter_value
-#
-#         # Unknown operator
-#         return False
-#
-#     def first(self) -> typing.Optional[Result]:
-#         """Return the first result or None if empty."""
-#         try:
-#             return self[0]
-#         except IndexError:
-#             return None
-#
-#     def is_empty(self) -> bool:
-#         """Return True if the result is empty."""
-#         return self.first() is None
-#
-#     def __str__(self) -> str:
-#         return str(list(self._content.values()))
-#
-#     def __repr__(self) -> str:
-#         return f"<{self.__class__.__name__}: {len(self)}>"
-#
-#     def __class_getitem__(cls, item: typing.Any) -> typing.Type["ResultSet"]:
-#         return cls
-
-
-# Immutable operator set — prevents accidental mutation at runtime
 _FILTER_OPERATORS: typing.Final[frozenset[str]] = frozenset(
     {
         "contains",
@@ -538,11 +206,7 @@ _FILTER_OPERATORS: typing.Final[frozenset[str]] = frozenset(
 
 @dataclass(frozen=True)
 class EntityContentType:
-    """Immutable, serializable content type descriptor.
-
-    Uses governed model references instead of raw import strings.
-    Frozen to ensure hash stability and prevent mutation after creation.
-    """
+    """Immutable, serializable content type descriptor."""
 
     model_path: str
     backend_alias: str = "default"
@@ -566,13 +230,6 @@ class EntityContentType:
 
 
 class ResultSet(typing.MutableSet[Result]):
-    """A governed collection of Result objects with filtering and query capabilities.
-
-    Identity is based on primary keys when available, ensuring stability
-    across serialization boundaries (checkpoint/rehydrate cycles).
-    Content type metadata is propagated through filter/exclude operations
-    to avoid redundant re-inspection.
-    """
 
     def __init__(self, results: Optional[List["Result"]] = None) -> None:
         self._content: Dict[str, "Result"] = {}
@@ -733,10 +390,6 @@ class ResultSet(typing.MutableSet[Result]):
         result._context_types = self._context_types.copy()
         return result
 
-    # ------------------------------------------------------------------
-    # Filter Engine Internals
-    # ------------------------------------------------------------------
-
     def _matches_filters(self, result: "Result", filters: Dict[str, Any]) -> bool:
         """Check if a result matches ALL filters (AND semantics)."""
         for key, value in filters.items():
@@ -744,7 +397,15 @@ class ResultSet(typing.MutableSet[Result]):
                 parts = key.split("__")
                 if parts[-1] in _FILTER_OPERATORS:
                     field_path = "__".join(parts[:-1])
-                    if not self._check_operator(result, field_path, parts[-1], value):
+                    try:
+                        matched = self._check_operator(
+                            result, field_path, parts[-1], value
+                        )
+                    except TypeError:
+                        # Incomparable types (e.g. str > int) are a non-match,
+                        # consistent with the exact-match branch below.
+                        matched = False
+                    if not matched:
                         return False
                 else:
                     # Nested lookup without operator suffix

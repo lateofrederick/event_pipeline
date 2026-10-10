@@ -23,7 +23,7 @@ import pytest
 
 from volnux.execution.rehydrator.event.event_result_serializer import (
     ExecResultSerializer,
-    _EXEC_RESULT_SERIALIZER,
+    EXEC_RESULT_SERIALIZER,
 )
 
 
@@ -54,10 +54,13 @@ class TestSerializePrimitives:
         assert serializer.serialize_exec_result(None) is None
 
     @pytest.mark.parametrize("value", [42, "hello", 3.14, True, None])
-    def test_primitive_round_trip(self, serializer: ExecResultSerializer, value: Any) -> None:
-        assert serializer.deserialize_exec_result(
-            serializer.serialize_exec_result(value)
-        ) == value
+    def test_primitive_round_trip(
+        self, serializer: ExecResultSerializer, value: Any
+    ) -> None:
+        assert (
+            serializer.deserialize_exec_result(serializer.serialize_exec_result(value))
+            == value
+        )
 
 
 # ===========================================================================
@@ -72,9 +75,10 @@ class TestSerializeSequences:
 
     def test_list_round_trip(self, serializer: ExecResultSerializer) -> None:
         data = [1, "two", [3, 4], {"key": "val"}]
-        assert serializer.deserialize_exec_result(
-            serializer.serialize_exec_result(data)
-        ) == data
+        assert (
+            serializer.deserialize_exec_result(serializer.serialize_exec_result(data))
+            == data
+        )
 
     def test_tuple_becomes_type_marker(self, serializer: ExecResultSerializer) -> None:
         data = (1, 2, 3)
@@ -134,9 +138,10 @@ class TestSerializeDicts:
 
     def test_string_key_round_trip(self, serializer: ExecResultSerializer) -> None:
         data = {"a": 1, "b": [2, 3]}
-        assert serializer.deserialize_exec_result(
-            serializer.serialize_exec_result(data)
-        ) == data
+        assert (
+            serializer.deserialize_exec_result(serializer.serialize_exec_result(data))
+            == data
+        )
 
     def test_int_keys_preserved(self, serializer: ExecResultSerializer) -> None:
         data = {1: "one", 2: "two"}
@@ -181,7 +186,9 @@ class TestSerializeDicts:
         assert restored[2.5] == "float"
         assert restored[True] == "bool"
 
-    def test_unsupported_key_type_raises(self, serializer: ExecResultSerializer) -> None:
+    def test_unsupported_key_type_raises(
+        self, serializer: ExecResultSerializer
+    ) -> None:
         class BadKey:
             pass
 
@@ -233,7 +240,9 @@ class TestSerializeCustomObjects:
         assert serialized["uses_getstate"] is False
         assert serialized["state"] == {"name": "test"}
 
-    def test_object_without_getstate_or_dict_raises(self, serializer: ExecResultSerializer) -> None:
+    def test_object_without_getstate_or_dict_raises(
+        self, serializer: ExecResultSerializer
+    ) -> None:
         class SlotOnly:
             __slots__ = ()
 
@@ -329,15 +338,17 @@ class TestDeserializeEdgeCases:
 
     def test_list_round_trip(self, serializer: ExecResultSerializer) -> None:
         data = [1, "two", 3.0, None]
-        assert serializer.deserialize_exec_result(
-            serializer.serialize_exec_result(data)
-        ) == data
+        assert (
+            serializer.deserialize_exec_result(serializer.serialize_exec_result(data))
+            == data
+        )
 
     def test_dict_round_trip(self, serializer: ExecResultSerializer) -> None:
         data = {"a": 1, "b": None, "c": [1, 2]}
-        assert serializer.deserialize_exec_result(
-            serializer.serialize_exec_result(data)
-        ) == data
+        assert (
+            serializer.deserialize_exec_result(serializer.serialize_exec_result(data))
+            == data
+        )
 
 
 # ===========================================================================
@@ -345,15 +356,16 @@ class TestDeserializeEdgeCases:
 # ===========================================================================
 class TestSingleton:
     def test_singleton_is_exec_result_serializer(self) -> None:
-        assert isinstance(_EXEC_RESULT_SERIALIZER, ExecResultSerializer)
+        assert isinstance(EXEC_RESULT_SERIALIZER, ExecResultSerializer)
 
     def test_singleton_is_same_instance(self) -> None:
         # Import twice — should be the same object
         from volnux.execution.rehydrator.event.event_result_serializer import (
-            _EXEC_RESULT_SERIALIZER as s2,
+            EXEC_RESULT_SERIALIZER as s2,
         )
-        assert _EXEC_RESULT_SERIALIZER is s2
+
+        assert EXEC_RESULT_SERIALIZER is s2
 
     def test_singleton_functional(self) -> None:
-        assert _EXEC_RESULT_SERIALIZER.serialize_exec_result(42) == 42
-        assert _EXEC_RESULT_SERIALIZER.deserialize_exec_result(42) == 42
+        assert EXEC_RESULT_SERIALIZER.serialize_exec_result(42) == 42
+        assert EXEC_RESULT_SERIALIZER.deserialize_exec_result(42) == 42

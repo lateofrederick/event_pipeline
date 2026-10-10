@@ -156,7 +156,7 @@ class RemoteExecutor(Executor):
 
         except Exception as e:
             error = f"Network operation failed: {str(e)}"
-            network_telemetry.end_operation(task_id=str(id(task_message)), error=error)
+            # network_telemetry.end_operation(task_id=str(id(task_message)), error=error)
             raise
 
     def task_queue(self) -> queue.Queue:

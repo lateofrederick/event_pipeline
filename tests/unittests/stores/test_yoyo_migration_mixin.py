@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from volnux.backends.stores.sqlite_store import SqliteStoreBackend
+from volnux.backends.stores.sqlite import SqliteStoreBackend
 
 
 @pytest.fixture

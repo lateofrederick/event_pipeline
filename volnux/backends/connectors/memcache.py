@@ -11,7 +11,7 @@ from pymemcache.exceptions import (
     MemcacheIllegalInputError,
 )
 
-from volnux.backends.connection import BackendConnectorBase, ConnectionError
+from volnux.backends.connection import BackendConnectorBase
 
 logger = logging.getLogger(__name__)
 

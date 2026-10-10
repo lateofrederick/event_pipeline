@@ -31,6 +31,8 @@ Authentication:
     Never hardcode API keys in source.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Type

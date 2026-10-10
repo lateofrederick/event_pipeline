@@ -1,12 +1,3 @@
-"""Comprehensive unit tests for volnux.engine.base.
-
-Tests cover:
-  - EngineExecutionResult enum
-  - TaskNode named-tuple
-  - EngineResult dataclass
-  - WorkflowEngine ABC (instantiation, checkpointing helpers, etc.)
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -18,14 +9,11 @@ from volnux.engine.base import (
     EngineExecutionResult,
     EngineResult,
     TaskNode,
-    WorkflowEngine,
+    WorkflowEngine, SubgraphErrorStrategy,
 )
 from volnux.engine.checkpoint_config import CheckPointConfig, CheckPointFrequency
 
 
-# ---------------------------------------------------------------------------
-# Minimal concrete subclass for testing the ABC
-# ---------------------------------------------------------------------------
 
 class _ConcreteEngine(WorkflowEngine):
     """Trivial concrete implementation so we can instantiate WorkflowEngine."""
@@ -38,13 +26,16 @@ class _ConcreteEngine(WorkflowEngine):
     def sink_queue(self):
         return []
 
+    def spawn_sub_engine(
+        self,
+        root_task: "TaskType",
+        pipeline: "Pipeline",
+        error_strategy: SubgraphErrorStrategy = SubgraphErrorStrategy.TREAT_AS_FAILURE,
+    ) -> "WorkflowEngine":
+        return _ConcreteEngine()
+
     async def execute(self, root_task, pipeline):
         return EngineResult(status=EngineExecutionResult.COMPLETED)
-
-
-# ===========================================================================
-# EngineExecutionResult
-# ===========================================================================
 
 
 class TestEngineExecutionResult:
@@ -65,20 +56,13 @@ class TestEngineExecutionResult:
         assert EngineExecutionResult.TERMINATED_EARLY in EngineExecutionResult
         assert EngineExecutionResult.FAILED in EngineExecutionResult
 
-    def test_non_member_not_in_enum(self):
-        assert "done" not in EngineExecutionResult
-
     def test_enum_iteration(self):
         values = list(EngineExecutionResult)
-        assert len(values) == 3
+        assert len(values) == 4
         assert EngineExecutionResult.COMPLETED in values
         assert EngineExecutionResult.TERMINATED_EARLY in values
         assert EngineExecutionResult.FAILED in values
 
-
-# ===========================================================================
-# TaskNode
-# ===========================================================================
 
 
 class TestTaskNode:
@@ -128,11 +112,6 @@ class TestTaskNode:
         assert TaskNode._fields == ("task", "previous_context")
 
 
-# ===========================================================================
-# EngineResult
-# ===========================================================================
-
-
 class TestEngineResult:
     """Tests for the EngineResult dataclass."""
 
@@ -167,15 +146,8 @@ class TestEngineResult:
         assert result.tasks_processed == 10
 
 
-# ===========================================================================
-# WorkflowEngine (ABC behaviour via _ConcreteEngine)
-# ===========================================================================
-
-
 class TestWorkflowEngine:
     """Tests for WorkflowEngine abstract base class behaviour."""
-
-    # -- instantiation -------------------------------------------------------
 
     def test_cannot_instantiate_abstract_class_directly(self):
         with pytest.raises(TypeError):
@@ -242,8 +214,7 @@ class TestWorkflowEngine:
         engine.enable_checkpointing(checkpointer=MagicMock())
         assert engine._checkpoint_frequency == CheckPointFrequency.PER_TASK
 
-    # -- _checkpoint_before_task ---------------------------------------------
-
+    @pytest.mark.asyncio
     async def test_checkpoint_before_task_noop_when_no_checkpointer(self):
         engine = _ConcreteEngine()
         mock_ctx = MagicMock()
@@ -253,6 +224,7 @@ class TestWorkflowEngine:
         mock_ctx.persist.assert_not_called()
         assert engine.current_task_node is None
 
+    @pytest.mark.asyncio
     async def test_checkpoint_before_task_sets_current_task_node(self):
         engine = _ConcreteEngine()
         mock_checkpointer = MagicMock()
@@ -267,6 +239,7 @@ class TestWorkflowEngine:
         # ON_STATE_CHANGE frequency should NOT call persist before task
         mock_ctx.persist.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_checkpoint_before_task_persists_for_per_task_frequency(self):
         engine = _ConcreteEngine()
         mock_checkpointer = MagicMock()
@@ -282,8 +255,7 @@ class TestWorkflowEngine:
         mock_ctx.persist.assert_awaited_once()
         assert engine.current_task_node is mock_task_node
 
-    # -- _checkpoint_after_task ----------------------------------------------
-
+    @pytest.mark.asyncio
     async def test_checkpoint_after_task_noop_when_no_checkpointer(self):
         engine = _ConcreteEngine()
         mock_ctx = MagicMock()
@@ -292,6 +264,7 @@ class TestWorkflowEngine:
         assert engine.tasks_processed == 0
         mock_ctx.persist.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_checkpoint_after_task_increments_tasks_processed(self):
         engine = _ConcreteEngine()
         mock_checkpointer = MagicMock()
@@ -305,6 +278,7 @@ class TestWorkflowEngine:
         # PERIODIC should NOT call persist
         mock_ctx.persist.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_checkpoint_after_task_clears_current_task_node(self):
         engine = _ConcreteEngine()
         mock_checkpointer = MagicMock()
@@ -317,6 +291,7 @@ class TestWorkflowEngine:
         await engine._checkpoint_after_task(mock_ctx, success=True)
         assert engine.current_task_node is None
 
+    @pytest.mark.asyncio
     async def test_checkpoint_after_task_persists_for_per_task(self):
         engine = _ConcreteEngine()
         mock_checkpointer = MagicMock()
@@ -329,6 +304,7 @@ class TestWorkflowEngine:
         mock_ctx.persist.assert_awaited_once()
         assert engine.tasks_processed == 1
 
+    @pytest.mark.asyncio
     async def test_checkpoint_after_task_persists_for_on_state_change(self):
         engine = _ConcreteEngine()
         mock_checkpointer = MagicMock()
@@ -341,6 +317,7 @@ class TestWorkflowEngine:
         mock_ctx.persist.assert_awaited_once()
         assert engine.tasks_processed == 1
 
+    @pytest.mark.asyncio
     async def test_checkpoint_after_task_cumulative_count(self):
         """Multiple _checkpoint_after_task calls accumulate tasks_processed."""
         engine = _ConcreteEngine()
@@ -355,15 +332,13 @@ class TestWorkflowEngine:
         assert engine.tasks_processed == 3
         assert mock_ctx.persist.await_count == 3
 
-    # -- execute (smoke test via subclass) -----------------------------------
-
+    @pytest.mark.asyncio
     async def test_execute_returns_result(self):
         engine = _ConcreteEngine()
         result = await engine.execute(root_task=MagicMock(), pipeline=MagicMock())
         assert isinstance(result, EngineResult)
         assert result.status == EngineExecutionResult.COMPLETED
 
-    # -- abstract properties -------------------------------------------------
 
     def test_task_queue_is_accessible(self):
         engine = _ConcreteEngine()

@@ -37,7 +37,6 @@ from datetime import datetime, timezone
 from .state import TriggerStateRecord
 from volnux.engine.workflows.workflow import WorkflowExecutionError, WorkflowNotFound
 
-# from volnux.exceptions import WorkflowNotfound
 from .triggers import TriggerBase, TriggerLifecycle, TriggerActivation, TriggerType
 
 if TYPE_CHECKING:
@@ -283,7 +282,7 @@ class TriggerEngine:
         if workflow_config is None:
             raise RuntimeError("Workflow config not found.")
 
-        qs = workflow_config._triggers.filter(trigger_type=trigger_type)
+        qs = workflow_config._registry._triggers.filter(trigger_type=trigger_type)
         if not qs.exists():
             raise ValueError(
                 f"Trigger type {trigger_type.value} not enabled for workflow {workflow_name}"
@@ -496,7 +495,7 @@ class TriggerEngine:
                 record.id,
             )
             record.dirty = False
-            await record.save_async()
+            await record.save()
             return
 
         lifecycle = record.lifecycle
@@ -522,8 +521,8 @@ class TriggerEngine:
 
         # Clear the dirty flag and persist.
         record.dirty = False
-        record.updated_at = datetime.now(timezone.utc).isoformat()
-        await record.save_async()
+        record.updated_at = datetime.now(timezone.utc)
+        await record.save()
 
     async def _handle_activation(self, activation: TriggerActivation):
         """

@@ -1,22 +1,3 @@
-"""Comprehensive unit tests for volnux.engine.default_engine.
-
-Tests cover:
-  - DefaultWorkflowEngine construction (params, super init, queue init)
-  - Abstract property implementations (task_queue, sink_queue)
-  - get_name override
-  - execute() orchestration (single task, multi-task, errors, early term)
-  - Checkpoint hook integration in execute loop
-  - State reset between executions
-  - Parallelism detection
-  - Context building and chaining
-  - Sink node collection and deferred execution (async)
-  - Conditional branching
-  - Task switching
-  - Sequential flow (multitask and single)
-  - Termination mapping
-  - Edge cases (empty root, falsy root, chained switches)
-"""
-
 from __future__ import annotations
 
 import logging
@@ -39,10 +20,6 @@ from volnux.execution.status import ExecutionStatus
 from volnux.parser.protocols import GroupingStrategy
 from volnux.task.group import PipelineTaskGrouping
 
-
-# ---------------------------------------------------------------------------
-# Awaitable helpers — this sandbox's AsyncMock doesn't support ``await``.
-# ---------------------------------------------------------------------------
 
 
 class _Awaitable:
@@ -71,10 +48,6 @@ def _awaitable_fn(return_value=None):
 
     return _fn
 
-
-# ---------------------------------------------------------------------------
-# Mock helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_fake_sub_engine(tasks_processed=0, final_context=None):
@@ -158,6 +131,7 @@ def _make_mock_ctx_with_status(status_obj):
 
 class _TrackableAwaitable:
     """An awaitable that also tracks call count (like AsyncMock)."""
+
     call_count = 0
     call_args_list = []
 
@@ -184,10 +158,6 @@ def _make_sink_ctx(dispatch_side_effect=None):
     return ctx
 
 
-# ===================================================================
-# TestDefaultWorkflowEngineInit
-# ===================================================================
-
 
 class TestDefaultWorkflowEngineInit:
     def test_default_params(self):
@@ -196,9 +166,7 @@ class TestDefaultWorkflowEngineInit:
         assert engine.strict_mode is True
 
     def test_custom_params(self):
-        engine = DefaultWorkflowEngine(
-            enable_debug_logging=True, strict_mode=False
-        )
+        engine = DefaultWorkflowEngine(enable_debug_logging=True, strict_mode=False)
         assert engine.enable_debug_logging is True
         assert engine.strict_mode is False
 
@@ -252,10 +220,6 @@ class TestDefaultWorkflowEngineInit:
         assert len(engine.sink_queue) == 0
 
 
-# ===================================================================
-# TestQueueProperties
-# ===================================================================
-
 
 class TestQueueProperties:
     def test_task_queue_is_mutable_deque(self):
@@ -279,15 +243,12 @@ class TestQueueProperties:
         assert engine.sink_queue is engine._sink_queue
 
 
-# ===================================================================
-# TestCheckpointAfterTaskOverride
-# ===================================================================
-
 
 class TestCheckpointAfterTaskOverride:
     """The overridden _checkpoint_after_task should NOT increment
     tasks_processed (the execute loop handles counting)."""
 
+    @pytest.mark.asyncio
     async def test_no_checkpointer_is_noop(self):
         engine = DefaultWorkflowEngine()
         mock_ctx = MagicMock()
@@ -295,6 +256,7 @@ class TestCheckpointAfterTaskOverride:
         await engine._checkpoint_after_task(mock_ctx, success=True)
         assert engine.tasks_processed == 5
 
+    @pytest.mark.asyncio
     async def test_with_checkpointer_does_not_increment_counter(self):
         engine = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -308,6 +270,7 @@ class TestCheckpointAfterTaskOverride:
         # Counter should NOT have been incremented by this method
         assert engine.tasks_processed == 5
 
+    @pytest.mark.asyncio
     async def test_with_checkpointer_persists_for_per_task(self):
         engine = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -319,6 +282,7 @@ class TestCheckpointAfterTaskOverride:
         await engine._checkpoint_after_task(mock_ctx, success=True)
         mock_ctx.persist.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_with_checkpointer_persists_for_on_state_change(self):
         engine = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -330,6 +294,7 @@ class TestCheckpointAfterTaskOverride:
         await engine._checkpoint_after_task(mock_ctx, success=True)
         mock_ctx.persist.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_with_checkpointer_no_persist_for_periodic(self):
         engine = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -341,6 +306,7 @@ class TestCheckpointAfterTaskOverride:
         await engine._checkpoint_after_task(mock_ctx, success=True)
         mock_ctx.persist.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_clears_current_task_node(self):
         engine = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -354,12 +320,11 @@ class TestCheckpointAfterTaskOverride:
         assert engine.current_task_node is None
 
 
-# ===================================================================
-# TestExecute
-# ===================================================================
 
 
 class TestExecute:
+
+    @pytest.mark.asyncio
     async def test_none_root_task_returns_completed_zero_tasks(self):
         engine = DefaultWorkflowEngine()
         result = await engine.execute(None, MagicMock())
@@ -367,6 +332,7 @@ class TestExecute:
         assert result.tasks_processed == 0
         assert result.final_context is None
 
+    @pytest.mark.asyncio
     async def test_falsy_root_task_returns_completed_zero_tasks(self):
         """Empty string, 0, [] etc. should all be treated as no root."""
         engine = DefaultWorkflowEngine()
@@ -374,19 +340,26 @@ class TestExecute:
         assert result.status == EngineExecutionResult.COMPLETED
         assert result.tasks_processed == 0
 
+    @pytest.mark.asyncio
     async def test_single_task_no_next_returns_completed(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None) as m_detect, \
-             patch.object(engine, "_build_context", return_value=mock_ctx) as m_build, \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False) as m_switch, \
-             patch.object(engine, "_resolve_next_task", return_value=None) as m_resolve, \
-             patch.object(engine, "_drain_sink_nodes") as m_drain:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ) as m_detect, patch.object(
+            engine, "_build_context", return_value=mock_ctx
+        ) as m_build, patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ) as m_switch, patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ) as m_resolve, patch.object(
+            engine, "_drain_sink_nodes"
+        ) as m_drain:
 
             result = await engine.execute(task, pipeline)
 
@@ -406,6 +379,7 @@ class TestExecute:
             m_drain.assert_called_once_with(pipeline)
             assert engine.final_context is mock_ctx
 
+    @pytest.mark.asyncio
     async def test_multi_task_workflow_processes_all_tasks(self):
         engine = DefaultWorkflowEngine()
         task1 = _make_task()
@@ -415,13 +389,19 @@ class TestExecute:
         ctx1 = _make_mock_ctx()
         ctx2 = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", side_effect=[ctx1, ctx2]) as m_build, \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", side_effect=[task2, None]) as m_resolve, \
-             patch.object(engine, "_drain_sink_nodes") as m_drain:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", side_effect=[ctx1, ctx2]
+        ) as m_build, patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", side_effect=[task2, None]
+        ) as m_resolve, patch.object(
+            engine, "_drain_sink_nodes"
+        ) as m_drain:
 
             result = await engine.execute(task1, pipeline)
 
@@ -432,6 +412,7 @@ class TestExecute:
             m_drain.assert_called_once_with(pipeline)
             assert engine.final_context is ctx2
 
+    @pytest.mark.asyncio
     async def test_final_context_is_last_processed_context(self):
         engine = DefaultWorkflowEngine()
         task1 = _make_task()
@@ -441,27 +422,37 @@ class TestExecute:
         ctx1 = _make_mock_ctx()
         ctx2 = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", side_effect=[ctx1, ctx2]), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", side_effect=[task2, None]), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", side_effect=[ctx1, ctx2]
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", side_effect=[task2, None]
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task1, pipeline)
             assert engine.final_context is ctx2
 
+    @pytest.mark.asyncio
     async def test_strict_mode_exception_returns_failed(self):
         engine = DefaultWorkflowEngine(strict_mode=True)
         task = _make_task()
         pipeline = MagicMock()
         error = RuntimeError("boom")
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", side_effect=error) as m_build, \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", side_effect=error
+        ) as m_build, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             result = await engine.execute(task, pipeline)
 
@@ -470,6 +461,7 @@ class TestExecute:
             assert result.tasks_processed == 1
             m_build.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_non_strict_mode_continues_on_error(self):
         """In non-strict mode the inner exception is logged and the loop
         continues to whatever remains in the queue."""
@@ -483,12 +475,15 @@ class TestExecute:
 
         build_effects = [ctx1, RuntimeError("task2 error"), ctx2]
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", side_effect=[task2, None]), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_should_terminate", return_value=False), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", side_effect=[task2, None]
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             with patch.object(
                 engine, "_build_context", side_effect=build_effects
@@ -499,6 +494,7 @@ class TestExecute:
                 assert result.tasks_processed == 2
                 assert m_build.call_count == 2
 
+    @pytest.mark.asyncio
     async def test_fatal_outer_exception_returns_failed(self):
         """An exception outside the inner try/except (e.g. from
         ``_drain_sink_nodes`` in strict mode) hits the outer handler."""
@@ -508,13 +504,17 @@ class TestExecute:
         mock_ctx = _make_mock_ctx()
         fatal = RuntimeError("fatal")
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes", side_effect=fatal):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes", side_effect=fatal
+        ):
 
             result = await engine.execute(task, pipeline)
 
@@ -523,26 +523,30 @@ class TestExecute:
             assert result.tasks_processed == 1
 
 
-# ===================================================================
-# TestExecuteStateReset
-# ===================================================================
 
 
 class TestExecuteStateReset:
     """Verify that execute() resets internal state for a fresh run."""
 
+    @pytest.mark.asyncio
     async def test_queues_cleared_between_executions(self):
         engine = DefaultWorkflowEngine()
         task1 = _make_task()
         pipeline = MagicMock()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=_make_mock_ctx()
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             # First execution
             await engine.execute(task1, pipeline)
@@ -552,19 +556,24 @@ class TestExecuteStateReset:
             await engine.execute(task1, pipeline)
             assert engine.tasks_processed == 1  # not 2
 
+    @pytest.mark.asyncio
     async def test_final_context_reset_between_executions(self):
         engine = DefaultWorkflowEngine()
         task1 = _make_task()
         pipeline = MagicMock()
         ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task1, pipeline)
             assert engine.final_context is ctx
@@ -576,6 +585,7 @@ class TestExecuteStateReset:
                 await engine.execute(task1, pipeline)
             assert engine.final_context is ctx2
 
+    @pytest.mark.asyncio
     async def test_current_task_node_reset_at_start(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
@@ -584,13 +594,19 @@ class TestExecuteStateReset:
         # Set stale state
         engine.current_task_node = TaskNode(task=MagicMock())
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=_make_mock_ctx()
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
             # After completion, current_task_node should be None
@@ -598,14 +614,11 @@ class TestExecuteStateReset:
             assert engine.current_task_node is None
 
 
-# ===================================================================
-# TestExecuteCheckpointIntegration
-# ===================================================================
-
 
 class TestExecuteCheckpointIntegration:
     """Verify that execute() calls checkpoint hooks when configured."""
 
+    @pytest.mark.asyncio
     async def test_checkpoint_hooks_called_when_enabled(self):
         engine = DefaultWorkflowEngine(enable_checkpointing=True)
         engine.enable_checkpointing(
@@ -616,36 +629,49 @@ class TestExecuteCheckpointIntegration:
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"), \
-             patch.object(engine, "_checkpoint_before_task", new_callable=AsyncMock) as m_before, \
-             patch.object(engine, "_checkpoint_after_task", new_callable=AsyncMock) as m_after:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ), patch.object(
+            engine, "_checkpoint_before_task", new_callable=AsyncMock
+        ) as m_before, patch.object(
+            engine, "_checkpoint_after_task", new_callable=AsyncMock
+        ) as m_after:
 
             await engine.execute(task, pipeline)
 
             m_before.assert_awaited_once()
             m_after.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_checkpoint_hooks_not_called_when_disabled(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"), \
-             patch.object(engine, "_checkpoint_before_task", new_callable=AsyncMock) as m_before, \
-             patch.object(engine, "_checkpoint_after_task", new_callable=AsyncMock) as m_after:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ), patch.object(
+            engine, "_checkpoint_before_task", new_callable=AsyncMock
+        ) as m_before, patch.object(
+            engine, "_checkpoint_after_task", new_callable=AsyncMock
+        ) as m_after:
 
             await engine.execute(task, pipeline)
 
@@ -655,12 +681,12 @@ class TestExecuteCheckpointIntegration:
             m_after.assert_awaited_once()
 
 
-# ===================================================================
-# TestExecuteEarlyTermination
-# ===================================================================
+
 
 
 class TestExecuteEarlyTermination:
+
+    @pytest.mark.asyncio
     async def test_cancelled_returns_terminated_early(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
@@ -669,16 +695,22 @@ class TestExecuteEarlyTermination:
         with _patched_status() as ms:
             mock_ctx = _make_mock_ctx_with_status(ms.CANCELLED)
 
-            with patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-                 patch.object(engine, "_build_context", return_value=mock_ctx), \
-                 patch.object(engine, "_handle_task_switch", return_value=False), \
-                 patch.object(engine, "_resolve_next_task", return_value=None):
+            with patch.object(
+                engine, "_detect_parallel_tasks", return_value=None
+            ), patch.object(
+                engine, "_build_context", return_value=mock_ctx
+            ), patch.object(
+                engine, "_handle_task_switch", return_value=False
+            ), patch.object(
+                engine, "_resolve_next_task", return_value=None
+            ):
 
                 result = await engine.execute(task, pipeline)
                 assert result.status == EngineExecutionResult.TERMINATED_EARLY
                 assert result.tasks_processed == 1
                 assert result.final_context is mock_ctx
 
+    @pytest.mark.asyncio
     async def test_aborted_returns_terminated_early(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
@@ -687,38 +719,47 @@ class TestExecuteEarlyTermination:
         with _patched_status() as ms:
             mock_ctx = _make_mock_ctx_with_status(ms.ABORTED)
 
-            with patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-                 patch.object(engine, "_build_context", return_value=mock_ctx), \
-                 patch.object(engine, "_handle_task_switch", return_value=False), \
-                 patch.object(engine, "_resolve_next_task", return_value=None):
+            with patch.object(
+                engine, "_detect_parallel_tasks", return_value=None
+            ), patch.object(
+                engine, "_build_context", return_value=mock_ctx
+            ), patch.object(
+                engine, "_handle_task_switch", return_value=False
+            ), patch.object(
+                engine, "_resolve_next_task", return_value=None
+            ):
 
                 result = await engine.execute(task, pipeline)
                 assert result.status == EngineExecutionResult.TERMINATED_EARLY
                 assert result.tasks_processed == 1
 
+    @pytest.mark.asyncio
     async def test_normal_status_does_not_terminate(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=_make_mock_ctx()
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             result = await engine.execute(task, pipeline)
             assert result.status == EngineExecutionResult.COMPLETED
 
 
-# ===================================================================
-# TestExecuteTaskSwitching
-# ===================================================================
-
-
 class TestExecuteTaskSwitching:
+
+    @pytest.mark.asyncio
     async def test_switch_schedules_new_task(self):
         """When ``_handle_task_switch`` returns True the loop ``continue``s,
         skipping ``_resolve_next_task`` for that iteration."""
@@ -736,13 +777,19 @@ class TestExecuteTaskSwitching:
                 return True
             return False
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx) as m_build, \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", side_effect=_switch_side_effect) as m_switch, \
-             patch.object(engine, "_resolve_next_task", return_value=None) as m_resolve, \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=mock_ctx
+        ) as m_build, patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", side_effect=_switch_side_effect
+        ) as m_switch, patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ) as m_resolve, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
 
@@ -750,25 +797,31 @@ class TestExecuteTaskSwitching:
             assert m_switch.call_count == 2
             assert m_build.call_count == 2
 
+    @pytest.mark.asyncio
     async def test_no_descriptor_configured_does_not_switch(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False) as m_switch, \
-             patch.object(engine, "_resolve_next_task", return_value=None) as m_resolve, \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ) as m_switch, patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ) as m_resolve, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
 
             m_switch.assert_called_once()
             m_resolve.assert_called_once_with(task, mock_ctx)
 
+    @pytest.mark.asyncio
     async def test_switch_to_nonexistent_descriptor_raises(self):
         engine = DefaultWorkflowEngine(strict_mode=True)
         task = _make_task()
@@ -781,11 +834,13 @@ class TestExecuteTaskSwitching:
 
         switch_error = _FakeSwitchError("bad desc")
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_handle_task_switch", side_effect=switch_error), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_handle_task_switch", side_effect=switch_error
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             result = await engine.execute(task, pipeline)
 
@@ -793,12 +848,10 @@ class TestExecuteTaskSwitching:
             assert result.error is switch_error
 
 
-# ===================================================================
-# TestExecuteConditionalBranching
-# ===================================================================
-
 
 class TestExecuteConditionalBranching:
+
+    @pytest.mark.asyncio
     async def test_conditional_success_follows_success_event(self):
         engine = DefaultWorkflowEngine()
         task = _make_task(is_conditional=True)
@@ -806,17 +859,22 @@ class TestExecuteConditionalBranching:
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_evaluate_conditional_branch", return_value=next_task) as m_eval, \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_evaluate_conditional_branch", return_value=next_task
+        ) as m_eval, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
             m_eval.assert_called_once_with(task, mock_ctx)
 
+    @pytest.mark.asyncio
     async def test_conditional_failure_follows_failure_event(self):
         engine = DefaultWorkflowEngine()
         task = _make_task(is_conditional=True)
@@ -824,30 +882,39 @@ class TestExecuteConditionalBranching:
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_evaluate_conditional_branch", return_value=next_task) as m_eval, \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_evaluate_conditional_branch", return_value=next_task
+        ) as m_eval, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
             m_eval.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_conditional_no_result_returns_none_workflow_ends(self):
         engine = DefaultWorkflowEngine()
         task = _make_task(is_conditional=True)
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_evaluate_conditional_branch", return_value=None) as m_eval, \
-             patch.object(engine, "_drain_sink_nodes") as m_drain:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_evaluate_conditional_branch", return_value=None
+        ) as m_eval, patch.object(
+            engine, "_drain_sink_nodes"
+        ) as m_drain:
 
             result = await engine.execute(task, pipeline)
 
@@ -856,31 +923,35 @@ class TestExecuteConditionalBranching:
             m_drain.assert_called_once_with(pipeline)
 
 
-# ===================================================================
-# TestExecuteParallelTasks
-# ===================================================================
-
-
 class TestExecuteParallelTasks:
+
+    @pytest.mark.asyncio
     async def test_non_parallel_single_task_profile(self):
         engine = DefaultWorkflowEngine()
         task = _make_task(is_parallel_execution_node=False)
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx) as m_build, \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=mock_ctx
+        ) as m_build, patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
 
             kwargs = m_build.call_args[1]
             assert kwargs["parallel_tasks"] is None
 
+    @pytest.mark.asyncio
     async def test_parallel_chain_gets_list_of_task_profiles(self):
         engine = DefaultWorkflowEngine()
         task1 = _make_task(is_parallel_execution_node=True)
@@ -889,13 +960,19 @@ class TestExecuteParallelTasks:
         mock_ctx = _make_mock_ctx()
         parallel_set = {task1, task2}
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=parallel_set), \
-             patch.object(engine, "_build_context", return_value=mock_ctx) as m_build, \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=parallel_set
+        ), patch.object(
+            engine, "_build_context", return_value=mock_ctx
+        ) as m_build, patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task1, pipeline)
 
@@ -903,30 +980,34 @@ class TestExecuteParallelTasks:
             assert kwargs["parallel_tasks"] is parallel_set
 
 
-# ===================================================================
-# TestExecuteContextChaining
-# ===================================================================
-
-
 class TestExecuteContextChaining:
+
+    @pytest.mark.asyncio
     async def test_first_context_set_as_pipeline_root(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext", return_value=mock_ctx) as MC, \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext", return_value=mock_ctx
+        ) as MC, patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task, pipeline)
 
             assert pipeline.execution_context is mock_ctx
 
+    @pytest.mark.asyncio
     async def test_subsequent_contexts_linked(self):
         engine = DefaultWorkflowEngine()
         task1 = _make_task()
@@ -937,18 +1018,24 @@ class TestExecuteContextChaining:
         ctx1 = _make_mock_ctx()
         ctx2 = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext", side_effect=[ctx1, ctx2]), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext", side_effect=[ctx1, ctx2]
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(task1, pipeline)
 
             assert ctx2.previous_context is ctx1
             assert ctx1.next_context is ctx2
 
+    @pytest.mark.asyncio
     async def test_sink_nodes_collected_in_sink_queue(self):
         """Non-first tasks with ``sink_node`` should be collected into the
         engine's sink queue."""
@@ -962,12 +1049,17 @@ class TestExecuteContextChaining:
         ctx1 = _make_mock_ctx()
         ctx2 = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext", side_effect=[ctx1, ctx2]), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_drain_sink_nodes") as m_drain:
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext", side_effect=[ctx1, ctx2]
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ) as m_drain:
 
             await engine.execute(task1, pipeline)
 
@@ -976,12 +1068,11 @@ class TestExecuteContextChaining:
             assert sink in engine.sink_queue
 
 
-# ===================================================================
-# TestExecuteSinkNodes
-# ===================================================================
 
 
 class TestExecuteSinkNodes:
+
+    @pytest.mark.asyncio
     async def test_sink_nodes_executed_after_main_queue(self):
         engine = DefaultWorkflowEngine()
         sink = _make_task(name="sink")
@@ -994,18 +1085,23 @@ class TestExecuteSinkNodes:
         ctx2 = _make_mock_ctx()
         sink_ctx = _make_sink_ctx()
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext",
-                   side_effect=[ctx1, ctx2, sink_ctx]), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False):
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext",
+            side_effect=[ctx1, ctx2, sink_ctx],
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ):
 
             await engine.execute(task1, pipeline)
 
             # Sink context was dispatched (async via _Awaitable)
             assert sink_ctx.dispatch.call_count >= 1
 
+    @pytest.mark.asyncio
     async def test_sink_node_error_strict_mode_returns_failed(self):
         engine = DefaultWorkflowEngine(strict_mode=True)
         sink = _make_task(name="sink")
@@ -1026,12 +1122,16 @@ class TestExecuteSinkNodes:
         sink_ctx = MagicMock()
         object.__setattr__(sink_ctx, "dispatch", _failing_dispatch)
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext",
-                   side_effect=[ctx1, ctx2, sink_ctx]), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False):
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext",
+            side_effect=[ctx1, ctx2, sink_ctx],
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ):
 
             result = await engine.execute(task1, pipeline)
 
@@ -1040,6 +1140,7 @@ class TestExecuteSinkNodes:
             assert result.status == EngineExecutionResult.FAILED
             assert result.error is sink_error
 
+    @pytest.mark.asyncio
     async def test_sink_node_error_non_strict_mode_continues(self):
         engine = DefaultWorkflowEngine(strict_mode=False)
         sink1 = _make_task(name="sink1")
@@ -1063,12 +1164,16 @@ class TestExecuteSinkNodes:
         object.__setattr__(sink_ctx1, "dispatch", _failing_dispatch)
         sink_ctx2 = _make_sink_ctx()
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext",
-                   side_effect=[ctx1, ctx2, ctx3, sink_ctx1, sink_ctx2]), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False):
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext",
+            side_effect=[ctx1, ctx2, ctx3, sink_ctx1, sink_ctx2],
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ):
 
             result = await engine.execute(task1, pipeline)
 
@@ -1076,6 +1181,7 @@ class TestExecuteSinkNodes:
             assert result.status == EngineExecutionResult.COMPLETED
             assert sink_ctx2.dispatch.call_count >= 1
 
+    @pytest.mark.asyncio
     async def test_empty_sink_queue_noop(self):
         """When no sink nodes are collected, ``_drain_sink_nodes`` is a no-op."""
         engine = DefaultWorkflowEngine()
@@ -1083,21 +1189,23 @@ class TestExecuteSinkNodes:
         pipeline = MagicMock()
         ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch("volnux.engine.default_engine.ExecutionContext", return_value=ctx), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None):
+        with _patched_status(), patch(
+            "volnux.engine.default_engine.ExecutionContext", return_value=ctx
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ):
 
             # Let the real _drain_sink_nodes run with an empty queue.
             result = await engine.execute(task, pipeline)
             assert result.status == EngineExecutionResult.COMPLETED
 
 
-# ===================================================================
-# TestDetectParallelTasks
-# ===================================================================
 
 
 class TestDetectParallelTasks:
@@ -1168,13 +1276,11 @@ class TestDetectParallelTasks:
                 assert "2 parallel tasks" in call_args
 
 
-# ===================================================================
-# TestBuildContext
-# ===================================================================
-
 
 class TestBuildContext:
-    def test_first_context_set_as_pipeline_root(self):
+
+    @pytest.mark.asyncio
+    async def test_first_context_set_as_pipeline_root(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
@@ -1183,15 +1289,18 @@ class TestBuildContext:
             mock_instance = MagicMock()
             MC.return_value = mock_instance
 
-            ctx = engine._build_context(
-                task=task, pipeline=pipeline, previous_context=None,
+            ctx = await engine._build_context(
+                task=task,
+                pipeline=pipeline,
+                previous_context=None,
             )
 
             assert ctx is mock_instance
             assert pipeline.execution_context is mock_instance
             MC.assert_called_once_with(pipeline=pipeline, task_profiles=task)
 
-    def test_subsequent_context_sink_collected_and_chained(self):
+    @pytest.mark.asyncio
+    async def test_subsequent_context_sink_collected_and_chained(self):
         engine = DefaultWorkflowEngine()
         sink_task = _make_task(name="sink")
         task = _make_task(sink_node=sink_task)
@@ -1202,8 +1311,10 @@ class TestBuildContext:
             mock_instance = MagicMock()
             MC.return_value = mock_instance
 
-            ctx = engine._build_context(
-                task=task, pipeline=pipeline, previous_context=prev_ctx,
+            ctx = await engine._build_context(
+                task=task,
+                pipeline=pipeline,
+                previous_context=prev_ctx,
             )
 
             # Sink node should be collected in engine's sink queue
@@ -1214,15 +1325,18 @@ class TestBuildContext:
             # Pipeline root is NOT overwritten
             assert pipeline.execution_context is not mock_instance
 
-    def test_parallel_tasks_context_created_with_list(self):
+    @pytest.mark.asyncio
+    async def test_parallel_tasks_context_created_with_list(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
         parallel_set = {task, _make_task()}
 
         with patch("volnux.engine.default_engine.ExecutionContext") as MC:
-            engine._build_context(
-                task=task, pipeline=pipeline, previous_context=None,
+            await engine._build_context(
+                task=task,
+                pipeline=pipeline,
+                previous_context=None,
                 parallel_tasks=parallel_set,
             )
 
@@ -1230,20 +1344,24 @@ class TestBuildContext:
             assert isinstance(call_kwargs["task_profiles"], list)
             assert set(call_kwargs["task_profiles"]) == parallel_set
 
-    def test_non_parallel_context_created_with_single_task(self):
+    @pytest.mark.asyncio
+    async def test_non_parallel_context_created_with_single_task(self):
         engine = DefaultWorkflowEngine()
         task = _make_task()
         pipeline = MagicMock()
 
         with patch("volnux.engine.default_engine.ExecutionContext") as MC:
-            engine._build_context(
-                task=task, pipeline=pipeline, previous_context=None,
+            await engine._build_context(
+                task=task,
+                pipeline=pipeline,
+                previous_context=None,
             )
 
             call_kwargs = MC.call_args[1]
             assert call_kwargs["task_profiles"] is task
 
-    def test_no_sink_when_none(self):
+    @pytest.mark.asyncio
+    async def test_no_sink_when_none(self):
         """Task without sink_node should not add anything to sink_queue."""
         engine = DefaultWorkflowEngine()
         task = _make_task(sink_node=None)
@@ -1251,15 +1369,13 @@ class TestBuildContext:
         prev_ctx = MagicMock()
 
         with patch("volnux.engine.default_engine.ExecutionContext"):
-            engine._build_context(
-                task=task, pipeline=pipeline, previous_context=prev_ctx,
+            await engine._build_context(
+                task=task,
+                pipeline=pipeline,
+                previous_context=prev_ctx,
             )
             assert len(engine.sink_queue) == 0
 
-
-# ===================================================================
-# TestShouldTerminate
-# ===================================================================
 
 
 class TestShouldTerminate:
@@ -1318,10 +1434,6 @@ class TestShouldTerminate:
                 assert "Early termination" in call_args
 
 
-# ===================================================================
-# TestMapTerminationStatus
-# ===================================================================
-
 
 class TestMapTerminationStatus:
     def test_paused_returns_suspended(self):
@@ -1351,11 +1463,6 @@ class TestMapTerminationStatus:
             engine._map_termination_status(MagicMock())
             == EngineExecutionResult.TERMINATED_EARLY
         )
-
-
-# ===================================================================
-# TestHandleTaskSwitch
-# ===================================================================
 
 
 class TestHandleTaskSwitch:
@@ -1420,9 +1527,7 @@ class TestHandleTaskSwitch:
             def __init__(self, *a, **kw):
                 super().__init__(*a)
 
-        with patch(
-            "volnux.engine.default_engine.TaskSwitchingError", _FakeSwitchError
-        ):
+        with patch("volnux.engine.default_engine.TaskSwitchingError", _FakeSwitchError):
             with pytest.raises(_FakeSwitchError) as exc_info:
                 engine._handle_task_switch(task, state, queue)
 
@@ -1447,11 +1552,6 @@ class TestHandleTaskSwitch:
             mock_logger.debug.assert_called_once()
             call_args = mock_logger.debug.call_args[0][0]
             assert "desc_Y" in call_args
-
-
-# ===================================================================
-# TestResolveNextTask
-# ===================================================================
 
 
 class TestResolveNextTask:
@@ -1482,11 +1582,6 @@ class TestResolveNextTask:
 
         m.assert_called_once_with(task, mock_ctx)
         assert result is next_task
-
-
-# ===================================================================
-# TestEvaluateConditionalBranch
-# ===================================================================
 
 
 class TestEvaluateConditionalBranch:
@@ -1565,11 +1660,6 @@ class TestEvaluateConditionalBranch:
             assert "success" in call_args
 
 
-# ===================================================================
-# TestFollowSequentialFlow
-# ===================================================================
-
-
 class TestFollowSequentialFlow:
     def test_multitask_uses_decision_task(self):
         engine = DefaultWorkflowEngine()
@@ -1610,12 +1700,9 @@ class TestFollowSequentialFlow:
         assert result is None
 
 
-# ===================================================================
-# TestDrainSinkNodes
-# ===================================================================
-
-
 class TestDrainSinkNodes:
+
+    @pytest.mark.asyncio
     async def test_empty_queue_noop(self):
         engine = DefaultWorkflowEngine()
         pipeline = MagicMock()
@@ -1623,6 +1710,7 @@ class TestDrainSinkNodes:
         await engine._drain_sink_nodes(pipeline)
         # Should return silently, no side effects.
 
+    @pytest.mark.asyncio
     async def test_processes_all_sink_nodes_in_order(self):
         engine = DefaultWorkflowEngine()
         pipeline = MagicMock()
@@ -1643,6 +1731,7 @@ class TestDrainSinkNodes:
             assert ctx2.dispatch.call_count >= 1
             assert len(engine.sink_queue) == 0
 
+    @pytest.mark.asyncio
     async def test_strict_mode_raises_on_error(self):
         engine = DefaultWorkflowEngine(strict_mode=True)
         pipeline = MagicMock()
@@ -1661,6 +1750,7 @@ class TestDrainSinkNodes:
             with pytest.raises(RuntimeError, match="sink err"):
                 await engine._drain_sink_nodes(pipeline)
 
+    @pytest.mark.asyncio
     async def test_non_strict_mode_logs_and_continues(self):
         engine = DefaultWorkflowEngine(strict_mode=False)
         pipeline = MagicMock()
@@ -1684,14 +1774,16 @@ class TestDrainSinkNodes:
             assert ctx2.dispatch.call_count >= 1
             assert len(engine.sink_queue) == 0
 
+    @pytest.mark.asyncio
     async def test_debug_logging(self):
         engine = DefaultWorkflowEngine(enable_debug_logging=True)
         pipeline = MagicMock()
         sink = _make_task(name="sink")
         engine.sink_queue.append(sink)
 
-        with patch("volnux.engine.default_engine.ExecutionContext") as MC, \
-             patch("volnux.engine.default_engine.logger") as mock_logger:
+        with patch("volnux.engine.default_engine.ExecutionContext") as MC, patch(
+            "volnux.engine.default_engine.logger"
+        ) as mock_logger:
 
             MC.return_value = _make_sink_ctx()
             await engine._drain_sink_nodes(pipeline)
@@ -1701,78 +1793,85 @@ class TestDrainSinkNodes:
             assert "1 sink nodes" in call_args
 
 
-# ===================================================================
-# TestDebugLogging
-# ===================================================================
-
 
 class TestDebugLogging:
+
+    @pytest.mark.asyncio
     async def test_execute_logs_task_processing(self):
         engine = DefaultWorkflowEngine(enable_debug_logging=True)
         task = _make_task()
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"), \
-             patch("volnux.engine.default_engine.logger") as mock_logger:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ), patch(
+            "volnux.engine.default_engine.logger"
+        ) as mock_logger:
 
             await engine.execute(task, pipeline)
 
             # Should log task processing
-            debug_calls = [
-                c[0][0] for c in mock_logger.debug.call_args_list
-            ]
+            debug_calls = [c[0][0] for c in mock_logger.debug.call_args_list]
             assert any("Processing task" in c for c in debug_calls)
 
+    @pytest.mark.asyncio
     async def test_execute_logs_completion_count(self):
         engine = DefaultWorkflowEngine(enable_debug_logging=True)
         task = _make_task()
         pipeline = MagicMock()
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"), \
-             patch("volnux.engine.default_engine.logger") as mock_logger:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ), patch(
+            "volnux.engine.default_engine.logger"
+        ) as mock_logger:
 
             await engine.execute(task, pipeline)
 
-            debug_calls = [
-                c[0][0] for c in mock_logger.debug.call_args_list
-            ]
+            debug_calls = [c[0][0] for c in mock_logger.debug.call_args_list]
             assert any("Completed processing" in c for c in debug_calls)
             assert any("1 tasks" in c for c in debug_calls)
 
-
-# ===================================================================
-# TestExecuteCheckpointerStartup
-# ===================================================================
 
 
 class TestExecuteCheckpointerStartup:
     """Checkpoint manager's async worker starts once, at root-engine
     startup only — never from a sub-engine."""
 
+    @pytest.mark.asyncio
     async def _run(self, engine, task, pipeline, mock_ctx):
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(engine, "_build_context", return_value=mock_ctx), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
             return await engine.execute(task, pipeline)
 
+    @pytest.mark.asyncio
     async def test_root_engine_starts_checkpointer_once(self):
         engine = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -1783,6 +1882,7 @@ class TestExecuteCheckpointerStartup:
 
         mock_checkpointer.start.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_child_engine_never_starts_checkpointer(self):
         parent = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -1796,21 +1896,19 @@ class TestExecuteCheckpointerStartup:
 
         mock_checkpointer.start.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_no_checkpointer_configured_does_not_error(self):
         engine = DefaultWorkflowEngine()
         result = await self._run(engine, _make_task(), MagicMock(), _make_mock_ctx())
         assert result.status == EngineExecutionResult.COMPLETED
 
 
-# ===================================================================
-# TestSpawnSubEngineCheckpointInheritance
-# ===================================================================
-
 
 class TestSpawnSubEngineCheckpointInheritance:
     """A sub-engine only ever inherits the parent's checkpoint manager —
     it must never build its own."""
 
+    @pytest.mark.asyncio
     async def test_child_shares_parent_checkpointer_instance(self):
         parent = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -1821,6 +1919,7 @@ class TestSpawnSubEngineCheckpointInheritance:
         assert child._checkpointer is mock_checkpointer
         assert child._checkpoint_frequency == CheckPointFrequency.PER_TASK
 
+    @pytest.mark.asyncio
     async def test_no_spurious_warning_when_parent_has_checkpointer(self):
         parent = DefaultWorkflowEngine()
         mock_checkpointer = MagicMock()
@@ -1830,11 +1929,13 @@ class TestSpawnSubEngineCheckpointInheritance:
             await parent.spawn_sub_engine(_make_task(), MagicMock())
             mock_logger.warning.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_child_without_parent_checkpointer_has_none(self):
         parent = DefaultWorkflowEngine()
         child = await parent.spawn_sub_engine(_make_task(), MagicMock())
         assert child._checkpointer is None
 
+    @pytest.mark.asyncio
     async def test_child_records_parent_and_error_strategy(self):
         parent = DefaultWorkflowEngine()
         child = await parent.spawn_sub_engine(
@@ -1845,12 +1946,10 @@ class TestSpawnSubEngineCheckpointInheritance:
         assert child._error_strategy == SubgraphErrorStrategy.ISOLATE
 
 
-# ===================================================================
-# TestExecuteSubgraphs
-# ===================================================================
-
 
 class TestExecuteSubgraphs:
+
+    @pytest.mark.asyncio
     async def test_execute_subgraph_success_merges_tasks_processed(self):
         engine = DefaultWorkflowEngine()
         engine.tasks_processed = 0
@@ -1866,6 +1965,7 @@ class TestExecuteSubgraphs:
         assert result is expected
         assert engine.tasks_processed == 3
 
+    @pytest.mark.asyncio
     async def test_execute_subgraph_treat_as_failure_still_merges_tasks_processed(self):
         """Previously the error path returned an EngineResult without ever
         adding sub_engine.tasks_processed to self.tasks_processed."""
@@ -1877,7 +1977,8 @@ class TestExecuteSubgraphs:
 
         with patch.object(engine, "spawn_sub_engine", AsyncMock(return_value=child)):
             result = await engine.execute_subgraph(
-                _make_task(), MagicMock(),
+                _make_task(),
+                MagicMock(),
                 error_strategy=SubgraphErrorStrategy.TREAT_AS_FAILURE,
             )
 
@@ -1885,6 +1986,7 @@ class TestExecuteSubgraphs:
         assert result.error is error
         assert engine.tasks_processed == 2
 
+    @pytest.mark.asyncio
     async def test_execute_subgraph_bubble_up_reraises(self):
         engine = DefaultWorkflowEngine()
         child = _make_fake_sub_engine(tasks_processed=1)
@@ -1894,10 +1996,12 @@ class TestExecuteSubgraphs:
         with patch.object(engine, "spawn_sub_engine", AsyncMock(return_value=child)):
             with pytest.raises(RuntimeError):
                 await engine.execute_subgraph(
-                    _make_task(), MagicMock(),
+                    _make_task(),
+                    MagicMock(),
                     error_strategy=SubgraphErrorStrategy.BUBBLE_UP,
                 )
 
+    @pytest.mark.asyncio
     async def test_execute_subgraph_isolate_returns_synthetic_completed(self):
         engine = DefaultWorkflowEngine()
         child = _make_fake_sub_engine(tasks_processed=1)
@@ -1911,6 +2015,7 @@ class TestExecuteSubgraphs:
         assert result.status == EngineExecutionResult.COMPLETED
         assert result.final_context is None
 
+    @pytest.mark.asyncio
     async def test_concurrent_execution_runs_all_and_merges_counts(self):
         engine = DefaultWorkflowEngine()
         engine.tasks_processed = 0
@@ -1921,15 +2026,14 @@ class TestExecuteSubgraphs:
                 status=EngineExecutionResult.COMPLETED, tasks_processed=i + 1
             )
 
-        with patch.object(
-            engine, "spawn_sub_engine", AsyncMock(side_effect=children)
-        ):
+        with patch.object(engine, "spawn_sub_engine", AsyncMock(side_effect=children)):
             results = await engine.execute_subgraphs(tasks, MagicMock())
 
         assert len(results) == 3
         assert all(r.status == EngineExecutionResult.COMPLETED for r in results)
         assert engine.tasks_processed == 1 + 2 + 3
 
+    @pytest.mark.asyncio
     async def test_concurrent_execution_partial_failure_treat_as_failure(self):
         engine = DefaultWorkflowEngine()
         engine.tasks_processed = 0
@@ -1943,11 +2047,14 @@ class TestExecuteSubgraphs:
         failing_child.execute.side_effect = RuntimeError("chain failed")
 
         with patch.object(
-            engine, "spawn_sub_engine",
+            engine,
+            "spawn_sub_engine",
             AsyncMock(side_effect=[ok_child, failing_child]),
         ):
             results = await engine.execute_subgraphs(
-                tasks, MagicMock(), error_strategy=SubgraphErrorStrategy.TREAT_AS_FAILURE
+                tasks,
+                MagicMock(),
+                error_strategy=SubgraphErrorStrategy.TREAT_AS_FAILURE,
             )
 
         statuses = {r.status for r in results}
@@ -1958,6 +2065,7 @@ class TestExecuteSubgraphs:
         # Both children's counts merged despite one failing.
         assert engine.tasks_processed == 3
 
+    @pytest.mark.asyncio
     async def test_concurrent_execution_bubble_up_merges_all_before_raising(self):
         """gather() runs every chain to completion before BUBBLE_UP raises,
         so every child's tasks_processed must still be merged."""
@@ -1973,7 +2081,8 @@ class TestExecuteSubgraphs:
         )
 
         with patch.object(
-            engine, "spawn_sub_engine",
+            engine,
+            "spawn_sub_engine",
             AsyncMock(side_effect=[failing_child, ok_child]),
         ):
             with pytest.raises(RuntimeError):
@@ -1984,11 +2093,6 @@ class TestExecuteSubgraphs:
         assert engine.tasks_processed == 12
 
 
-# ===================================================================
-# TestExecuteTaskGrouping
-# ===================================================================
-
-
 class TestExecuteTaskGrouping:
     """{} grouping: SINGLE_CHAIN executes normally, MULTIPATH_CHAINS fans
     out into execute_subgraphs()."""
@@ -1996,20 +2100,28 @@ class TestExecuteTaskGrouping:
     def _grouping(self, chains):
         return PipelineTaskGrouping(chains=chains)
 
+    @pytest.mark.asyncio
     async def test_single_chain_falls_through_to_normal_dispatch(self):
         engine = DefaultWorkflowEngine()
         grouping = self._grouping([_make_task()])
         assert grouping.strategy == GroupingStrategy.SINGLE_CHAIN
         mock_ctx = _make_mock_ctx()
 
-        with _patched_status(), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=mock_ctx) as m_build, \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"), \
-             patch.object(engine, "execute_subgraphs") as m_subgraphs:
+        with _patched_status(), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=mock_ctx
+        ) as m_build, patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ), patch.object(
+            engine, "execute_subgraphs"
+        ) as m_subgraphs:
 
             result = await engine.execute(grouping, MagicMock())
 
@@ -2017,6 +2129,7 @@ class TestExecuteTaskGrouping:
         m_build.assert_called_once()
         assert result.status == EngineExecutionResult.COMPLETED
 
+    @pytest.mark.asyncio
     async def test_multipath_chains_calls_execute_subgraphs_with_chains(self):
         engine = DefaultWorkflowEngine()
         chain_a, chain_b = _make_task(), _make_task()
@@ -2025,11 +2138,14 @@ class TestExecuteTaskGrouping:
         pipeline = MagicMock()
 
         with patch.object(
-            engine, "execute_subgraphs",
-            AsyncMock(return_value=[
-                EngineResult(status=EngineExecutionResult.COMPLETED),
-                EngineResult(status=EngineExecutionResult.COMPLETED),
-            ]),
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[
+                    EngineResult(status=EngineExecutionResult.COMPLETED),
+                    EngineResult(status=EngineExecutionResult.COMPLETED),
+                ]
+            ),
         ) as m_subgraphs, patch.object(engine, "_drain_sink_nodes"):
 
             result = await engine.execute(grouping, pipeline)
@@ -2037,26 +2153,35 @@ class TestExecuteTaskGrouping:
         m_subgraphs.assert_called_once_with([chain_a, chain_b], pipeline)
         assert result.status == EngineExecutionResult.COMPLETED
 
+    @pytest.mark.asyncio
     async def test_multipath_all_success_continues_to_on_success_event(self):
         engine = DefaultWorkflowEngine()
         grouping = self._grouping([_make_task(), _make_task()])
         next_task = _make_task()
         grouping.condition_node.on_success_event = next_task
 
-        with _patched_status(), \
-             patch.object(
-                 engine, "execute_subgraphs",
-                 AsyncMock(return_value=[
-                     EngineResult(status=EngineExecutionResult.COMPLETED),
-                     EngineResult(status=EngineExecutionResult.COMPLETED),
-                 ]),
-             ), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None), \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[
+                    EngineResult(status=EngineExecutionResult.COMPLETED),
+                    EngineResult(status=EngineExecutionResult.COMPLETED),
+                ]
+            ),
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=_make_mock_ctx()
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ), patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             result = await engine.execute(grouping, MagicMock())
 
@@ -2064,26 +2189,35 @@ class TestExecuteTaskGrouping:
         assert result.tasks_processed == 2
         assert result.status == EngineExecutionResult.COMPLETED
 
+    @pytest.mark.asyncio
     async def test_multipath_any_failed_continues_to_on_failure_event(self):
         engine = DefaultWorkflowEngine()
         grouping = self._grouping([_make_task(), _make_task()])
         failure_task = _make_task()
         grouping.condition_node.on_failure_event = failure_task
 
-        with _patched_status(), \
-             patch.object(
-                 engine, "execute_subgraphs",
-                 AsyncMock(return_value=[
-                     EngineResult(status=EngineExecutionResult.COMPLETED),
-                     EngineResult(status=EngineExecutionResult.FAILED),
-                 ]),
-             ), \
-             patch.object(engine, "_detect_parallel_tasks", return_value=None), \
-             patch.object(engine, "_build_context", return_value=_make_mock_ctx()), \
-             patch.object(engine, "_should_terminate", return_value=False), \
-             patch.object(engine, "_handle_task_switch", return_value=False), \
-             patch.object(engine, "_resolve_next_task", return_value=None) as m_resolve, \
-             patch.object(engine, "_drain_sink_nodes"):
+        with _patched_status(), patch.object(
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[
+                    EngineResult(status=EngineExecutionResult.COMPLETED),
+                    EngineResult(status=EngineExecutionResult.FAILED),
+                ]
+            ),
+        ), patch.object(
+            engine, "_detect_parallel_tasks", return_value=None
+        ), patch.object(
+            engine, "_build_context", return_value=_make_mock_ctx()
+        ), patch.object(
+            engine, "_should_terminate", return_value=False
+        ), patch.object(
+            engine, "_handle_task_switch", return_value=False
+        ), patch.object(
+            engine, "_resolve_next_task", return_value=None
+        ) as m_resolve, patch.object(
+            engine, "_drain_sink_nodes"
+        ):
 
             await engine.execute(grouping, MagicMock())
 
@@ -2091,16 +2225,20 @@ class TestExecuteTaskGrouping:
         # _resolve_next_task only fires for it, not for the grouping itself.
         m_resolve.assert_called_once_with(failure_task, ANY)
 
+    @pytest.mark.asyncio
     async def test_multipath_any_suspended_stops_workflow_early(self):
         engine = DefaultWorkflowEngine()
         grouping = self._grouping([_make_task(), _make_task()])
 
         with patch.object(
-            engine, "execute_subgraphs",
-            AsyncMock(return_value=[
-                EngineResult(status=EngineExecutionResult.COMPLETED),
-                EngineResult(status=EngineExecutionResult.SUSPENDED),
-            ]),
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[
+                    EngineResult(status=EngineExecutionResult.COMPLETED),
+                    EngineResult(status=EngineExecutionResult.SUSPENDED),
+                ]
+            ),
         ), patch.object(engine, "_drain_sink_nodes") as m_drain:
 
             result = await engine.execute(grouping, MagicMock())
@@ -2108,6 +2246,7 @@ class TestExecuteTaskGrouping:
         assert result.status == EngineExecutionResult.SUSPENDED
         m_drain.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_multipath_sink_node_collected(self):
         """_build_context() is bypassed for MULTIPATH_CHAINS, so sink-node
         collection must be replicated at the interception point."""
@@ -2118,8 +2257,11 @@ class TestExecuteTaskGrouping:
         grouping.sink_node = sink
 
         with patch.object(
-            engine, "execute_subgraphs",
-            AsyncMock(return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)]),
+            engine,
+            "execute_subgraphs",
+            AsyncMock(
+                return_value=[EngineResult(status=EngineExecutionResult.COMPLETED)]
+            ),
         ), patch.object(engine, "_drain_sink_nodes") as m_drain:
 
             await engine.execute(grouping, MagicMock())

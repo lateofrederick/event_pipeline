@@ -1,4 +1,4 @@
-""""Shared test configuration and fixtures for volnux checkpoint tests."""
+""" "Shared test configuration and fixtures for volnux checkpoint tests."""
 
 import sys
 from unittest.mock import MagicMock
@@ -18,10 +18,14 @@ def _mock_formax_if_missing():
         except ImportError:
             # Create a minimal mock
             formax_mock = MagicMock()
-            formax_mock.BaseModel = type("BaseModel", (), {
-                "__init__": lambda self, **kwargs: None,
-                "__setattr__": lambda self, k, v: object.__setattr__(self, k, v),
-            })
+            formax_mock.BaseModel = type(
+                "BaseModel",
+                (),
+                {
+                    "__init__": lambda self, **kwargs: None,
+                    "__setattr__": lambda self, k, v: object.__setattr__(self, k, v),
+                },
+            )
             formax_mock.MiniAnnotated = lambda *a, **kw: a[0] if a else None
             formax_mock.Attrib = lambda **kw: kw
             formax_mock.ValidationFlags = MagicMock()

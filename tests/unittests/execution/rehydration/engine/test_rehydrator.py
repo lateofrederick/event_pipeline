@@ -25,20 +25,23 @@ Covers:
 
 from __future__ import annotations
 
+import pytest
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
-import pytest
+from volnux.execution.rehydrator.engine.rehydrator import (
+    LazyRehydrator,
+    LazyContextProxy,
+)
+from volnux.execution.rehydrator.engine.deserializer import StateDeserializer
+from volnux.execution.rehydrator.engine.snapshot import (
+    ContextSnapshot,
+    TraversalSnapshot,
+    TaskSnapshot,
+)
 
-from rehydrator.engine.rehydrator import LazyRehydrator, LazyContextProxy
-from rehydrator.engine.deserializer import StateDeserializer
-from rehydrator.engine.snapshot import ContextSnapshot, TraversalSnapshot, TaskSnapshot
 
-
-# ===========================================================================
-# Helpers
-# ===========================================================================
 def _make_traversal_data(**overrides: Any) -> Dict[str, Any]:
     defaults: Dict[str, Any] = {
         "engine_class_path": "volnux.engine.base.WorkflowEngine",
@@ -107,7 +110,9 @@ def rehydrator() -> LazyRehydrator:
 # ===========================================================================
 class TestLazyContextProxy:
 
-    def test_state_id_accessible_without_resolve(self, rehydrator: LazyRehydrator) -> None:
+    def test_state_id_accessible_without_resolve(
+        self, rehydrator: LazyRehydrator
+    ) -> None:
         proxy = LazyContextProxy(state_id="lazy-001", rehydrator=rehydrator)
         assert proxy.state_id == "lazy-001"
 
@@ -126,7 +131,12 @@ class TestLazyContextProxy:
 
         mock_context = MagicMock()
         mock_context.state_id = "lazy-004"
-        with patch.object(rehydrator, "rehydrate_node", new_callable=MagicMock, return_value=mock_context):
+        with patch.object(
+            rehydrator,
+            "rehydrate_node",
+            new_callable=MagicMock,
+            return_value=mock_context,
+        ):
             proxy._resolve()
 
         assert proxy.is_resolved() is True
@@ -167,14 +177,24 @@ class TestLazyContextProxy:
 
         mock_context = MagicMock()
         mock_context.some_attr = "hello"
-        with patch.object(rehydrator, "rehydrate_node", new_callable=MagicMock, return_value=mock_context):
+        with patch.object(
+            rehydrator,
+            "rehydrate_node",
+            new_callable=MagicMock,
+            return_value=mock_context,
+        ):
             assert proxy.some_attr == "hello"
 
     def test_setattr_non_slot_forwards(self, rehydrator: LazyRehydrator) -> None:
         proxy = LazyContextProxy(state_id="setattr-001", rehydrator=rehydrator)
 
         mock_context = MagicMock()
-        with patch.object(rehydrator, "rehydrate_node", new_callable=MagicMock, return_value=mock_context):
+        with patch.object(
+            rehydrator,
+            "rehydrate_node",
+            new_callable=MagicMock,
+            return_value=mock_context,
+        ):
             proxy.new_value = 42
             assert mock_context.new_value == 42
 
@@ -190,7 +210,12 @@ class TestLazyContextProxy:
 
         mock_context = MagicMock()
         mock_context.__iter__ = MagicMock(return_value=iter([1, 2, 3]))
-        with patch.object(rehydrator, "rehydrate_node", new_callable=MagicMock, return_value=mock_context):
+        with patch.object(
+            rehydrator,
+            "rehydrate_node",
+            new_callable=MagicMock,
+            return_value=mock_context,
+        ):
             result = list(proxy)
             assert result == [1, 2, 3]
 
@@ -198,7 +223,12 @@ class TestLazyContextProxy:
         proxy = LazyContextProxy(state_id="cache-001", rehydrator=rehydrator)
 
         mock_context = MagicMock()
-        with patch.object(rehydrator, "rehydrate_node", new_callable=MagicMock, return_value=mock_context) as mock_rehydrate:
+        with patch.object(
+            rehydrator,
+            "rehydrate_node",
+            new_callable=MagicMock,
+            return_value=mock_context,
+        ) as mock_rehydrate:
             # First resolve
             result1 = proxy._resolve()
             # Second resolve — should use cache
@@ -217,7 +247,12 @@ class TestLazyContextProxy:
             call_count += 1
             return MagicMock(state_id=state_id)
 
-        with patch.object(rehydrator, "rehydrate_node", new_callable=MagicMock, side_effect=_mock_rehydrate):
+        with patch.object(
+            rehydrator,
+            "rehydrate_node",
+            new_callable=MagicMock,
+            side_effect=_mock_rehydrate,
+        ):
             results = []
             barrier = threading.Barrier(3)
 
@@ -268,6 +303,7 @@ class TestLazyRehydratorInit:
 
     def test_cache_is_weak_value_dict(self) -> None:
         import weakref
+
         r = LazyRehydrator()
         assert isinstance(r._cache, weakref.WeakValueDictionary)
 
@@ -297,7 +333,8 @@ class TestLoadSnapshot:
         with patch.object(
             ContextSnapshot, "get_async", AsyncMock(return_value=raw_data)
         ), patch.object(
-            rehydrator.deserializer, "deserialize_context",
+            rehydrator.deserializer,
+            "deserialize_context",
             return_value=mock_snapshot,
         ) as mock_deser:
             result = await rehydrator._load_snapshot("state-load-002")
@@ -311,7 +348,8 @@ class TestLoadSnapshot:
         from volnux.exceptions import ObjectDoesNotExist
 
         with patch.object(
-            ContextSnapshot, "get_async",
+            ContextSnapshot,
+            "get_async",
             AsyncMock(side_effect=ObjectDoesNotExist("state-load-003")),
         ), pytest.raises(RuntimeError, match="state-load-003"):
             await rehydrator._load_snapshot("state-load-003")
@@ -335,17 +373,16 @@ class TestRehydrateNode:
         async def _mock_build(snap):
             return mock_context
 
-        with patch.object(rehydrator, "_load_snapshot", side_effect=_mock_load), \
-             patch.object(rehydrator, "_build_context", side_effect=_mock_build):
+        with patch.object(
+            rehydrator, "_load_snapshot", side_effect=_mock_load
+        ), patch.object(rehydrator, "_build_context", side_effect=_mock_build):
             result1 = await rehydrator.rehydrate_node("cached-001")
             result2 = await rehydrator.rehydrate_node("cached-001")
 
         assert result1 is result2
         assert result1 is mock_context
 
-    async def test_attach_lazy_links_called(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_attach_lazy_links_called(self, rehydrator: LazyRehydrator) -> None:
         mock_snapshot = _make_context_snapshot(
             state_id="links-001",
             parent_id="parent-001",
@@ -353,9 +390,13 @@ class TestRehydrateNode:
         )
         mock_context = MagicMock()
 
-        with patch.object(rehydrator, "_load_snapshot", return_value=mock_snapshot), \
-             patch.object(rehydrator, "_build_context", return_value=mock_context), \
-             patch.object(rehydrator, "_attach_lazy_links") as mock_attach:
+        with patch.object(
+            rehydrator, "_load_snapshot", return_value=mock_snapshot
+        ), patch.object(
+            rehydrator, "_build_context", return_value=mock_context
+        ), patch.object(
+            rehydrator, "_attach_lazy_links"
+        ) as mock_attach:
             await rehydrator.rehydrate_node("links-001")
 
         mock_attach.assert_called_once_with(mock_context, mock_snapshot)
@@ -366,9 +407,7 @@ class TestRehydrateNode:
 # ===========================================================================
 class TestBuildContext:
 
-    async def test_pipeline_reconstructed(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_pipeline_reconstructed(self, rehydrator: LazyRehydrator) -> None:
         mock_pipeline = MagicMock()
         snapshot = _make_context_snapshot(
             pipeline_id="pipe-bc",
@@ -391,28 +430,20 @@ class TestBuildContext:
         # ExecutionContext should have been called with the pipeline
         assert result is mock_context
 
-    async def test_change_object_id_called(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_change_object_id_called(self, rehydrator: LazyRehydrator) -> None:
         snapshot = _make_context_snapshot(state_id="state-change-id")
         snapshot.results = []
 
         mock_context = MagicMock()
 
-        with patch.object(
-            rehydrator, "_reconstruct_pipeline"
-        ), patch(
+        with patch.object(rehydrator, "_reconstruct_pipeline"), patch(
             "volnux.execution.context.ExecutionContext", return_value=mock_context
-        ), patch.object(
-            rehydrator, "_restore_execution_state", new_callable=AsyncMock
-        ):
+        ), patch.object(rehydrator, "_restore_execution_state", new_callable=AsyncMock):
             await rehydrator._build_context(snapshot)
 
         mock_context.change_object_id.assert_called_once_with("state-change-id")
 
-    async def test_workflow_id_set(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_workflow_id_set(self, rehydrator: LazyRehydrator) -> None:
         snapshot = _make_context_snapshot(
             state_id="wf-id-001",
             workflow_id="wf-unique",
@@ -421,20 +452,14 @@ class TestBuildContext:
 
         mock_context = MagicMock()
 
-        with patch.object(
-            rehydrator, "_reconstruct_pipeline"
-        ), patch(
+        with patch.object(rehydrator, "_reconstruct_pipeline"), patch(
             "volnux.execution.context.ExecutionContext", return_value=mock_context
-        ), patch.object(
-            rehydrator, "_restore_execution_state", new_callable=AsyncMock
-        ):
+        ), patch.object(rehydrator, "_restore_execution_state", new_callable=AsyncMock):
             await rehydrator._build_context(snapshot)
 
         assert mock_context.workflow_id == "wf-unique"
 
-    async def test_task_checkpoint_forwarded(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_task_checkpoint_forwarded(self, rehydrator: LazyRehydrator) -> None:
         snapshot = _make_context_snapshot(
             state_id="tcp-001",
         )
@@ -443,33 +468,23 @@ class TestBuildContext:
 
         mock_context = MagicMock()
 
-        with patch.object(
-            rehydrator, "_reconstruct_pipeline"
-        ), patch(
+        with patch.object(rehydrator, "_reconstruct_pipeline"), patch(
             "volnux.execution.context.ExecutionContext", return_value=mock_context
-        ), patch.object(
-            rehydrator, "_restore_execution_state", new_callable=AsyncMock
-        ):
+        ), patch.object(rehydrator, "_restore_execution_state", new_callable=AsyncMock):
             await rehydrator._build_context(snapshot)
 
         mock_context.set_task_checkpoint.assert_called_once_with({"offset": 77})
 
-    async def test_no_task_checkpoint_skips(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_no_task_checkpoint_skips(self, rehydrator: LazyRehydrator) -> None:
         snapshot = _make_context_snapshot(state_id="no-tcp")
         snapshot.traversal.current_task_checkpoint = None
         snapshot.results = []
 
         mock_context = MagicMock()
 
-        with patch.object(
-            rehydrator, "_reconstruct_pipeline"
-        ), patch(
+        with patch.object(rehydrator, "_reconstruct_pipeline"), patch(
             "volnux.execution.context.ExecutionContext", return_value=mock_context
-        ), patch.object(
-            rehydrator, "_restore_execution_state", new_callable=AsyncMock
-        ):
+        ), patch.object(rehydrator, "_restore_execution_state", new_callable=AsyncMock):
             await rehydrator._build_context(snapshot)
 
         mock_context.set_task_checkpoint.assert_not_called()
@@ -487,15 +502,13 @@ class TestReconstructPipeline:
         result = rehydrator._reconstruct_pipeline("pipe-reg", "any.ClassPath")
         assert result is mock_pipeline
 
-    def test_registry_miss_imports_and_caches(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    def test_registry_miss_imports_and_caches(self, rehydrator: LazyRehydrator) -> None:
         mock_pipeline_cls = MagicMock(return_value=MagicMock(id="new-pipe"))
 
-        with patch("rehydrator.engine.rehydrator.import_class", return_value=mock_pipeline_cls):
-            result = rehydrator._reconstruct_pipeline(
-                "pipe-new", "myapp.NewPipeline"
-            )
+        with patch(
+            "rehydrator.engine.rehydrator.import_class", return_value=mock_pipeline_cls
+        ):
+            result = rehydrator._reconstruct_pipeline("pipe-new", "myapp.NewPipeline")
 
         mock_pipeline_cls.assert_called_once()
         assert "pipe-new" in rehydrator.pipeline_registry
@@ -503,9 +516,12 @@ class TestReconstructPipeline:
     def test_with_pipeline_kwargs(self, rehydrator: LazyRehydrator) -> None:
         mock_pipeline_cls = MagicMock(return_value=MagicMock())
 
-        with patch("rehydrator.engine.rehydrator.import_class", return_value=mock_pipeline_cls):
+        with patch(
+            "rehydrator.engine.rehydrator.import_class", return_value=mock_pipeline_cls
+        ):
             rehydrator._reconstruct_pipeline(
-                "pipe-kw", "myapp.KwPipeline",
+                "pipe-kw",
+                "myapp.KwPipeline",
                 pipeline_kwargs={"batch_size": 100},
             )
 
@@ -516,10 +532,10 @@ class TestReconstructPipeline:
     ) -> None:
         mock_pipeline_cls = MagicMock(return_value=MagicMock())
 
-        with patch("rehydrator.engine.rehydrator.import_class", return_value=mock_pipeline_cls):
-            rehydrator._reconstruct_pipeline(
-                "pipe-empty-kw", "myapp.Pipeline"
-            )
+        with patch(
+            "rehydrator.engine.rehydrator.import_class", return_value=mock_pipeline_cls
+        ):
+            rehydrator._reconstruct_pipeline("pipe-empty-kw", "myapp.Pipeline")
 
         mock_pipeline_cls.assert_called_once_with()
 
@@ -538,9 +554,7 @@ class TestRebuildTasks:
         mock_task_b = MagicMock()
 
         async def _mock_rebuild(qt):
-            return {"t1": mock_task_a, "t2": mock_task_b}.get(
-                qt.get("task_id"), None
-            )
+            return {"t1": mock_task_a, "t2": mock_task_b}.get(qt.get("task_id"), None)
 
         queue = [
             {"task_id": "t1", "previous_context_id": "c1", "position_in_queue": 0},
@@ -598,14 +612,20 @@ class TestRebuildTask:
             TaskSnapshot, "get_async", AsyncMock(return_value=raw_data)
         ), patch.object(
             rehydrator.deserializer, "deserialize_task"
-        ) as mock_deser, \
-         patch("rehydrator.engine.rehydrator.import_class", return_value=MagicMock()), \
-         patch("volnux.task.PipelineTask", return_value=mock_pipeline_task):
+        ) as mock_deser, patch(
+            "rehydrator.engine.rehydrator.import_class", return_value=MagicMock()
+        ), patch(
+            "volnux.task.PipelineTask", return_value=mock_pipeline_task
+        ):
             mock_deser.return_value = MagicMock(
                 event_class_import_path="myapp.events.MyEvent"
             )
             result = await rehydrator._rebuild_task(
-                {"task_id": "t-valid", "previous_context_id": "c1", "position_in_queue": 0}
+                {
+                    "task_id": "t-valid",
+                    "previous_context_id": "c1",
+                    "position_in_queue": 0,
+                }
             )
 
         assert result is mock_pipeline_task
@@ -618,24 +638,25 @@ class TestRebuildTask:
         )
         assert result is None
 
-    async def test_empty_task_id_returns_none(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_empty_task_id_returns_none(self, rehydrator: LazyRehydrator) -> None:
         result = await rehydrator._rebuild_task(
             {"task_id": "", "previous_context_id": "c1", "position_in_queue": 0}
         )
         assert result is None
 
-    async def test_load_failure_returns_none(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_load_failure_returns_none(self, rehydrator: LazyRehydrator) -> None:
         """When TaskSnapshot.get_async raises, the code catches and returns None."""
         with patch.object(
-            TaskSnapshot, "get_async",
+            TaskSnapshot,
+            "get_async",
             AsyncMock(side_effect=RuntimeError("DB down")),
         ), patch("volnux.task.PipelineTask"):
             result = await rehydrator._rebuild_task(
-                {"task_id": "t-fail", "previous_context_id": "c1", "position_in_queue": 0}
+                {
+                    "task_id": "t-fail",
+                    "previous_context_id": "c1",
+                    "position_in_queue": 0,
+                }
             )
 
         assert result is None
@@ -644,12 +665,17 @@ class TestRebuildTask:
         self, rehydrator: LazyRehydrator, caplog: pytest.LogCaptureFixture
     ) -> None:
         with patch.object(
-            TaskSnapshot, "get_async",
+            TaskSnapshot,
+            "get_async",
             AsyncMock(side_effect=RuntimeError("DB down")),
         ), patch("volnux.task.PipelineTask"):
             with caplog.at_level("WARNING"):
                 result = await rehydrator._rebuild_task(
-                    {"task_id": "t-fail", "previous_context_id": "c1", "position_in_queue": 0}
+                    {
+                        "task_id": "t-fail",
+                        "previous_context_id": "c1",
+                        "position_in_queue": 0,
+                    }
                 )
 
         assert result is None
@@ -668,11 +694,17 @@ class TestRebuildTask:
             TaskSnapshot, "get_async", AsyncMock(return_value=raw_data)
         ), patch.object(
             rehydrator.deserializer, "deserialize_task", return_value=mock_snapshot
-        ) as mock_deser, \
-         patch("rehydrator.engine.rehydrator.import_class", return_value=MagicMock()), \
-         patch("volnux.task.PipelineTask", return_value=mock_pipeline_task):
+        ) as mock_deser, patch(
+            "rehydrator.engine.rehydrator.import_class", return_value=MagicMock()
+        ), patch(
+            "volnux.task.PipelineTask", return_value=mock_pipeline_task
+        ):
             result = await rehydrator._rebuild_task(
-                {"task_id": "t-raw", "previous_context_id": "c1", "position_in_queue": 0}
+                {
+                    "task_id": "t-raw",
+                    "previous_context_id": "c1",
+                    "position_in_queue": 0,
+                }
             )
 
         assert result is mock_pipeline_task
@@ -703,9 +735,7 @@ class TestRestoreExecutionState:
             "volnux.execution.rehydrator.event.event_result_serializer.EXEC_RESULT_SERIALIZER.deserialize_exec_result",
             new_callable=AsyncMock,
             side_effect=[mock_result_a, mock_result_b],
-        ), patch(
-            "volnux.execution.status.ExecutionStatus"
-        ) as mock_status_cls:
+        ), patch("volnux.execution.status.ExecutionStatus") as mock_status_cls:
             mock_status_cls.return_value = "COMPLETED"
 
             await rehydrator._restore_execution_state(mock_context, snapshot)
@@ -876,7 +906,8 @@ class TestResumeFrom:
         ), patch.object(
             rehydrator, "_load_snapshot", AsyncMock(return_value=mock_snapshot)
         ), patch.object(
-            rehydrator, "_rehydrate_engine",
+            rehydrator,
+            "_rehydrate_engine",
             AsyncMock(return_value=mock_engine),
         ) as mock_rehydrate_engine:
             context, engine = await rehydrator.resume_from(
@@ -894,9 +925,7 @@ class TestResumeFrom:
 
         with patch.object(
             rehydrator, "rehydrate_node", AsyncMock(return_value=mock_context)
-        ), patch.object(
-            rehydrator, "_load_snapshot"
-        ) as mock_load:
+        ), patch.object(rehydrator, "_load_snapshot") as mock_load:
             context, engine = await rehydrator.resume_from("resume-no-eng")
 
         mock_load.assert_not_called()
@@ -919,7 +948,8 @@ class TestRehydrateEngine:
         snapshot.traversal.tasks_processed = 5
 
         with patch.object(
-            rehydrator, "_rebuild_current_task_node",
+            rehydrator,
+            "_rebuild_current_task_node",
             AsyncMock(return_value=None),
         ):
             engine = await rehydrator._rehydrate_engine(
@@ -938,7 +968,8 @@ class TestRehydrateEngine:
         snapshot = _make_context_snapshot()
 
         with patch.object(
-            rehydrator, "_rebuild_current_task_node",
+            rehydrator,
+            "_rebuild_current_task_node",
             AsyncMock(return_value=mock_task_node),
         ):
             engine = await rehydrator._rehydrate_engine(
@@ -990,9 +1021,7 @@ class TestRebuildCurrentTaskNode:
             task=mock_task, previous_context=mock_context
         )
 
-    async def test_rebuild_task_returns_none(
-        self, rehydrator: LazyRehydrator
-    ) -> None:
+    async def test_rebuild_task_returns_none(self, rehydrator: LazyRehydrator) -> None:
         snapshot = _make_context_snapshot()
         snapshot.traversal.current_task = {
             "task_id": "t-fail",
@@ -1002,9 +1031,7 @@ class TestRebuildCurrentTaskNode:
 
         mock_context = MagicMock()
 
-        with patch.object(
-            rehydrator, "_rebuild_task", AsyncMock(return_value=None)
-        ):
+        with patch.object(rehydrator, "_rebuild_task", AsyncMock(return_value=None)):
             result = await rehydrator._rebuild_current_task_node(
                 snapshot.traversal, mock_context
             )

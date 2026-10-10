@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rehydrator.engine.deserializer import StateDeserializer
-from rehydrator.engine.snapshot import TraversalSnapshot
+from volnux.execution.rehydrator.engine.deserializer import StateDeserializer
+from volnux.execution.rehydrator.engine.snapshot import TraversalSnapshot
 
 
 # ===========================================================================
@@ -131,6 +131,7 @@ class TestDeserializeContext:
         snapshot = StateDeserializer.deserialize_context(data)
 
         from rehydrator.engine.snapshot import ContextSnapshot
+
         assert isinstance(snapshot, ContextSnapshot)
         assert snapshot.state_id == "deser-001"
         assert isinstance(snapshot.traversal, TraversalSnapshot)
@@ -183,6 +184,7 @@ class TestDeserializeTask:
         snapshot = StateDeserializer.deserialize_task(data)
 
         from rehydrator.engine.snapshot import TaskSnapshot
+
         assert isinstance(snapshot, TaskSnapshot)
         assert snapshot.task_id == "task-deser"
         assert snapshot.event_name == "process_data"
@@ -205,7 +207,9 @@ class TestDeserializeTask:
 class TestDeserializeResult:
 
     @patch("volnux.result.EventResult")
-    async def test_dict_result_calls_from_dict(self, mock_result_cls: MagicMock) -> None:
+    async def test_dict_result_calls_from_dict(
+        self, mock_result_cls: MagicMock
+    ) -> None:
         mock_instance = MagicMock()
         mock_result_cls.from_dict.return_value = mock_instance
 
@@ -226,9 +230,7 @@ class TestDeserializeResult:
         assert result is mock_instance
 
     @patch("volnux.result.EventResult")
-    async def test_string_id_not_found_raises(
-        self, mock_result_cls: MagicMock
-    ) -> None:
+    async def test_string_id_not_found_raises(self, mock_result_cls: MagicMock) -> None:
         from volnux.exceptions import ObjectDoesNotExist
 
         mock_result_cls.get_async = AsyncMock(

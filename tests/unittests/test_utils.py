@@ -26,10 +26,10 @@ def test_generate_unique_id():
     obj3 = Klass2()
     obj4 = Klass1()
 
-    generate_unique_id(obj1)
-    generate_unique_id(obj2)
-    generate_unique_id(obj3)
-    generate_unique_id(obj4)
+    generate_unique_id(obj1, None)
+    generate_unique_id(obj2, None)
+    generate_unique_id(obj3, None)
+    generate_unique_id(obj4, None)
 
     assert hasattr(obj1, "_id")
     assert hasattr(obj2, "_id")

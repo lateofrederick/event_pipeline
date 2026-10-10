@@ -18,7 +18,7 @@ class TriggerStateRecord(KeyValueStoreIntegrationMixin, BaseModel):
     last_fired: Optional[str]
     # dirty=True means the CLI wrote a change the engine hasn't applied yet
     dirty: MiniAnnotated[bool, Attrib(default=False)]
-    updated_at: DateTimeField[DTConfig(auto_now=True)]
+    updated_at: DateTimeField[DTConfig("updated_at", auto_now=True)]
 
     @classmethod
     def get_backend_config(cls) -> Dict[str, Any]:

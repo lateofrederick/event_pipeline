@@ -1,6 +1,6 @@
 import importlib
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, MagicMock
 
 import pytest
 
@@ -259,26 +259,10 @@ def test_setup_metrics_configures_meter_provider(monkeypatch):
     fake_reader = Mock()
     fake_exporter = Mock()
 
-    # monkeypatch.setattr("opentelemetry.metrics.set_meter_provider", metrics_module.set_meter_provider)
-    # monkeypatch.setattr(
-    #     "opentelemetry.exporter.otlp.proto.grpc.metric_exporter.OTLPMetricExporter",
-    #     lambda endpoint: fake_exporter,
-    # )
-    # monkeypatch.setattr(
-    #     "opentelemetry.sdk.metrics.export.PeriodicExportingMetricReader",
-    #     lambda exporter, export_interval_millis: fake_reader,
-    # )
-    # monkeypatch.setattr(
-    #     "opentelemetry.sdk.metrics.MeterProvider",
-    #     lambda resource, metric_readers: fake_meter_provider,
-    # )
-    # monkeypatch.setattr(
-    #     "opentelemetry.sdk.resources.Resource.create",
-    #     lambda attrs: SimpleNamespace(attrs=attrs),
-    # )
+    metrics_module.set_meter_provider = MagicMock()
 
     monkeypatch.setattr(
-        "opentelemetry.metrics.set_meter_provider", metrics_module.set_meter_provider
+        "volnux.otel.metrics", metrics_module
     )
     monkeypatch.setattr(
         "volnux.otel.OTLPMetricExporter",

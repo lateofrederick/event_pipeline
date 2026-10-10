@@ -2,7 +2,6 @@ import pytest
 from unittest.mock import MagicMock
 
 from volnux.backends.connectors.postgres import PostgresConnector
-from volnux.backends.connection import ConnectionError
 
 
 @pytest.fixture

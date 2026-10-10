@@ -18,7 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 
 from volnux.execution.rehydrator.event.rehydrator import EventRehydrator
-from volnux.execution.rehydrator.event.snapshot import EventCheckpointSnapshot, EventPhase
+from volnux.execution.rehydrator.event.snapshot import (
+    EventCheckpointSnapshot,
+    EventPhase,
+)
 from volnux.execution.rehydrator.event.deserializer import StateDeserializer
 
 
@@ -65,10 +68,18 @@ def rehydrator() -> EventRehydrator:
 # ===========================================================================
 class TestEventRehydratorRehydrate:
 
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args")
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
+    )
     @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
     async def test_rehydrate_restores_all_fields(
         self,
@@ -126,9 +137,15 @@ class TestEventRehydratorRehydrate:
         assert event._page == 3
         assert event._buffer == ["item1", "item2"]
 
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args")
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
+    )
     @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
     async def test_none_exec_result_skips_deserialization(
         self,
@@ -152,8 +169,12 @@ class TestEventRehydratorRehydrate:
         # (We don't patch it here, so it would fail if called)
         assert event._exec_result is None
 
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args")
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
+    )
     @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
     async def test_empty_external_resources_skips_deserialization(
         self,
@@ -175,10 +196,17 @@ class TestEventRehydratorRehydrate:
         # external_resources should NOT have been set on the event
         # (since snapshot.external_resources is falsy, the if-block is skipped)
         # We verify by checking no external_resources assignment
-        assert not hasattr(event, "_external_resources") or event._external_resources is None
+        assert (
+            not hasattr(event, "_external_resources")
+            or event._external_resources is None
+        )
 
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args")
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
+    )
     @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
     async def test_empty_attribs_no_setattr(
         self,
@@ -201,9 +229,15 @@ class TestEventRehydratorRehydrate:
         # (The mock should only have framework-assigned attributes)
         assert event._phase == EventPhase.PROCESSING
 
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args")
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
+    )
     @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
     async def test_no_retry_policy_safe(
         self,
@@ -228,10 +262,18 @@ class TestEventRehydratorRehydrate:
         # Should not raise — hasattr check protects against None retry_policy
         assert event._retry_count == 2
 
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources")
-    @patch("volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args")
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_call_args"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_exec_result"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_external_resources"
+    )
+    @patch(
+        "volnux.execution.rehydrator.event_rehydrator.StateDeserializer.deserialize_init_args"
+    )
     @patch("volnux.execution.rehydrator.event_rehydrator.import_class")
     async def test_attribs_restored_before_execution(
         self,

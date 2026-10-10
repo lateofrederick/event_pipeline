@@ -17,6 +17,7 @@ from volnux.backends.q_compiler import (
     create_filter_predicate,
     resolve_field_value,
 )
+from volnux.utils import hydrate_model
 
 try:
     from typing import TypeAlias  # noqa: F401
@@ -154,6 +155,7 @@ class ResultStream(typing.Generic[T]):
     # Internal state
     _keys: typing.List[str] = field(default_factory=list, repr=False)
     _key_set: set = field(default_factory=set, repr=False)
+    _join_fields: typing.List[str] = field(default_factory=list, repr=False)
     _predicates: typing.List[typing.Callable[[T], bool]] = field(
         default_factory=list, repr=False
     )
@@ -261,6 +263,7 @@ class ResultStream(typing.Generic[T]):
             memory_capacity=0,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects,
+            join_fields=self._join_fields,
         )
 
     @classmethod
@@ -274,6 +277,7 @@ class ResultStream(typing.Generic[T]):
         memory_capacity: int,
         persisted_backend: Optional["KeyValueStoreBackendBase"],
         q_predicates: Optional[List["Q"]] = None,
+        join_fields: Optional[List[str]] = None,
     ) -> "ResultStream[T]":
         stream: ResultStream[T] = cls.__new__(cls)
         stream.model_klass = model_klass
@@ -285,6 +289,7 @@ class ResultStream(typing.Generic[T]):
         stream._key_set = set(keys)
         stream._predicates = list(predicates)
         stream._q_objects = list(q_predicates or [])
+        stream._join_fields = list(join_fields or [])
         stream.memory_backend = (
             InMemoryKeyValueStoreBackend(namespace_prefix=transaction_id)
             if memory_capacity > 0
@@ -397,6 +402,7 @@ class ResultStream(typing.Generic[T]):
             memory_capacity=10,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects,
+            join_fields=self._join_fields,
         )
 
     def where(self, predicate: typing.Callable[[T], bool]) -> "ResultStream[T]":
@@ -413,6 +419,7 @@ class ResultStream(typing.Generic[T]):
             memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects,
+            join_fields=self._join_fields,
         )
 
     def shard(self, num_shards: int) -> typing.Generator["ResultStream[T]", None, None]:
@@ -446,6 +453,7 @@ class ResultStream(typing.Generic[T]):
                 memory_capacity=self.memory_capacity,
                 persisted_backend=self.persisted_backend,
                 q_predicates=self._q_objects,
+                join_fields=self._join_fields,
             )
 
     def exists(self):
@@ -546,6 +554,30 @@ class ResultStream(typing.Generic[T]):
             memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
             q_predicates=self._q_objects + [q_object],
+            join_fields=self._join_fields,
+        )
+
+    async def resolve_joins(self, *field_names: str) -> "ResultStream[T]":
+        """Request FK resolution at the backend level.
+
+        If the backend supports join pushdown, FK fields are resolved
+        in a single query. Otherwise, falls back to deferred resolution.
+
+        Usage:
+            workflows = await Workflow.filter(status="active").resolve_joins("created_by", "team")
+            async for wf in workflows:
+                print(wf.created_by.name)  # Already resolved; no additional query
+        """
+        return ResultStream._make(
+            model_klass=self.model_klass,
+            transaction_id=self.transaction_id,
+            keys=self._keys,
+            predicates=self._predicates,
+            chunk_size=self.chunk_size,
+            memory_capacity=self.memory_capacity,
+            persisted_backend=self.persisted_backend,
+            q_predicates=self._q_objects,
+            join_fields=list(field_names),
         )
 
     async def order_by(self, *fields: str) -> "ResultStream[T]":
@@ -612,6 +644,7 @@ class ResultStream(typing.Generic[T]):
             memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
             q_predicates=[],  # Pre-filtered during materialization
+            join_fields=self._join_fields,
         )
 
     async def count(self) -> int:
@@ -662,6 +695,7 @@ class ResultStream(typing.Generic[T]):
                 chunk_size=self.chunk_size,
                 memory_capacity=self.memory_capacity,
                 persisted_backend=self.persisted_backend,
+                join_fields=self._join_fields,
             ),
             total,
         )
@@ -688,6 +722,7 @@ class ResultStream(typing.Generic[T]):
             chunk_size=self.chunk_size,
             memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
+            join_fields=self._join_fields,
         )
 
     async def bulk_update(self, **kwargs: Any) -> int:
@@ -778,6 +813,7 @@ class ResultStream(typing.Generic[T]):
             chunk_size=self.chunk_size,
             memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
+            join_fields=self._join_fields,
         )
 
     def explain(self) -> dict:
@@ -860,6 +896,7 @@ class ResultStream(typing.Generic[T]):
             memory_capacity=self.memory_capacity,
             persisted_backend=self.persisted_backend,
             q_predicates=remaining_q_objects,
+            join_fields=self._join_fields,
         )
 
     async def _async_iterate(self) -> AsyncIterator[T]:
@@ -871,6 +908,26 @@ class ResultStream(typing.Generic[T]):
         else:
             keys = self._keys
             predicates = self._predicates
+
+        # Attempt join pushdown if requested and backend supports it
+        if (
+            self._join_fields
+            and self.persisted_backend is not None
+            and hasattr(self.persisted_backend, "filter_with_joins")
+        ):
+            try:
+                schema = await self._schema_name()
+                joined_results = await self.persisted_backend.filter_with_joins(
+                    schema, self.model_klass, self._join_fields
+                )
+
+                for record_dict in joined_results:
+                    instance = hydrate_model(self.model_klass, record_dict)
+                    if all(pred(instance) for pred in predicates):
+                        yield instance
+                return
+            except NotImplementedError:
+                pass  # Fall through to standard iteration
 
         for i in range(0, len(keys), self.chunk_size):
             batch_ids = keys[i : i + self.chunk_size]

@@ -16,9 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from volnux.execution.rehydrator.event.builder import SnapshotBuilder
-from volnux.execution.rehydrator.event.snapshot import EventCheckpointSnapshot, EventPhase
+from volnux.execution.rehydrator.event.snapshot import (
+    EventCheckpointSnapshot,
+    EventPhase,
+)
 from volnux.execution.rehydrator.event.serializer import StateSerializer
-
 
 
 def _make_mock_event(**overrides: Any) -> MagicMock:

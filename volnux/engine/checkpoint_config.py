@@ -37,7 +37,7 @@ class CheckPointRuntimeConfig(BaseModel):
     checkpoint_ttl_seconds: MiniAnnotated[float, Attrib(default=300.0, ge=0.0)]
 
     class Config:
-        frozen = True
+        # frozen = True
         init_strategy = InitStrategy.DATACLASS
 
 
@@ -55,7 +55,7 @@ class CheckPointStorageConfig(BaseModel):
     database: Union[str, int, None] = None
 
     class Config:
-        frozen = True
+        # frozen = True
         init_strategy = InitStrategy.DATACLASS
 
 
@@ -104,15 +104,15 @@ class CheckPointConfig(BaseModel):
     """
 
     policy: MiniAnnotated[
-        CheckPointPolicyConfig, Attrib(default_factory=CheckPointPolicyConfig)
+        CheckPointPolicyConfig, Attrib(default_factory=lambda: CheckPointPolicyConfig())
     ]
     runtime: MiniAnnotated[
-        CheckPointRuntimeConfig, Attrib(default_factory=CheckPointRuntimeConfig)
+        CheckPointRuntimeConfig, Attrib(default_factory=lambda: CheckPointRuntimeConfig())
     ]
     storage: MiniAnnotated[
-        CheckPointStorageConfig, Attrib(default_factory=CheckPointStorageConfig)
+        CheckPointStorageConfig, Attrib(default_factory=lambda: CheckPointStorageConfig())
     ]
 
     class Config:
-        frozen = True
+        # frozen = True
         init_strategy = InitStrategy.DATACLASS

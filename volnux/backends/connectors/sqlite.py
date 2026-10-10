@@ -1,4 +1,6 @@
+import functools
 import logging
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -7,6 +9,32 @@ from typing import Any, Optional, Union
 from volnux.backends.connection import BackendConnectorBase
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_regexp(pattern: str) -> "re.Pattern[str]":
+    return re.compile(pattern)
+
+
+def _sqlite_regexp(pattern: Optional[str], value: Any) -> Optional[bool]:
+    """Backs SQLite's ``X REGEXP Y`` operator, which calls ``regexp(Y, X)``.
+
+    Uses search semantics to mirror PostgreSQL's ``~`` operator. NULL operands
+    yield NULL so CHECK constraints on nullable columns pass.
+    """
+    if pattern is None or value is None:
+        return None
+    return _compile_regexp(pattern).search(str(value)) is not None
+
+
+def register_sqlite_functions(connection: sqlite3.Connection) -> None:
+    """Register SQL functions that generated schemas depend on.
+
+    SQLite has no built-in REGEXP implementation, and it resolves functions
+    used in CHECK constraints when the table is created as well as on writes,
+    so every connection that creates or writes those tables needs this.
+    """
+    connection.create_function("REGEXP", 2, _sqlite_regexp, deterministic=True)
 
 
 class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
@@ -139,6 +167,8 @@ class SqliteConnector(BackendConnectorBase[sqlite3.Cursor]):
         Args:
             connection: The SQLite connection to configure.
         """
+        register_sqlite_functions(connection)
+
         cursor = connection.cursor()
 
         try:

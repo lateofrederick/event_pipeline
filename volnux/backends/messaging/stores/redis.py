@@ -27,7 +27,7 @@ _CLOSE_SENTINEL = object()
 
 class RedisStorePubSubMixin(PubSubCapabilityMixin):
 
-    connector: RedisConnector
+    connector: "RedisConnector"
 
     async def publish(self, channel: str, record: Record) -> int:
         try:
@@ -216,7 +216,7 @@ class RedisStoreSubscriptionContext(AsyncSubscriptionContext):
 
 class RedisStorePushPopMixin(PushPopCapabilityMixin):
 
-    connector: RedisConnector
+    connector: "RedisConnector"
 
     # Connections left free for non-blocking commands (push/publish/etc.)
     # so that BLPOP/BRPOP callers can never claim the whole pool.
@@ -354,7 +354,7 @@ class RedisStorePushPopMixin(PushPopCapabilityMixin):
 class RedisStreamCapabilityMixin(StreamCapabilityMixin):
     """Redis Streams implementation of the append-only durable event log."""
 
-    connector: RedisConnector
+    connector: "RedisConnector"
 
     async def stream_append(
         self,

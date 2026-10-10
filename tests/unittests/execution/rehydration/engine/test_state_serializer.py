@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rehydrator.engine.serializer import StateSerializer
+from volnux.execution.rehydrator.engine.serializer import StateSerializer
 
 
 # ===========================================================================
@@ -46,7 +46,11 @@ def _make_mock_task(**overrides: Any) -> MagicMock:
     task.options = mock_options
 
     mock_condition = MagicMock()
-    mock_condition.as_dict.return_value = {"field": "status", "op": "eq", "value": "active"}
+    mock_condition.as_dict.return_value = {
+        "field": "status",
+        "op": "eq",
+        "value": "active",
+    }
     task.condition_node = mock_condition
 
     for key, value in overrides.items():
@@ -75,7 +79,9 @@ class TestSerializeTask:
         assert result["descriptor"] is None
         assert result["descriptor_pipe_type"] is None
         assert result["condition_node"] == {
-            "field": "status", "op": "eq", "value": "active"
+            "field": "status",
+            "op": "eq",
+            "value": "active",
         }
 
     def test_group_task(self) -> None:

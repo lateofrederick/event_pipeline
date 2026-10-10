@@ -15,9 +15,13 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
-from rehydrator.engine.builder import SnapshotBuilder
-from rehydrator.engine.serializer import StateSerializer
-from rehydrator.engine.snapshot import ContextSnapshot, TraversalSnapshot, TaskSnapshot
+from volnux.execution.rehydrator.engine.builder import SnapshotBuilder
+from volnux.execution.rehydrator.engine.serializer import StateSerializer
+from volnux.execution.rehydrator.engine.snapshot import (
+    ContextSnapshot,
+    TraversalSnapshot,
+    TaskSnapshot,
+)
 
 
 # ===========================================================================
@@ -256,6 +260,7 @@ class TestSnapshotBuilderBuild:
 
         async def _err_state():
             return mock_state
+
         context.state_async = _err_state()
 
         snapshot = await builder.build(context)
@@ -312,7 +317,8 @@ class TestSnapshotBuilderBuildPipelineTask:
         assert snapshot.task_type == "normal"
 
     def test_build_pipeline_task_with_group(
-        self, builder: SnapshotBuilder,
+        self,
+        builder: SnapshotBuilder,
     ) -> None:
         task_profile = _make_mock_task_profile()
         # is_grouping needs to be accessible via getattr
@@ -322,7 +328,8 @@ class TestSnapshotBuilderBuildPipelineTask:
         assert snapshot.task_type == "group"
 
     def test_build_pipeline_task_change_object_id(
-        self, builder: SnapshotBuilder,
+        self,
+        builder: SnapshotBuilder,
     ) -> None:
         task_profile = _make_mock_task_profile()
         snapshot = builder.build_pipeline_task(task_profile)

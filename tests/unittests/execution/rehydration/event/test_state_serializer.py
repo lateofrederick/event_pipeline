@@ -29,9 +29,17 @@ from volnux.parser.options import StopCondition
 # Helper: _is_json_serializable
 class TestIsJsonSerializable:
 
-    @pytest.mark.parametrize("value", [
-        42, 3.14, "hello", True, False, None,
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            42,
+            3.14,
+            "hello",
+            True,
+            False,
+            None,
+        ],
+    )
     def test_primitives(self, value: Any) -> None:
         assert is_json_serializable(value) is True
 
@@ -50,9 +58,16 @@ class TestIsJsonSerializable:
     def test_nested_valid_structure(self) -> None:
         assert is_json_serializable({"a": [1, {"b": True}]}) is True
 
-    @pytest.mark.parametrize("value", [
-        b"bytes", set(), frozenset(), object(), Exception("err"),
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            b"bytes",
+            set(),
+            frozenset(),
+            object(),
+            Exception("err"),
+        ],
+    )
     def test_non_serializable_types(self, value: Any) -> None:
         assert is_json_serializable(value) is False
 
@@ -74,24 +89,30 @@ class TestSerializeStopCondition:
         assert result == [StopCondition.NEVER.value]
 
     def test_single_condition(self) -> None:
-        result = StateSerializer._serialize_stop_condition(
-            StopCondition.NEVER
-        )
+        result = StateSerializer._serialize_stop_condition(StopCondition.NEVER)
         assert result == [StopCondition.NEVER.value]
 
     def test_list_of_conditions(self) -> None:
-        result = StateSerializer._serialize_stop_condition(D[
-            StopCondition.NEVER,
-            StopCondition.ON_ERROR,
-        ])
+        result = StateSerializer._serialize_stop_condition(
+            D[
+                StopCondition.NEVER,
+                StopCondition.ON_ERROR,
+            ]
+        )
         assert result == [StopCondition.NEVER.value, StopCondition.ON_ERROR.value]
 
     def test_nested_list(self) -> None:
-        result = StateSerializer._serialize_stop_condition([
-            StopCondition.ON_SUCCESS,
-            [StopCondition.ON_ERROR, StopCondition.ON_EXCEPTION],
-        ])
-        assert result == [StopCondition.ON_SUCCESS.value, StopCondition.ON_ERROR.value, StopCondition.ON_EXCEPTION.value]
+        result = StateSerializer._serialize_stop_condition(
+            [
+                StopCondition.ON_SUCCESS,
+                [StopCondition.ON_ERROR, StopCondition.ON_EXCEPTION],
+            ]
+        )
+        assert result == [
+            StopCondition.ON_SUCCESS.value,
+            StopCondition.ON_ERROR.value,
+            StopCondition.ON_EXCEPTION.value,
+        ]
 
     def test_tuple_same_as_list(self) -> None:
         result = StateSerializer._serialize_stop_condition(
@@ -107,11 +128,15 @@ class TestBuildKeywordArgs:
 
     def test_nested_dict(self) -> None:
         input_data = {"outer": {"inner": 42}}
-        assert StateSerializer._build_keyword_args(input_data) == {"outer": {"inner": 42}}
+        assert StateSerializer._build_keyword_args(input_data) == {
+            "outer": {"inner": 42}
+        }
 
     def test_list_values(self) -> None:
         input_data = {"items": [{"a": 1}, {"b": 2}]}
-        assert StateSerializer._build_keyword_args(input_data) == {"items": [{"a": 1}, {"b": 2}]}
+        assert StateSerializer._build_keyword_args(input_data) == {
+            "items": [{"a": 1}, {"b": 2}]
+        }
 
     def test_tuple_values_preserved(self) -> None:
         input_data = {"coords": (10, 20)}
@@ -134,7 +159,9 @@ class TestBuildKeywordArgs:
 class TestSerializeInitArgs:
 
     @patch("volnux.execution.checkpoint.serializer.StateSerializer._build_keyword_args")
-    @patch("volnux.execution.checkpoint.serializer.StateSerializer._serialize_stop_condition")
+    @patch(
+        "volnux.execution.checkpoint.serializer.StateSerializer._serialize_stop_condition"
+    )
     @patch("volnux.execution.checkpoint.serializer.EngineSerializer")
     def test_full_init_args(
         self,
@@ -188,16 +215,18 @@ class TestSerializeInitArgs:
 
 class TestSerializeCallArgs:
 
-    @patch("volnux.execution.checkpoint.serializer.StateSerializer.serialize_exec_result")
-    def test_with_args_and_kwargs(
-        self, mock_serialize: MagicMock
-    ) -> None:
+    @patch(
+        "volnux.execution.checkpoint.serializer.StateSerializer.serialize_exec_result"
+    )
+    def test_with_args_and_kwargs(self, mock_serialize: MagicMock) -> None:
         mock_serialize.side_effect = lambda x: f"serialized_{x}"
 
-        result = StateSerializer.serialize_call_args({
-            "args": [1, 2],
-            "kwargs": {"key": "val"},
-        })
+        result = StateSerializer.serialize_call_args(
+            {
+                "args": [1, 2],
+                "kwargs": {"key": "val"},
+            }
+        )
 
         assert result["args"] == ["serialized_1", "serialized_2"]
         assert result["kwargs"] == {"key": "serialized_val"}
@@ -211,18 +240,16 @@ class TestSerializeCallArgs:
 class TestSerializeExecResult:
 
     @patch("volnux.execution.checkpoint.serializer.ExecResultSerializer")
-    def test_delegates_to_exec_result_serializer(
-        self, mock_cls: MagicMock
-    ) -> None:
+    def test_delegates_to_exec_result_serializer(self, mock_cls: MagicMock) -> None:
         mock_instance = MagicMock()
         mock_instance.serialize_exec_result.return_value = "serialized_result"
         mock_cls.return_value = mock_instance
 
         # Re-import to pick up the mock
         from volnux.execution.rehydrator.event.serializer import StateSerializer
+
         result = StateSerializer.serialize_exec_result("input")
         assert result == "serialized_result"
-
 
 
 class TestSerializeAttribs:
@@ -235,68 +262,74 @@ class TestSerializeAttribs:
         return event
 
     def test_captures_user_attrs(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "_page": 5,
-            "_filter": "active",
-            "_offset": 100,
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "_page": 5,
+                "_filter": "active",
+                "_offset": 100,
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result == {"_page": 5, "_filter": "active", "_offset": 100}
 
     def test_excludes_framework_internal_attrs(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "_pipeline": MagicMock(),  # not serializable, but excluded first
-            "task_id": "task-001",
-            "_page": 10,
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "_pipeline": MagicMock(),  # not serializable, but excluded first
+                "task_id": "task-001",
+                "_page": 10,
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result == {"_page": 10}
 
     def test_excludes_tracked_keys(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {"task_id": "task-001"},
-            "call_args": {"args": [], "kwargs": {}},
-            "external_resources": {"db_cursor": {"data": {}}},
-            "task_id": "override_value",
-            "args": [1, 2],
-            "kwargs": {"key": "val"},
-            "db_cursor": "cursor_data",
-            "_safe_attr": "preserved",
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {"task_id": "task-001"},
+                "call_args": {"args": [], "kwargs": {}},
+                "external_resources": {"db_cursor": {"data": {}}},
+                "task_id": "override_value",
+                "args": [1, 2],
+                "kwargs": {"key": "val"},
+                "db_cursor": "cursor_data",
+                "_safe_attr": "preserved",
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result == {"_safe_attr": "preserved"}
 
-    def test_warns_on_non_serializable(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "_serializable": 42,
-            "_non_serializable": MagicMock(),  # Mock is not JSON-safe
-        })
+    def test_warns_on_non_serializable(self, caplog: pytest.LogCaptureFixture) -> None:
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "_serializable": 42,
+                "_non_serializable": MagicMock(),  # Mock is not JSON-safe
+            }
+        )
         with caplog.at_level(logging.WARNING):
             result = StateSerializer.serialize_attribs(event)
         assert result == {"_serializable": 42}
         assert any("Cannot checkpoint attribute" in r.message for r in caplog.records)
         assert any("_non_serializable" in r.message for r in caplog.records)
 
-    def test_warns_includes_class_path(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "bad_attr": MagicMock(),
-        })
+    def test_warns_includes_class_path(self, caplog: pytest.LogCaptureFixture) -> None:
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "bad_attr": MagicMock(),
+            }
+        )
         event.class_path = "myapp.tasks.ProcessTask"
 
         with caplog.at_level(logging.WARNING):
@@ -305,13 +338,15 @@ class TestSerializeAttribs:
         assert any("myapp.tasks.ProcessTask" in r.message for r in caplog.records)
 
     def test_empty_attribs_when_all_excluded(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {"task_id": "t1"},
-            "call_args": {},
-            "external_resources": {},
-            "_pipeline": MagicMock(),
-            "task_id": "t1",
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {"task_id": "t1"},
+                "call_args": {},
+                "external_resources": {},
+                "_pipeline": MagicMock(),
+                "task_id": "t1",
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result == {}
 
@@ -321,32 +356,38 @@ class TestSerializeAttribs:
         assert result == {}
 
     def test_nested_serializable_attr(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "_config": {"nested": {"deep": [1, 2, 3]}},
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "_config": {"nested": {"deep": [1, 2, 3]}},
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result["_config"] == {"nested": {"deep": [1, 2, 3]}}
 
     def test_list_attr(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "_items": ["a", "b", "c"],
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "_items": ["a", "b", "c"],
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result["_items"] == ["a", "b", "c"]
 
     def test_none_attr(self) -> None:
-        event = self._make_mock_event({
-            "init_args": {},
-            "call_args": {},
-            "external_resources": {},
-            "_optional": None,
-        })
+        event = self._make_mock_event(
+            {
+                "init_args": {},
+                "call_args": {},
+                "external_resources": {},
+                "_optional": None,
+            }
+        )
         result = StateSerializer.serialize_attribs(event)
         assert result["_optional"] is None
 

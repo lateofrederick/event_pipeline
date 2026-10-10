@@ -9,7 +9,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from .base import BaseManager
-from volnux.conf import ConfigLoader
+from volnux.config import VolnuxConfig
 from volnux.utils import (
     send_data_over_socket,
     receive_data_from_socket,

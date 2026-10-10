@@ -11,13 +11,16 @@ from typing import (
     Type,
     Union,
     Iterator,
+    TYPE_CHECKING,
 )
 
 from formax import MiniAnnotated, Attrib
 from volnux.utils import get_obj_klass_import_str
 from volnux.import_utils import import_string
-
 from .utils import formax_null_validator
+
+if TYPE_CHECKING:
+    from volnux.mixins import KeyValueStoreIntegrationMixin
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +212,26 @@ class ListField:
     def __new__(cls, *args, **kwargs):
         raise TypeError("ListField cannot be instantiated")
 
+    @classmethod
+    def _create_result_stream(
+        cls, item_model: Type["KeyValueStoreIntegrationMixin"], config: ListConfig
+    ):
+        from volnux.result import ResultStream
+
+        kwargs: Dict[str, Any] = {"keys": []}
+        if config.max_length is not None:
+            kwargs["memory_capacity"] = config.max_length
+            kwargs["chunk_size"] = config.max_length
+        else:
+            kwargs["memory_capacity"] = 20
+            kwargs["chunk_size"] = 20
+        return ResultStream._make(
+            model_klass=item_model,
+            transaction_id=cls.__name__,
+            persisted_backend=None,  # defer backend resolution since it is an async
+            **kwargs,
+        )
+
     def __class_getitem__(cls, params) -> MiniAnnotated:
         if not isinstance(params, tuple):
             params = (params, ListConfig())
@@ -228,7 +251,7 @@ class ListField:
             )
 
         validators = []
-        if config.nullable:
+        if not config.nullable:
             validators.append(formax_null_validator)
 
         def pre_fmt(instance, value):

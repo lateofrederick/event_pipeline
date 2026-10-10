@@ -8,7 +8,6 @@ from redis.exceptions import (
     TimeoutError as RedisTimeoutError,
 )
 
-from volnux.backends.connection import ConnectionError
 from volnux.backends.connectors.redis import RedisConnector
 
 

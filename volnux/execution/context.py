@@ -4,7 +4,6 @@ import traceback
 import weakref
 import logging
 import time
-import datetime
 import typing
 from collections import deque
 from dataclasses import dataclass, field
@@ -163,7 +162,9 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
     # workers/machines rather than just processes forked from one parent.
     status: MiniAnnotated[ExecutionStatus, Attrib(default=ExecutionStatus.PENDING)]
     errors: typing.List[Exception] = field(default_factory=list)
-    results: "ResultSet[EventResult]" = field(default_factory=lambda: ResultSet())
+    results: "ResultSet[EventResult]" = field(
+        default_factory=lambda: ResultSet[EventResult]()
+    )
 
     # Usually used by Reduce meta-event
     aggregated_result: typing.Optional[EventResult] = None
@@ -194,35 +195,14 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         non-serializable orchestration graph (pipeline, task_profiles, engine
         ref, locks)."""
         state = self.__get_formax_state__().copy()
+
+        result_list = [self._result_id(result) for result in self.results]
+
         state.pop("_context_lock", None)
         state.pop("_engine_ref", None)
         state.pop("_task_checkpoint", None)
 
         return state
-
-        # return {
-        #     "status": self.status.value,
-        #     "errors": [self._serialize_error(error) for error in self.errors],
-        #     # Results/aggregated_result persist by reference: EventResult
-        #     # already persists itself independently via the same mixin.
-        #     "results": [self._result_id(result) for result in self.results],
-        #     "aggregated_result": self._result_id(self.aggregated_result),
-        #     "workflow_id": self.workflow_id,
-        #     "workflow_name": self.workflow_name,
-        #     "parent_context_id": (
-        #         self.parent_context.id if self.parent_context else None
-        #     ),
-        #     "child_context_ids": [child.id for child in self.child_contexts],
-        #     "previous_context_id": (
-        #         self.previous_context.id if self.previous_context else None
-        #     ),
-        #     "next_context_id": self.next_context.id if self.next_context else None,
-        #     "metrics": {
-        #         "start_time": self.metrics.start_time,
-        #         "end_time": self.metrics.end_time,
-        #     },
-        #     "task_checkpoint": self._task_checkpoint,
-        # }
 
     def set_state(self, state: typing.Dict[str, typing.Any]) -> None:
         self._objectid_lock = threading.Lock()
@@ -412,7 +392,7 @@ class ExecutionContext(KeyValueStoreIntegrationMixin, BaseModel):
         current = self
         while current.parent_context:
             current = current.parent_context
-        return current
+        return current  # type: ignore
 
     def get_depth(self) -> int:
         """Calculates nesting level for directive validation."""

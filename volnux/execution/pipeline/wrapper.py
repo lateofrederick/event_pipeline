@@ -147,7 +147,7 @@ class PipelineWrapper:
                     )
                 continue
 
-            # Closure captures signal_module so construct_signal() can
+            # Closure captures signal_module, so construct_signal() can
             # re-emit the correct signal in the parent process.
             def _make_handler(
                 sig_module: typing.Any,

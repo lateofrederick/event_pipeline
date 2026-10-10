@@ -2,7 +2,7 @@ import itertools
 import typing
 import warnings
 
-from formax.typing import is_type, is_collection
+from formax.typing import is_type
 
 from volnux import default_batch_processors as batch_defaults
 from volnux.constants import EMPTY, UNKNOWN
@@ -231,14 +231,12 @@ class InputDataField(CacheInstanceFieldMixin):
         for dtype in self.data_type:
             if dtype is UNKNOWN:
                 continue
-            # For parameterised generics, check the origin
+            # For parameterised generics, check the origin. formax's
+            # is_collection() only matches parameterised generics, so compare
+            # directly; list_batch_processor slices, so sequences only.
             check_type = typing.get_origin(dtype) or dtype
-            try:
-                status, _ = is_collection(check_type)
-                if status:
-                    return batch_defaults.list_batch_processor
-            except Exception:
-                continue
+            if check_type in (list, tuple):
+                return batch_defaults.list_batch_processor
         return None
 
     def _set_batch_processor(self, processor: BatchProcessType) -> None:
@@ -337,7 +335,10 @@ class InputDataField(CacheInstanceFieldMixin):
             )
 
         if self._isinstance_types is not None and value is not None:
-            if self._batch_mode or self.batch_processor is not None:
+            # Only explicit batch mode means "a collection of data_type". A
+            # batch_processor alone just says how the value is chunked: a list
+            # field holds a list, a file field holds a single path.
+            if self._batch_mode:
                 self._validate_batch_value(value)
             else:
                 self._validate_single_value(value)
@@ -387,6 +388,16 @@ class InputDataField(CacheInstanceFieldMixin):
                 f"Field {self.name!r} expects {self._format_types()}, "
                 f"got {type(value).__qualname__}."
             )
+
+        # For parameterised sequences (List[str]) also sample the elements
+        if self._element_types and isinstance(value, (list, tuple, set, frozenset)):
+            sample = itertools.islice(enumerate(value), _MAX_VALIDATION_SAMPLE)
+            for idx, item in sample:
+                if not isinstance(item, self._element_types):
+                    raise TypeError(
+                        f"Field {self.name!r} element at index {idx} expects "
+                        f"{self._format_types()}, got {type(item).__qualname__}."
+                    )
 
     def _validate_batch_value(self, value: typing.Any) -> None:
         """

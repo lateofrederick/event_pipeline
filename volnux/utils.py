@@ -33,6 +33,7 @@ if typing.TYPE_CHECKING:
     from . import EventBase
     from .executors import BaseExecutor
     from .execution.pipeline import Pipeline
+    from volnux.mixins import KeyValueStoreIntegrationMixin
 
 logger = logging.getLogger(__name__)
 
@@ -503,3 +504,30 @@ def run_command(
         )
     except subprocess.TimeoutExpired:
         raise SubprocessTimeoutError(cmd, timeout_seconds or 0.0)
+
+
+def hydrate_model(
+    model_class: typing.Type["KeyValueStoreIntegrationMixin"],
+    state: typing.Dict[str, typing.Any],
+) -> "KeyValueStoreIntegrationMixin":
+    """
+    Hydrates an instance of the specified model class using the provided state.
+
+    :param model_class: The class type of the model to be hydrated. It should be a subclass
+        of `KeyValueStoreIntegrationMixin`.
+    :param state: A dictionary containing the state that should be restored within the
+        instance. The dictionary may include an optional "id" or "_id" key to uniquely
+        identify the object.
+    :return: An instance of the `model_class`, populated with the given state.
+    :rtype: KeyValueStoreIntegrationMixin
+    """
+    object_id: typing.Optional[str] = state.get("id") or state.get("_id")
+
+    if hasattr(model_class, "hydrate_formax_model"):
+        obj: "KeyValueStoreIntegrationMixin" = model_class.hydrate_formax_model(state)
+    else:
+        obj = model_class.__new__(model_class)
+        obj.__setstate__(state)
+    if object_id:
+        obj.change_object_id(object_id)
+    return obj

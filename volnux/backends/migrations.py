@@ -1,6 +1,6 @@
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, List, Optional, Tuple, Type
 
 from volnux.backends.db_utils import migrate_models
 from volnux.engine.workflows.workflow import WorkflowConfig
@@ -79,27 +79,29 @@ class VolnuxProjectMigrator:
         )
 
         org_slug = self.config.get("DEFAULT_ORG_SLUG", "default-org")
-        org = await Organization.filter_async(slug=org_slug).first()
+        org_qs = await Organization.filter(slug=org_slug)
+        org = await org_qs.first()
         if not org:
             org = Organization(name="Default Organization", slug=org_slug)
-            await org.save_async()
+            await org.save()
             logger.info("Created default Organization: '%s'", org_slug)
 
         team_slug = self.config.get("DEFAULT_TEAM_SLUG", "default-team")
-        team = await Team.filter_async(slug=team_slug, organization=org.id).first()
+        team_qs = await Team.filter(slug=team_slug, organization=org.id)
+        team = await team_qs.first()
         if not team:
             team = Team(name="Default Team", slug=team_slug, organization=org)
-            await team.save_async()
+            await team.save()
             logger.info("Created default Team: '%s'", team_slug)
 
         user_email = self.config.get("DEFAULT_USER_EMAIL", "cli@volnux.local")
-        user_qs = await User.filter_async(email=user_email)
-        user = user_qs.first()
+        user_qs = await User.filter(email=user_email)
+        user = await user_qs.first()
         if not user:
             user = User(
                 name="cli_developer", email=user_email, is_active=True, organization=org
             )
-            await user.save_async()
+            await user.save()
             logger.info("Created default CLI User: '%s'", user_email)
 
         return org, team, user
@@ -130,9 +132,10 @@ class VolnuxProjectMigrator:
                 ast_obj, pty_text = wfconfig.get_pointy_ast()
                 ast_hash = hashlib.sha256(pty_text.encode("utf-8")).hexdigest()
 
-                workflow = await Workflow.filter_async(
-                    name=wfconfig.name, organization=org.id
-                ).first()
+                workflow_qs = await Workflow.filter(
+                    name=wfconfig.name, organization_object_id=org.id
+                )
+                workflow = await workflow_qs.first()
 
                 if not workflow:
                     workflow = Workflow(
@@ -144,16 +147,18 @@ class VolnuxProjectMigrator:
                     )
                     logger.info("Registered new Workflow: '%s'", wfconfig.name)
 
-                version_record = await WorkflowVersion.filter(
+                version_record_qs = await WorkflowVersion.filter(
                     workflow=workflow.id, ast_hash=ast_hash
-                ).first()
+                )
+                version_record = await version_record_qs.first()
 
                 if not version_record:
-                    latest_version = (
-                        await WorkflowVersion.filter(workflow=workflow.id)
-                        .order_by("-created_at")
-                        .first()
+                    latest_version_qs = await WorkflowVersion.filter(
+                        workflow=workflow.id
                     )
+                    latest_version = await latest_version_qs.order_by(
+                        "-created_at"
+                    ).first()
 
                     version_str = self._calculate_next_version_str(latest_version)
 

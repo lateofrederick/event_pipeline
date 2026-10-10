@@ -4,7 +4,8 @@ import os
 try:
     import httpx
 except ImportError:
-    raise ImportError("httpx package not installed. Run: pip install httpx")
+    # raise ImportError("httpx package not installed. Run: pip install httpx")
+    pass
 from typing import Any, Dict, List, Optional
 
 from .base import LLMProviderAdapterBase

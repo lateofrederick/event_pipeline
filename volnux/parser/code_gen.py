@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExecutableASTGenerator(ASTVisitorInterface):
+
     def __init__(
         self,
         task_template: typing.Type[TaskProtocol],
@@ -254,18 +255,34 @@ class ExecutableASTGenerator(ASTVisitorInterface):
     def visit_map(self, node: ast.MapNode):
         pass
 
-    def visit_unaryop(self, node: ast.UnaryOpNode):
+    def visit_pipeline_grouping(self, node: "PipelineGroupingNode"):
         pass
 
-    # def visit_access_environment_variable(
-    #     self, node: ast.EnvironmentVariableAccessNode
-    # ):
-    #     pass
-
-    def visit_list(self, node: ast.ListNode):
+    def visit_meta_task(self, node: "MetaTaskNode"):
         pass
 
-    def visit_map(self, node: ast.MapNode):
+    def visit_variable_declaration(self, node: "VariableDeclNode"):
+        pass
+
+    def visit_null_coalesce(self, node: "NullCoalesceExprNode"):
+        pass
+
+    def visit_comparison_expr(self, node: "ComparisonExprNode"):
+        pass
+
+    def visit_branch(self, node: "BranchNode"):
+        pass
+
+    def visit_index_expr(self, node: "IndexExprNode"):
+        pass
+
+    def visit_retry(self, node: "RetryNode"):
+        pass
+
+    def visit_attribute(self, node: "AttributeNode"):
+        pass
+
+    def visit_ternary_expr(self, node: "TernaryExprNode"):
         pass
 
     def generate(self) -> typing.Optional[TaskType]:

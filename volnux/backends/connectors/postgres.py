@@ -10,7 +10,7 @@ from psycopg.errors import DatabaseError, InterfaceError, OperationalError
 from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import ConnectionPool
 
-from volnux.backends.connection import BackendConnectorBase, ConnectionError
+from volnux.backends.connection import BackendConnectorBase
 
 logger = logging.getLogger(__name__)
 

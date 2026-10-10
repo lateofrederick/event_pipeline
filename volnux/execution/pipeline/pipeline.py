@@ -28,20 +28,16 @@ from volnux.exceptions import (
     EventDoesNotExist,
     EventDone,
     ImproperlyConfigured,
-    PipelineConfigurationError,
     PointyNotExecutable,
 )
 from volnux.execution.status import ExecutionStatus
 from volnux.fields import InputDataField
 from volnux.import_utils import import_string
-from volnux.mixins import ObjectIdentityMixin, ScheduleMixin
+from volnux.mixins import ObjectIdentityMixin
 from volnux.parser.operator import PipeType
 from volnux.parser.protocols import TaskType
 from volnux.execution.pipeline.wrapper import PipelineWrapper
 from volnux.signal.signals import (
-    SoftSignal,
-    batch_pipeline_finished,
-    batch_pipeline_started,
     pipeline_execution_end,
     pipeline_execution_start,
     pipeline_metrics_updated,
@@ -314,12 +310,10 @@ class PipelineMeta(type):
             with open(pointy_file, "r", encoding="utf-8") as fh:
                 pointy_str = fh.read()
 
-        # Compile the Pointy-Lang source into an executable task graph.
-        # Raise descriptive errors rather than generic Exception.
         try:
             workflow, ast = build_pipeline_flow_from_pointy_code(pointy_str)
         except (PointyNotExecutable, SyntaxError):
-            raise  # propagate as-is — these have clear messages
+            raise
         except Exception as exc:
             raise BadPipelineError(
                 f"Pipeline {new_class.__name__!r} has an improperly written "

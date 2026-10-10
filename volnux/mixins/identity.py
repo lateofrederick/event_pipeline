@@ -61,7 +61,7 @@ class ObjectIdentityMixin:
         raise NotImplementedError()
 
     def __setstate__(self, state: typing.Dict[str, typing.Any]) -> None:
-        self._objectid_lock = threading.Lock()
+        # self._objectid_lock = threading.Lock()
         self.set_state(state)
 
     def __getstate__(self) -> typing.Dict[str, typing.Any]:

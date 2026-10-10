@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from rehydrator.engine.snapshot import (
+from volnux.execution.rehydrator.engine.snapshot import (
     QueueTaskTemplate,
     TraversalSnapshot,
     TaskSnapshot,
@@ -112,6 +112,7 @@ class TestTraversalSnapshot:
 
     def test_is_dataclass(self) -> None:
         from dataclasses import is_dataclass
+
         assert is_dataclass(TraversalSnapshot)
 
     def test_queue_index_tracking(self) -> None:
@@ -312,13 +313,18 @@ class TestContextSnapshotRoundTrip:
         assert state["state_id"] == "state-rt-001"
         # Traversal should be flattened to a dict too
         assert isinstance(state["traversal"], dict)
-        assert state["traversal"]["engine_class_path"] == "volnux.engine.base.WorkflowEngine"
+        assert (
+            state["traversal"]["engine_class_path"]
+            == "volnux.engine.base.WorkflowEngine"
+        )
 
     def test_get_state_flattens_traversal(self) -> None:
         cs = self._make_context_snapshot()
         state = cs.get_state()
         # The traversal should be a plain dict, not a TraversalSnapshot
-        assert not hasattr(state["traversal"], "engine_class_path") or isinstance(state["traversal"], dict)
+        assert not hasattr(state["traversal"], "engine_class_path") or isinstance(
+            state["traversal"], dict
+        )
 
     def test_set_state_updates_fields(self) -> None:
         cs = self._make_context_snapshot()

@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 CONF = VolnuxConfig.get_instance()
 
-PROJECT_ROOT = CONF.PROJECT_ROOT_DIR
-
 
 class BaseManager(ABC):
     """
@@ -47,7 +45,7 @@ class BaseManager(ABC):
         Auto-discover and load all modules containing event classes that inherit from EventBase.
         Searches through the project directory for Python modules and registers event classes.
         """
-        project_root = PROJECT_ROOT
+        project_root = CONF.PROJECT_ROOT_DIR
         logger.info(f"Searching for event modules in: {project_root}")
 
         discovered_events: typing.Set[typing.Type] = set()

@@ -27,7 +27,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, List, Optional, Callable, Awaitable, Dict, Type, Literal
 
-from .source import WorkflowSource
 from .registry import get_workflow_registry
 from volnux.executors.utils.registry import get_global_executor_registry
 from volnux.result import ResultSet as TriggerSet
@@ -62,7 +61,7 @@ class TriggerRegistry:
     """Manages triggers registered by a workflow configuration."""
 
     def __init__(self):
-        self._triggers: TriggerSet["TriggerBase"] = TriggerSet()
+        self._triggers: TriggerSet["TriggerBase"] = TriggerSet[TriggerBase]()
 
     def register(
         self,

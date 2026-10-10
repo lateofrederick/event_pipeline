@@ -1,6 +1,8 @@
+import inspect
 import logging
 import typing
 import re
+import os
 import asyncio
 from contextlib import asynccontextmanager
 from functools import wraps
@@ -236,6 +238,9 @@ def backend_operation(
         @wraps(method)
         async def wrapper(self: "KeyValueStoreIntegrationMixin", *args, **kwargs):
             result = method(self, *args, **kwargs)
+            # Support async methods: finish the operation before auto-saving
+            if inspect.isawaitable(result):
+                result = await result
             if auto_save:
                 await self.save(force_insert=force_insert, ttl=ttl)
             return result
@@ -390,9 +395,15 @@ class KeyValueStoreIntegrationMixin(BackendConnectionIntegrationMixin):
                     raise
 
     @classmethod
-    def get_migration_dir(cls) -> typing.Optional[str]:
+    def get_migration_dir(cls) -> str:
         """Get the directory where migrations are stored for this class."""
-        return None
+        volnux_config = cls.get_volnux_config()
+        try:
+            return os.path.join(volnux_config.MIGRATION_DIR, f"{cls.__name__}")
+        except AttributeError:
+            return os.path.join(
+                os.path.expanduser("~"), ".volnux", "migrations", f"{cls.__name__}"
+            )
 
     @classmethod
     def get_volnux_config(cls) -> "VolnuxConfig":

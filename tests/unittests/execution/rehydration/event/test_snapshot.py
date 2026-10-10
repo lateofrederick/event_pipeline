@@ -122,9 +122,7 @@ class TestEventCheckpointSnapshot:
 
     # attribs field populated
     def test_attribs_stores_user_state(self) -> None:
-        snapshot = self._make_snapshot(
-            attribs={"_page": 5, "_filter": "active"}
-        )
+        snapshot = self._make_snapshot(attribs={"_page": 5, "_filter": "active"})
         assert snapshot.attribs["_page"] == 5
         assert snapshot.attribs["_filter"] == "active"
 

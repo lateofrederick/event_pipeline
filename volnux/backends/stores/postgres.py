@@ -1,4 +1,3 @@
-import json
 import logging
 from enum import Enum
 from contextlib import contextmanager
@@ -8,6 +7,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Set,
     Tuple,
     Type,
     Union,
@@ -18,7 +18,14 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from volnux.backends.store import KeyValueStoreBackendBase, YoyoMigrationsMixin
+from psycopg.types.json import Jsonb
+from yoyo import get_backend
+
+from volnux.backends.store import (
+    KeyValueStoreBackendBase,
+    YoyoMigrationsMixin,
+    SQLDialect,
+)
 from volnux.exceptions import (
     ObjectDoesNotExist,
     ObjectExistError,
@@ -26,8 +33,14 @@ from volnux.exceptions import (
     SerializationError,
 )
 from volnux.backends.connectors.postgres import PostgresConnector
+from volnux.backends.db_utils import _safe_name
 
 logger = logging.getLogger("volnux.backends.postgres")
+
+
+def _column_list(columns: List[str]) -> str:
+    """Comma-separated quoted column names for INSERT column lists."""
+    return ", ".join(_safe_name(col) for col in columns)
 
 
 if TYPE_CHECKING:
@@ -79,6 +92,8 @@ class PostgresStoreBackend(
 
     connector_klass = PostgresConnector
 
+    dialect = SQLDialect.POSTGRES
+
     # PostgreSQL-specific type mapping
     TYPE_MAPPING = {
         bool: "BOOLEAN",
@@ -91,7 +106,7 @@ class PostgresStoreBackend(
     }
 
     def __init__(self, **connector_config: Any) -> None:
-        """Initialize the PostgresSQL store backend.
+        """Initialize the PostgreSQL store backend.
 
         Args:
             **connector_config: Configuration passed to PostgresConnector.
@@ -102,6 +117,7 @@ class PostgresStoreBackend(
         super().__init__(**connector_config)
 
         self._ensure_connected()
+        self._id_field_length = 255
 
         # Schema existence cache to avoid repeated information_schema queries
         self._schema_cache: Dict[str, bool] = {}
@@ -118,7 +134,8 @@ class PostgresStoreBackend(
         try:
             yield cursor
         finally:
-            self.connector.return_cursor(cursor)
+            # self.connector.return_cursor(cursor)
+            cursor.close()
 
     @contextmanager
     def _transaction(self):
@@ -132,6 +149,56 @@ class PostgresStoreBackend(
         with self.connector.transaction():
             yield
 
+    def _prepare_record_data(
+        self, record: "KeyValueStoreIntegrationMixin", record_key: str
+    ) -> Dict[str, Any]:
+        """Prepare record data, wrapping dicts/lists for JSONB columns.
+
+        psycopg 3 has no default adapter for dict, and adapts list to an
+        ARRAY, so both are wrapped in ``Jsonb`` to match the JSONB columns
+        compile_schema creates for them.
+        """
+        record_data = super()._prepare_record_data(record, record_key)
+        for field_name, value in record_data.items():
+            if isinstance(value, (dict, list)):
+                record_data[field_name] = Jsonb(value)
+        return record_data
+
+    def execute_query(
+        self, query: str, *args: Any, fetch_method: Optional[str] = "fetchall"
+    ) -> Any:
+        """Execute a query in a transaction and fetch its result.
+
+        Args:
+            query: SQL with ``%s`` placeholders.
+            *args: Arguments forwarded to ``cursor.execute`` (e.g. a params tuple).
+            fetch_method: ``"fetchall"``, ``"fetchone"``, or None for no fetch.
+
+        Raises:
+            SqlOperationError: If the query fails.
+        """
+        try:
+            with self._transaction():
+                with self._get_cursor() as cursor:
+                    cursor.execute(query, *args)
+                    if fetch_method == "fetchall":
+                        return cursor.fetchall()
+                    if fetch_method == "fetchone":
+                        return cursor.fetchone()
+                    return None
+        except Exception as e:
+            logger.error("Error executing query: %s", e)
+            raise SqlOperationError(f"Error executing query: {e}") from e
+
+    def _get_migration_backend(self) -> Any:
+        # The connector uses psycopg 3; yoyo's plain postgres:// backend
+        # requires psycopg2, so select yoyo's psycopg 3 backend explicitly.
+        uri = self.connector.get_uri()
+        scheme, sep, rest = uri.partition("://")
+        if sep and scheme in ("postgres", "postgresql", "psql"):
+            uri = f"postgresql+psycopg://{rest}"
+        return get_backend(uri)
+
     def _invalidate_schema_cache(self, schema_name: Optional[str] = None) -> None:
         """Invalidate the schema cache.
 
@@ -142,6 +209,60 @@ class PostgresStoreBackend(
             self._schema_cache.pop(schema_name, None)
         else:
             self._schema_cache.clear()
+
+    def get_cached_table_columns(self, schema_name: str) -> Dict[str, str]:
+        """
+        Queries the backend system catalogs to fetch the live columns
+        and data types for a given table name.
+
+        Returns:
+            A dictionary mapping column name string to data type string.
+            Returns an empty dict {} if the table does not exist.
+        """
+        self._ensure_connected()
+        columns_map: Dict[str, str] = {}
+
+        try:
+            postgres_catalog_sql = """
+                                   SELECT column_name, data_type, character_maximum_length
+                                   FROM information_schema.columns
+                                   WHERE table_name = %s \
+                                     AND table_schema = current_schema(); \
+                                   """
+
+            rows = (
+                self.execute_query(
+                    postgres_catalog_sql, (schema_name,), fetch_method="fetchall"
+                )
+                or []
+            )
+
+            for row in rows:
+                if isinstance(row, dict):
+                    col_name = row["column_name"]
+                    base_type = row["data_type"].upper()
+                    max_len = row["character_maximum_length"]
+                else:
+                    col_name = row[0]
+                    base_type = row[1].upper()
+                    max_len = row[2]
+
+                # Standardize structural types like VARCHAR(N) for accurate string comparison
+                if base_type in ("CHARACTER VARYING", "VARCHAR") and max_len:
+                    col_type = f"VARCHAR({max_len})"
+                else:
+                    col_type = base_type
+
+                columns_map[col_name] = col_type
+
+            return columns_map
+        except Exception as e:
+            logger.error(
+                "Failed to extract schema system catalog column specs for '%s': %s",
+                schema_name,
+                e,
+            )
+            return {}
 
     def schema_exists(self, schema_name: str) -> bool:
         """Check if a schema (table) exists in the database.
@@ -175,7 +296,7 @@ class PostgresStoreBackend(
             logger.error("Error checking schema existence for '%s': %s", schema_name, e)
             return False
 
-    def _map_field_to_pg_type(self, field_type: Any) -> str:
+    def map_python_type_to_sql(self, field_type: Any) -> str:
         """Map a Python/Formax field type to a PostgreSQL column type.
 
         Handles Optional types by unwrapping Union/Optional before mapping.
@@ -203,169 +324,358 @@ class PostgresStoreBackend(
 
         return mapped
 
-    def _is_optional_field(self, field_type: Any) -> bool:
-        """Check if a field type allows NULL values.
+    # def _is_optional_field(self, field_type: Any) -> bool:
+    #     """Check if a field type allows NULL values.
+    #
+    #     Args:
+    #         field_type: The type annotation from the model field.
+    #
+    #     Returns:
+    #         True if the field can be NULL, False otherwise.
+    #     """
+    #     origin = get_origin(field_type)
+    #     if origin in (Union, UnionType):
+    #         return type(None) in get_args(field_type)
+    #     return False
 
-        Args:
-            field_type: The type annotation from the model field.
+    # def create_schema(
+    #     self,
+    #     schema_name: str,
+    #     record_class: Type["KeyValueStoreIntegrationMixin"],
+    #     **kwargs,
+    # ) -> None:
+    #     """Create a table with native FK, datetime, and list column support.
+    #
+    #     Uses depth-first creation for FK dependencies. For a true mutual
+    #     reference (A <-> B), the native FK constraint on *both* sides is
+    #     deferred and added via ALTER TABLE once every schema in the
+    #     dependency tree exists, so the resulting schema is symmetric no
+    #     matter which model was compiled first. No _record_state column.
+    #     """
+    #     from ..fields import OnDelete
+    #
+    #     is_top_level = "_creating" not in kwargs
+    #     _creating: Set[str] = kwargs.get("_creating", set())
+    #     _deferred_fks: List[Tuple[str, str, str, str]] = kwargs.get("_deferred_fks", [])
+    #     _mutual_deferred: Dict[str, Set[str]] = kwargs.get("_mutual_deferred", {})
+    #
+    #     self._ensure_connected()
+    #
+    #     if schema_name in _creating:
+    #         return
+    #
+    #     _creating.add(schema_name)
+    #
+    #     try:
+    #         columns = [
+    #             f"{_safe_name('id')} VARCHAR({self._id_field_length}) PRIMARY KEY"
+    #         ]
+    #         fk_constraints: List[str] = []
+    #         chk_constraints: List[str] = []
+    #         fk_columns_to_index: List[str] = []
+    #         jsonb_columns: List[str] = []
+    #
+    #         record_type_hints = get_type_hints(record_class)
+    #
+    #         for field_name, field_type in record_type_hints.items():
+    #             if field_name.startswith("_"):
+    #                 continue
+    #
+    #             field_type, attrib = self.decompose_field_type(field_type)
+    #             metadata = attrib.metadata if attrib else {}
+    #             meta_field_type = metadata.get("type")
+    #
+    #             is_unique = metadata.get("unique", False)
+    #             is_optional = self._is_optional_field(field_type) or metadata.get(
+    #                 "nullable", False
+    #             )
+    #
+    #             if meta_field_type == "foreignkey":
+    #                 has_native_fk = metadata.get("has_native_fk", False)
+    #
+    #                 target_model: Optional[Type["KeyValueStoreIntegrationMixin"]] = (
+    #                     metadata.get("target_model")
+    #                 )
+    #                 if target_model is None:
+    #                     raise ValueError(f"Target model missing for FK '{field_name}'")
+    #
+    #                 col_name = f"{field_name}_object_id"
+    #                 fk_columns_to_index.append(col_name)
+    #
+    #                 if has_native_fk:
+    #                     target_schema = self.resolve_physical_target(
+    #                         target_model.get_storage_route()
+    #                     )
+    #                     col_def = f"{col_name} VARCHAR({self._id_field_length})" + (
+    #                         "" if is_optional else " NOT NULL"
+    #                     )
+    #                     columns.append(col_def)
+    #
+    #                     on_delete: "OnDelete" = metadata.get(
+    #                         "on_delete", OnDelete.PROTECT
+    #                     )
+    #                     on_delete_sql = self._on_delete_constraints_map().get(
+    #                         on_delete, "NO ACTION"
+    #                     )
+    #
+    #                     if target_schema in _creating:
+    #                         logger.warning(
+    #                             "Mutual FK dependency: %s <-> %s. Native FK for "
+    #                             "'%s' will be added via ALTER TABLE once both "
+    #                             "schemas exist.",
+    #                             schema_name,
+    #                             target_schema,
+    #                             field_name,
+    #                         )
+    #                         _deferred_fks.append(
+    #                             (schema_name, col_name, target_schema, on_delete_sql)
+    #                         )
+    #                         _mutual_deferred.setdefault(target_schema, set()).add(
+    #                             schema_name
+    #                         )
+    #                         continue
+    #
+    #                     if not self.schema_exists(target_schema):
+    #                         self.create_schema(
+    #                             target_schema,
+    #                             target_model,
+    #                             _creating=_creating,
+    #                             _deferred_fks=_deferred_fks,
+    #                             _mutual_deferred=_mutual_deferred,
+    #                         )
+    #                         logger.info(
+    #                             "Auto-created schema '%s' required by FK '%s.%s'",
+    #                             target_schema,
+    #                             record_class.__name__,
+    #                             field_name,
+    #                         )
+    #
+    #                     if target_schema in _mutual_deferred.get(schema_name, ()):
+    #                         # The nested call above discovered that this pair
+    #                         # forms a mutual FK cycle; defer this direction too
+    #                         # so both sides get their native FK symmetrically
+    #                         # via ALTER TABLE instead of only one of them.
+    #                         _deferred_fks.append(
+    #                             (schema_name, col_name, target_schema, on_delete_sql)
+    #                         )
+    #                         continue
+    #
+    #                     fk_constraints.append(
+    #                         f"FOREIGN KEY ({_safe_name(col_name)}) REFERENCES {_safe_name(target_schema)}({_safe_name('id')}) "
+    #                         f"ON DELETE {on_delete_sql}"
+    #                     )
+    #                 else:
+    #                     # Software-enforced FK: Formax-Py descriptor serializes
+    #
+    #                     columns.append(
+    #                         f"{_safe_name(col_name)} VARCHAR({self._id_field_length})"
+    #                         + ("" if is_optional else " NOT NULL")
+    #                     )
+    #                 continue
+    #
+    #             if meta_field_type == "list":
+    #                 col_def = f"{_safe_name(field_name)} JSONB" + (
+    #                     "" if is_optional else " NOT NULL"
+    #                 )
+    #                 columns.append(col_def)
+    #                 jsonb_columns.append(field_name)
+    #                 continue
+    #
+    #             if meta_field_type == "datetime":
+    #                 is_timezone_aware: bool = metadata.get("tz_aware", False)
+    #                 pg_type = "TIMESTAMPTZ" if is_timezone_aware else "TIMESTAMP"
+    #             elif meta_field_type == "date":
+    #                 pg_type = "DATE"
+    #             else:
+    #                 pg_type = self._map_field_to_pg_type(field_type)
+    #
+    #                 if pg_type == "TEXT":
+    #                     if attrib:
+    #                         if attrib.min_length and attrib.max_length:
+    #                             pg_type = f"VARCHAR({attrib.max_length})"
+    #                         elif attrib.min_length:
+    #                             pg_type = f"TEXT"
+    #                         elif attrib.max_length:
+    #                             pg_type = f"VARCHAR({attrib.max_length})"
+    #
+    #             col_def = f"{_safe_name(field_name)} {pg_type}"
+    #             if not is_optional:
+    #                 col_def += " NOT NULL"
+    #             if is_unique:
+    #                 col_def += " UNIQUE"
+    #
+    #             columns.append(col_def)
+    #
+    #             # Gather attribute constraints
+    #             if attrib:
+    #                 if pg_type in ("TEXT", "VARCHAR") or pg_type.startswith("VARCHAR("):
+    #                     if attrib.min_length and attrib.max_length:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'minmax_length')} CHECK (LENGTH({_safe_name(field_name)}) >= {attrib.min_length} AND LENGTH({_safe_name(field_name)}) <= {attrib.max_length})"
+    #                         )
+    #                     elif attrib.min_length:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'min_length')} CHECK (LENGTH({_safe_name(field_name)}) >= {attrib.min_length})"
+    #                         )
+    #                     elif attrib.max_length:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'max_length')} CHECK (LENGTH({_safe_name(field_name)}) <= {attrib.max_length})"
+    #                         )
+    #
+    #                     # Handle Regex Pattern Matching
+    #                     if attrib.pattern is not None:
+    #                         # Extract raw string pattern if it is a compiled re.Pattern object
+    #                         if hasattr(attrib.pattern, "pattern"):
+    #                             raw_pattern = attrib.pattern.pattern
+    #                             # Check if re.IGNORECASE (value 2) flag is applied
+    #                             is_case_insensitive = bool(attrib.pattern.flags & 2)
+    #                         else:
+    #                             raw_pattern = str(attrib.pattern)
+    #                             is_case_insensitive = False
+    #
+    #                         # Clean Python anchoring syntax (\A, \Z) to match POSIX standard (^, $)
+    #                         raw_pattern = raw_pattern.replace(r"\A", "^").replace(
+    #                             r"\Z", "$"
+    #                         )
+    #
+    #                         # Escape single quotes in pattern strings to maintain valid SQL structures
+    #                         escaped_pattern = raw_pattern.replace("'", "''")
+    #                         regex_op = "~*" if is_case_insensitive else "~"
+    #
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'pattern')} CHECK ({_safe_name(field_name)} {regex_op} '{escaped_pattern}')"
+    #                         )
+    #
+    #                 elif pg_type in (
+    #                     "INT",
+    #                     "INTEGER",
+    #                     "BIGINT",
+    #                     "SMALLINT",
+    #                     "NUMERIC",
+    #                     "REAL",
+    #                     "DOUBLE PRECISION",
+    #                 ):
+    #                     numeric_checks = []
+    #
+    #                     if attrib.gt is not None:
+    #                         numeric_checks.append(
+    #                             f"{_safe_name(field_name)} > {attrib.gt}"
+    #                         )
+    #                     if attrib.ge is not None:
+    #                         numeric_checks.append(
+    #                             f"{_safe_name(field_name)} >= {attrib.ge}"
+    #                         )
+    #                     if attrib.lt is not None:
+    #                         numeric_checks.append(
+    #                             f"{_safe_name(field_name)} < {attrib.lt}"
+    #                         )
+    #                     if attrib.le is not None:
+    #                         numeric_checks.append(
+    #                             f"{_safe_name(field_name)} <= {attrib.le}"
+    #                         )
+    #
+    #                     if numeric_checks:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'numeric')} CHECK ({' AND '.join(numeric_checks)})"
+    #                         )
+    #
+    #         columns.extend(chk_constraints)
+    #         columns.extend(fk_constraints)
+    #         create_sql = f"CREATE TABLE IF NOT EXISTS {_safe_name(schema_name)} ({', '.join(columns)})"
+    #
+    #         with self._transaction():
+    #             with self._get_cursor() as cursor:
+    #                 cursor.execute(create_sql)
+    #
+    #                 # Proactively provision indexes for all gathered FK columns
+    #                 for col in fk_columns_to_index:
+    #                     try:
+    #                         idx_name = _generate_constraint_name(
+    #                             schema_name, "idx", col
+    #                         )
+    #                         cursor.execute(
+    #                             f"CREATE INDEX IF NOT EXISTS {idx_name} ON {schema_name} ({_safe_name(col)})"
+    #                         )
+    #                     except Exception:
+    #                         pass  # ignore index creation
+    #
+    #                 # Index all JSONB
+    #                 for col in jsonb_columns:
+    #                     try:
+    #                         idx_name = _generate_constraint_name(
+    #                             schema_name, "idx", col
+    #                         )
+    #                         index_sql = f"CREATE INDEX IF NOT EXISTS {idx_name} ON {schema_name} USING GIN ({_safe_name(col)})"
+    #                         cursor.execute(index_sql)
+    #                     except Exception:
+    #                         pass
+    #
+    #         self._invalidate_schema_cache(schema_name)
+    #         logger.info(
+    #             "Created schema '%s' with %d columns", schema_name, len(columns)
+    #         )
+    #
+    #     except Exception as e:
+    #         logger.error("Error creating schema '%s': %s", schema_name, e)
+    #         raise SqlOperationError(
+    #             f"Error creating schema '{schema_name}': {e}"
+    #         ) from e
+    #
+    #     finally:
+    #         _creating.discard(schema_name)
+    #
+    #     if is_top_level and _deferred_fks:
+    #         self._apply_deferred_foreign_keys(_deferred_fks)
+    #         _deferred_fks.clear()
 
-        Returns:
-            True if the field can be NULL, False otherwise.
-        """
-        origin = get_origin(field_type)
-        if origin in (Union, UnionType):
-            return type(None) in get_args(field_type)
-        return False
-
-    def create_schema(
-        self,
-        schema_name: str,
-        record_class: Type["KeyValueStoreIntegrationMixin"],
-        **kwargs,
-    ) -> None:
-        """Create a table with native FK, datetime, and list column support.
-
-        Uses depth-first creation for FK dependencies. Mutual references
-        fall back to software enforcement. No _record_state column.
-        """
-        from ..fields import OnDelete
-
-        _creating = kwargs.get("_creating", set())
-
-        self._ensure_connected()
-
-        if schema_name in _creating:
-            return
-
-        _creating.add(schema_name)
-
-        try:
-            columns = ["id TEXT PRIMARY KEY"]
-            fk_constraints: List[str] = []
-            record_type_hints = get_type_hints(record_class)
-
-            for field_name, field_type in record_type_hints.items():
-                if field_name.startswith("_"):
-                    continue
-
-                field_type, attrib = self.decompose_field_type(field_type)
-                metadata = attrib.metadata if attrib else {}
-                meta_field_type = metadata.get("type")
-
-                is_unique = metadata.get("unique", False)
-                is_optional = self._is_optional_field(field_type) or metadata.get(
-                    "nullable", False
-                )
-
-                if meta_field_type == "foreignkey":
-                    has_native_fk = metadata.get("has_native_fk", False)
-
-                    if has_native_fk:
-                        target_model: Optional[
-                            Type["KeyValueStoreIntegrationMixin"]
-                        ] = metadata.get("target_model")
-                        if target_model is None:
-                            raise ValueError(
-                                f"Target model missing for FK '{field_name}'"
-                            )
-
-                        target_schema = self.resolve_physical_target(
-                            target_model.get_storage_route()
-                        )
-                        col_name = f"{field_name}_object_id"
-                        col_def = f"{col_name} TEXT" + (
-                            "" if is_optional else " NOT NULL"
-                        )
-                        columns.append(col_def)
-
-                        if target_schema in _creating:
-                            logger.warning(
-                                "Mutual FK dependency: %s <-> %s. "
-                                "Omitting native FK for '%s'; software enforcement active.",
-                                schema_name,
-                                target_schema,
-                                field_name,
-                            )
-                            continue
-
-                        if not self.schema_exists(schema_name):
-                            self.create_schema(
-                                target_schema, target_model, _creating=_creating
-                            )
-                            logger.info(
-                                "Auto-created schema '%s' required by FK '%s.%s'",
-                                target_schema,
-                                record_class.__name__,
-                                field_name,
-                            )
-
-                        on_delete: "OnDelete" = metadata.get(
-                            "on_delete", OnDelete.PROTECT
-                        )
-                        on_delete_sql = {
-                            OnDelete.CASCADE: "CASCADE",
-                            OnDelete.SET_NULL: "SET NULL",
-                            OnDelete.SET_DEFAULT: "SET DEFAULT",
-                            OnDelete.PROTECT: "NO ACTION",
-                            OnDelete.DO_NOTHING: "NO ACTION",
-                        }.get(on_delete, "NO ACTION")
-
-                        fk_constraints.append(
-                            f"FOREIGN KEY ({col_name}) REFERENCES {target_schema}(id) "
-                            f"ON DELETE {on_delete_sql}"
-                        )
-                    else:
-                        # Software-enforced FK: Formax-Py descriptor serializes
-                        # to JSON string via pre_formatter. Stored as opaque JSONB.
-
-                        columns.append(
-                            f"{field_name} JSONB" + ("" if is_optional else " NOT NULL")
-                        )
-                    continue
-
-                if meta_field_type == "list":
-                    col_def = f"{field_name} JSONB" + (
-                        "" if is_optional else " NOT NULL"
-                    )
-                    columns.append(col_def)
-                    continue
-
-                if meta_field_type == "datetime":
-                    pg_type = "TIMESTAMP WITH TIME ZONE"
-                elif meta_field_type == "date":
-                    pg_type = "DATE"
-                else:
-                    pg_type = self._map_field_to_pg_type(field_type)
-
-                col_def = f"{field_name} {pg_type}"
-                if not is_optional:
-                    col_def += " NOT NULL"
-                if is_unique:
-                    col_def += " UNIQUE"
-                columns.append(col_def)
-
-            columns.extend(fk_constraints)
-            create_sql = (
-                f"CREATE TABLE IF NOT EXISTS {schema_name} ({', '.join(columns)})"
-            )
-
-            with self._transaction():
-                with self._get_cursor() as cursor:
-                    cursor.execute(create_sql)
-
-            self._invalidate_schema_cache(schema_name)
-            logger.info(
-                "Created schema '%s' with %d columns", schema_name, len(columns)
-            )
-
-        except Exception as e:
-            logger.error("Error creating schema '%s': %s", schema_name, e)
-            raise SqlOperationError(
-                f"Error creating schema '{schema_name}': {e}"
-            ) from e
-
-        finally:
-            _creating.discard(schema_name)
+    # def _apply_deferred_foreign_keys(
+    #     self, deferred_fks: List[Tuple[str, str, str, str]]
+    # ) -> None:
+    #     """Add native FK constraints deferred due to mutual schema cycles.
+    #
+    #     Called once every schema in a create_schema() call tree has been
+    #     created, so both sides of a mutual FK reference (A <-> B) end up
+    #     with a real, symmetric database-enforced constraint via ALTER
+    #     TABLE rather than one side silently falling back to software
+    #     enforcement.
+    #
+    #     Args:
+    #         deferred_fks: List of (schema_name, col_name, target_schema,
+    #             on_delete_sql) tuples describing the FK to add.
+    #
+    #     Raises:
+    #         SqlOperationError: If adding a constraint fails.
+    #     """
+    #     for schema_name, col_name, target_schema, on_delete_sql in deferred_fks:
+    #         constraint_name = f"fk_{schema_name}_{col_name}"
+    #         try:
+    #             with self._transaction():
+    #                 with self._get_cursor() as cursor:
+    #                     cursor.execute(
+    #                         f"ALTER TABLE {schema_name} "
+    #                         f"ADD CONSTRAINT {constraint_name} "
+    #                         f"FOREIGN KEY ({col_name}) REFERENCES {target_schema}(id) "
+    #                         f"ON DELETE {on_delete_sql}"
+    #                     )
+    #             logger.info(
+    #                 "Added deferred FK constraint '%s' on %s.%s -> %s",
+    #                 constraint_name,
+    #                 schema_name,
+    #                 col_name,
+    #                 target_schema,
+    #             )
+    #         except Exception as e:
+    #             logger.error(
+    #                 "Error adding deferred FK constraint on %s.%s -> %s: %s",
+    #                 schema_name,
+    #                 col_name,
+    #                 target_schema,
+    #                 e,
+    #             )
+    #             raise SqlOperationError(
+    #                 f"Error adding deferred FK constraint on "
+    #                 f"{schema_name}.{col_name}: {e}"
+    #             ) from e
 
     def drop_schema(self, schema_name: str) -> None:
         """Drop a schema (table) from the database.
@@ -383,7 +693,9 @@ class PostgresStoreBackend(
         try:
             with self._transaction():
                 with self._get_cursor() as cursor:
-                    cursor.execute(f"DROP TABLE IF EXISTS {schema_name} CASCADE")
+                    cursor.execute(
+                        f"DROP TABLE IF EXISTS {_safe_name(schema_name)} CASCADE"
+                    )
 
             self._invalidate_schema_cache(schema_name)
             logger.info("Dropped schema '%s'", schema_name)
@@ -421,6 +733,27 @@ class PostgresStoreBackend(
         """
         return True
 
+    def has_fk_constraint(self, schema_name: str, column_name: str) -> bool:
+        """Check if a foreign key constraint exists for a given column.
+
+        Args:
+            schema_name: The schema containing the column.
+            column_name: The name of the column to check.
+
+        Returns:
+            True if a foreign key constraint exists for the column, False otherwise.
+        """
+        with self._get_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM information_schema.key_column_usage kcu "
+                "JOIN information_schema.table_constraints tc "
+                "ON kcu.constraint_name = tc.constraint_name "
+                "WHERE tc.table_name = %s AND kcu.column_name = %s "
+                "AND tc.constraint_type = 'FOREIGN KEY' LIMIT 1",
+                (schema_name, column_name),
+            )
+            return cursor.fetchone() is not None
+
     def exists(self, schema_name: str, record_key: str) -> bool:
         """Check if a record exists in the store.
 
@@ -439,7 +772,7 @@ class PostgresStoreBackend(
         try:
             with self._get_cursor() as cursor:
                 cursor.execute(
-                    f"SELECT 1 FROM {schema_name} WHERE id = %s LIMIT 1",
+                    f"SELECT 1 FROM {_safe_name(schema_name)} WHERE id = %s LIMIT 1",
                     (record_key,),
                 )
                 return cursor.fetchone() is not None
@@ -478,7 +811,7 @@ class PostgresStoreBackend(
             placeholders = [f"%({c})s" for c in cols]
 
             sql = (
-                f"INSERT INTO {schema_name} ({', '.join(cols)}) "
+                f"INSERT INTO {_safe_name(schema_name)} ({_column_list(cols)}) "
                 f"VALUES ({', '.join(placeholders)}) "
                 f"ON CONFLICT (id) DO NOTHING"
             )
@@ -530,9 +863,13 @@ class PostgresStoreBackend(
 
             # Build SET clause excluding the id column
             set_columns = [col for col in record_data.keys() if col != "id"]
-            set_clause = ", ".join([f"{col} = %({col})s" for col in set_columns])
+            set_clause = ", ".join(
+                [f"{_safe_name(col)} = %({col})s" for col in set_columns]
+            )
 
-            update_sql = f"UPDATE {schema_name} SET {set_clause} WHERE id = %(id)s"
+            update_sql = (
+                f"UPDATE {_safe_name(schema_name)} SET {set_clause} WHERE id = %(id)s"
+            )
 
             with self._transaction():
                 with self._get_cursor() as cursor:
@@ -585,11 +922,14 @@ class PostgresStoreBackend(
             # Build UPDATE SET for conflict resolution
             update_columns = [col for col in columns if col != "id"]
             update_clause = ", ".join(
-                [f"{col} = EXCLUDED.{col}" for col in update_columns]
+                [
+                    f"{_safe_name(col)} = EXCLUDED.{_safe_name(col)}"
+                    for col in update_columns
+                ]
             )
 
             upsert_sql = (
-                f"INSERT INTO {schema_name} ({', '.join(columns)}) "
+                f"INSERT INTO {_safe_name(schema_name)} ({_column_list(columns)}) "
                 f"VALUES ({', '.join(placeholders)}) "
                 f"ON CONFLICT (id) DO UPDATE SET {update_clause}"
             )
@@ -623,7 +963,8 @@ class PostgresStoreBackend(
             with self._transaction():
                 with self._get_cursor() as cursor:
                     cursor.execute(
-                        f"DELETE FROM {schema_name} WHERE id = %s", (record_key,)
+                        f"DELETE FROM {_safe_name(schema_name)} WHERE id = %s",
+                        (record_key,),
                     )
 
                     if cursor.rowcount == 0:
@@ -667,19 +1008,24 @@ class PostgresStoreBackend(
         try:
             with self._get_cursor() as cursor:
                 cursor.execute(
-                    f"SELECT * FROM {schema_name} WHERE id = %s",
+                    f"SELECT * FROM {_safe_name(schema_name)} WHERE id = %s",
                     (record_key,),
                 )
                 row = cursor.fetchone()
+                # Map columns while the cursor is open: psycopg clears
+                # cursor.description once the cursor is closed.
+                row_dict = (
+                    None
+                    if row is None
+                    else self._sqlite_row_and_tuple_to_dict(row, cursor)
+                )
 
-            if row is None:
+            if row_dict is None:
                 raise ObjectDoesNotExist(
                     f"Record '{record_key}' does not exist in schema '{schema_name}'"
                 )
 
-            return self._deserialize_record(
-                self._sqlite_row_and_tuple_to_dict(row, cursor), record_klass
-            )
+            return self._deserialize_record(row_dict, record_klass)
         except ObjectDoesNotExist:
             raise
         except SerializationError:
@@ -717,16 +1063,29 @@ class PostgresStoreBackend(
     def _escape_like(value: str) -> str:
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    def _build_sql_filter(self, filter_kwargs: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    def _build_sql_filter(
+        self, filter_kwargs: Dict[str, Any], table: Optional[str] = None
+    ) -> Tuple[str, List[Any]]:
+        """Build a WHERE clause from Django-style lookups.
+
+        Column names are quoted (and qualified with ``table`` when given, to
+        stay unambiguous in JOINs). Quoting also preserves case and keyword
+        names, and stops filter keys from injecting SQL.
+        """
         if not filter_kwargs:
             return "TRUE", []
 
         conditions: List[str] = []
         parameters: List[Any] = []
 
+        def column(name: str) -> str:
+            quoted = _safe_name(name)
+            return f"{_safe_name(table)}.{quoted}" if table else quoted
+
         for key, value in filter_kwargs.items():
             if "__" in key:
-                field, operator = key.rsplit("__", 1)
+                raw_field, operator = key.rsplit("__", 1)
+                field = column(raw_field)
 
                 if operator == "in":
                     if not isinstance(value, (list, tuple)) or not value:
@@ -786,10 +1145,19 @@ class PostgresStoreBackend(
             else:
                 if isinstance(value, Enum):
                     value = value.value
-                conditions.append(f"{key} = %s")
+                conditions.append(f"{column(key)} = %s")
                 parameters.append(value)
 
         return " AND ".join(conditions), parameters
+
+    @staticmethod
+    def _order_by_clause(order_by: Optional[str]) -> str:
+        """``"-age"`` → ``ORDER BY "age" DESC``; quoted so it can't inject SQL."""
+        if not order_by:
+            return ""
+        if order_by.startswith("-"):
+            return f" ORDER BY {_safe_name(order_by[1:])} DESC"
+        return f" ORDER BY {_safe_name(order_by)} ASC"
 
     def filter(
         self,
@@ -828,13 +1196,8 @@ class PostgresStoreBackend(
         try:
             where_clause, parameters = self._build_sql_filter(filter_kwargs)
 
-            query = f"SELECT id FROM {schema_name} WHERE {where_clause}"
-
-            if order_by:
-                if order_by.startswith("-"):
-                    query += f" ORDER BY {order_by[1:]} DESC"
-                else:
-                    query += f" ORDER BY {order_by} ASC"
+            query = f"SELECT id FROM {_safe_name(schema_name)} WHERE {where_clause}"
+            query += self._order_by_clause(order_by)
 
             if limit is not None:
                 query += f" LIMIT %s"
@@ -856,6 +1219,165 @@ class PostgresStoreBackend(
         except Exception as e:
             logger.error("Error filtering records: %s", e)
             raise SqlOperationError(f"Error filtering records: {e}")
+
+    def filter_with_joins(
+        self,
+        schema_name: str,
+        model_class: Type["KeyValueStoreIntegrationMixin"],
+        join_fields: List[str],
+        **filter_kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """Resolve FK fields via SQL JOINs for native FKs, batch fetch for software FKs."""
+        self._ensure_connected()
+
+        if not self.schema_exists(schema_name):
+            raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
+
+        # Classify each join field
+        native_joins: List[Tuple[str, str, str]] = (
+            []
+        )  # (field_name, fk_column, target_schema)
+        software_fk_columns: List[Tuple[str, str]] = []  # (field_name, fk_column)
+
+        for field_name in join_fields:
+            # Same column naming as compile_schema: "<field>_object_id"
+            fk_col = (
+                f"{field_name}_object_id"
+                if not field_name.endswith("_object_id")
+                else field_name
+            )
+            has_native = self.has_fk_constraint(schema_name, fk_col)
+
+            if has_native:
+                # Resolve target schema from FK constraint metadata
+                target_schema = self._get_fk_target_schema(schema_name, fk_col)
+                if target_schema:
+                    native_joins.append((field_name, fk_col, target_schema))
+                else:
+                    software_fk_columns.append((field_name, fk_col))
+            else:
+                software_fk_columns.append((field_name, fk_col))
+
+        # Build query with native JOINs. Postgres can't alias ``alias.*``, so
+        # each target column is selected under ``<field>__resolved_<col>``.
+        main = _safe_name(schema_name)
+        select_parts = [f"{main}.*"]
+        join_clauses: List[str] = []
+        alias_map: Dict[str, str] = {}
+
+        for i, (field_name, fk_col, target_schema) in enumerate(native_joins):
+            alias = _safe_name(f"j_{i}")
+            alias_map[field_name] = alias
+            join_clauses.append(
+                f"LEFT JOIN {_safe_name(target_schema)} AS {alias} "
+                f'ON {main}.{_safe_name(fk_col)} = {alias}."id"'
+            )
+            for col in self.get_cached_table_columns(target_schema):
+                select_parts.append(
+                    f"{alias}.{_safe_name(col)} "
+                    f"AS {_safe_name(f'{field_name}__resolved_{col}')}"
+                )
+
+        # Qualify filter columns: "id" etc. exist on both sides of a join
+        where_clause, parameters = self._build_sql_filter(
+            filter_kwargs, table=schema_name
+        )
+
+        query = f"SELECT {', '.join(select_parts)} FROM {main}"
+        if join_clauses:
+            query += " " + " ".join(join_clauses)
+        if where_clause != "TRUE":
+            query += f" WHERE {where_clause}"
+
+        with self._get_cursor() as cursor:
+            cursor.execute(query, parameters)
+            rows = cursor.fetchall()
+            col_names = [desc[0] for desc in cursor.description]
+
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            record_dict = dict(zip(col_names, row))
+
+            # Extract joined columns into nested resolved dicts. Popping them
+            # before assigning "<field>__resolved" keeps the result from being
+            # removed along with the flattened columns.
+            for field_name in alias_map:
+                prefix = f"{field_name}__resolved_"
+                resolved_cols = {
+                    k[len(prefix) :]: record_dict.pop(k)
+                    for k in list(record_dict)
+                    if k.startswith(prefix)
+                }
+                record_dict[f"{field_name}__resolved"] = (
+                    resolved_cols if resolved_cols.get("id") is not None else None
+                )
+
+            results.append(record_dict)
+
+        # Batch-resolve software FKs (single additional query per field)
+        for field_name, fk_col in software_fk_columns:
+            target_ids = list(
+                {r.get(fk_col) for r in results if r.get(fk_col) is not None}
+            )
+            if not target_ids:
+                continue
+
+            # Determine target model from first non-null FK value's stored metadata
+            # For software FKs, the column contains the self-describing dict
+            target_model_class = self.resolve_target_model_for_field(
+                model_class, field_name
+            )
+            if target_model_class is None:
+                continue
+
+            # get_schema_name() is async; resolve the route synchronously here
+            target_schema = self.resolve_physical_target(
+                target_model_class.get_storage_route()
+            )
+            placeholders = ", ".join(["%s"] * len(target_ids))
+
+            with self._get_cursor() as cursor:
+                cursor.execute(
+                    f"SELECT * FROM {_safe_name(target_schema)} WHERE id IN ({placeholders})",
+                    target_ids,
+                )
+                target_rows = cursor.fetchall()
+                target_col_names = [desc[0] for desc in cursor.description]
+
+            target_map = {
+                dict(zip(target_col_names, tr))["id"]: dict(zip(target_col_names, tr))
+                for tr in target_rows
+            }
+
+            for record_dict in results:
+                fk_value = record_dict.get(fk_col)
+                if isinstance(fk_value, dict):
+                    obj_id = fk_value.get("data")
+                elif isinstance(fk_value, str):
+                    obj_id = fk_value
+                else:
+                    obj_id = None
+
+                record_dict[f"{field_name}__resolved"] = target_map.get(obj_id)
+
+        return results
+
+    def _get_fk_target_schema(self, schema_name: str, fk_column: str) -> Optional[str]:
+        """Get the target table name from a native FK constraint."""
+        with self._get_cursor() as cursor:
+            cursor.execute(
+                "SELECT ccu.table_name "
+                "FROM information_schema.key_column_usage kcu "
+                "JOIN information_schema.table_constraints tc "
+                "ON kcu.constraint_name = tc.constraint_name "
+                "JOIN information_schema.constraint_column_usage ccu "
+                "ON ccu.constraint_name = tc.constraint_name "
+                "WHERE tc.table_name = %s AND kcu.column_name = %s "
+                "AND tc.constraint_type = 'FOREIGN KEY' LIMIT 1",
+                (schema_name, fk_column),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
 
     def count(
         self,
@@ -884,7 +1406,9 @@ class PostgresStoreBackend(
 
         try:
             where_clause, parameters = self._build_sql_filter(filter_kwargs)
-            query = f"SELECT COUNT(*) FROM {schema_name} WHERE {where_clause}"
+            query = (
+                f"SELECT COUNT(*) FROM {_safe_name(schema_name)} WHERE {where_clause}"
+            )
 
             with self._get_cursor() as cursor:
                 cursor.execute(query, parameters)
@@ -940,7 +1464,7 @@ class PostgresStoreBackend(
             columns = list(all_data[0].keys())
             placeholders = [f"%({col})s" for col in columns]
             insert_sql = (
-                f"INSERT INTO {schema_name} ({', '.join(columns)}) "
+                f"INSERT INTO {_safe_name(schema_name)} ({_column_list(columns)}) "
                 f"VALUES ({', '.join(placeholders)}) "
                 f"ON CONFLICT (id) DO NOTHING"
             )
@@ -978,7 +1502,9 @@ class PostgresStoreBackend(
 
         try:
             placeholders = ", ".join(["%s"] * len(record_keys))
-            delete_sql = f"DELETE FROM {schema_name} WHERE id IN ({placeholders})"
+            delete_sql = (
+                f"DELETE FROM {_safe_name(schema_name)} WHERE id IN ({placeholders})"
+            )
 
             with self._transaction():
                 with self._get_cursor() as cursor:
@@ -1011,7 +1537,7 @@ class PostgresStoreBackend(
         try:
             with self._transaction():
                 with self._get_cursor() as cursor:
-                    cursor.execute(f"DELETE FROM {schema_name}")
+                    cursor.execute(f"DELETE FROM {_safe_name(schema_name)}")
                     deleted = cursor.rowcount
 
             logger.warning(
@@ -1053,7 +1579,7 @@ class PostgresStoreBackend(
                 info["exists"] = True
 
                 # Get row count
-                cursor.execute(f"SELECT COUNT(*) FROM {schema_name}")
+                cursor.execute(f"SELECT COUNT(*) FROM {_safe_name(schema_name)}")
                 info["row_count"] = cursor.fetchone()[0]
 
                 # Get column information
@@ -1086,8 +1612,8 @@ class PostgresStoreBackend(
 
                 # Get table size
                 cursor.execute(
-                    "SELECT pg_total_relation_size(%s)",
-                    (schema_name,),
+                    "SELECT pg_total_relation_size(%s::regclass)",
+                    (_safe_name(schema_name),),
                 )
                 info["total_size_bytes"] = cursor.fetchone()[0]
 

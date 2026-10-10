@@ -18,7 +18,11 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from volnux.execution.rehydrator.event.deserializer import StateDeserializer
-from volnux.execution.rehydrator.event.snapshot import InitArgsTemplate, CallArgsTemplate, ResourceState
+from volnux.execution.rehydrator.event.snapshot import (
+    InitArgsTemplate,
+    CallArgsTemplate,
+    ResourceState,
+)
 from volnux.parser.options import StopCondition
 
 
@@ -31,17 +35,17 @@ class TestDeserializeStopCondition:
         assert result[0] == StopCondition.NEVER
 
     def test_multiple_conditions(self) -> None:
-        result = StateDeserializer._deserialize_stop_condition([
-            "MAX_RETRIES_EXCEEDED",
-            "EXTERNAL_SIGNAL",
-        ])
+        result = StateDeserializer._deserialize_stop_condition(
+            [
+                "MAX_RETRIES_EXCEEDED",
+                "EXTERNAL_SIGNAL",
+            ]
+        )
         assert len(result) == 2
         assert result[0] == StopCondition.MAX_RETRIES_EXCEEDED
         assert result[1] == StopCondition.EXTERNAL_SIGNAL
 
-    def test_unknown_condition_warns(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_unknown_condition_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING):
             result = StateDeserializer._deserialize_stop_condition(
                 ["NEVER", "INVALID_CONDITION"]
@@ -76,8 +80,12 @@ class TestRestoreKeywordArgs:
 # deserialize_init_args
 class TestDeserializeInitArgs:
 
-    @patch("volnux.execution.checkpoint.deserializer.StateDeserializer._restore_keyword_args")
-    @patch("volnux.execution.checkpoint.deserializer.StateDeserializer._deserialize_stop_condition")
+    @patch(
+        "volnux.execution.checkpoint.deserializer.StateDeserializer._restore_keyword_args"
+    )
+    @patch(
+        "volnux.execution.checkpoint.deserializer.StateDeserializer._deserialize_stop_condition"
+    )
     @patch("volnux.execution.checkpoint.deserializer.EngineSerializer")
     def test_full_init_args(
         self,

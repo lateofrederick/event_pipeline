@@ -1,7 +1,6 @@
-import orjson as json
 import logging
 import sqlite3
-from types import UnionType
+import orjson as json
 from typing import (
     Any,
     Dict,
@@ -13,28 +12,44 @@ from typing import (
     Union,
     get_args,
     get_origin,
-    get_type_hints,
     TYPE_CHECKING,
 )
 
 from formax.typing import get_type
+from yoyo.backends.core.sqlite3 import SQLiteBackend
+from yoyo.connections import default_migration_table, parse_uri
 
-from volnux.backends.connectors.sqlite import SqliteConnector
-from volnux.backends.store import KeyValueStoreBackendBase, YoyoMigrationsMixin
+from volnux.backends.connectors.sqlite import (
+    SqliteConnector,
+    register_sqlite_functions,
+)
+from volnux.backends.store import (
+    KeyValueStoreBackendBase,
+    YoyoMigrationsMixin,
+    SQLDialect,
+)
 from volnux.exceptions import (
     ObjectDoesNotExist,
     ObjectExistError,
     SqlOperationError,
     SerializationError,
 )
+from volnux.backends.db_utils import _safe_name
 
 if TYPE_CHECKING:
-    from ..fields import OnDelete
     from volnux.result.stream import ResultStream
     from volnux.mixins.key_value_store_integration import KeyValueStoreIntegrationMixin
 
 
 logger = logging.getLogger(__name__)
+
+
+class _SQLiteMigrationBackend(SQLiteBackend):
+    """yoyo SQLite backend whose connections can evaluate generated schemas."""
+
+    def init_connection(self, connection: sqlite3.Connection) -> None:
+        super().init_connection(connection)
+        register_sqlite_functions(connection)
 
 
 class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
@@ -56,6 +71,8 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
     connector_klass = SqliteConnector
 
+    dialect = SQLDialect.SQLITE
+
     def __init__(self, **connector_config: Any):
         """Initialize the SQLite store backend.
 
@@ -65,6 +82,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         super().__init__(**connector_config)
 
         self._ensure_connected()
+        self._id_field_length = 255
 
         self._schema_cache: Dict[str, bool] = {}
 
@@ -78,6 +96,44 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             self._schema_cache.pop(schema_name, None)
         else:
             self._schema_cache.clear()
+
+    def get_cached_table_columns(self, schema_name: str) -> Dict[str, str]:
+        """
+        Queries the backend system catalogs to fetch the live columns
+        and data types for a given table name.
+
+        Returns:
+            A dictionary mapping column name string to data type string.
+            Returns an empty dict {} if the table does not exist.
+        """
+        self._ensure_connected()
+        columns_map: Dict[str, str] = {}
+
+        try:
+            # PRAGMA table_info returns rows: (cid, name, type, notnull, dflt_value, pk)
+            pragma_sql = f"PRAGMA table_info({_safe_name(schema_name)});"
+
+            rows = self.execute_query(pragma_sql, fetch_method="fetchall") or []
+
+            for row in rows:
+                # Support both tuple/list indices and row dict objects depending on row_factory
+                if isinstance(row, dict):
+                    col_name = row["name"]
+                    col_type = row["type"].upper()
+                else:
+                    col_name = row[1]
+                    col_type = row[2].upper()
+
+                columns_map[col_name] = col_type
+
+            return columns_map
+        except Exception as e:
+            logger.error(
+                "Failed to extract schema system catalog column specs for '%s': %s",
+                schema_name,
+                e,
+            )
+            return {}
 
     def schema_exists(self, schema_name: str) -> bool:
         """Check if a schema (table) exists in the database.
@@ -108,7 +164,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             logger.error(f"Error checking schema existence: {e}")
             return False
 
-    def _map_python_type_to_sql(self, field_type: Any) -> str:
+    def map_python_type_to_sql(self, field_type: Any) -> str:
         """Map Python types to SQLite types.
 
         Args:
@@ -129,152 +185,256 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
         return type_mapping.get(field_type, "TEXT")  # Default to TEXT for JSON
 
-    def _is_optional_field(self, field_type: Any) -> bool:
-        """Check if a field type allows None."""
-        origin = get_origin(field_type)
-        if origin in (Union, UnionType):
-            return type(None) in get_args(field_type)
-        return False
+    def _get_migration_backend(self) -> Any:
+        # yoyo runs each migration on a fresh connection (backend.copy()), and
+        # SQLite resolves CHECK functions such as REGEXP at CREATE TABLE time,
+        # so register them via the per-connection init hook.
+        backend = _SQLiteMigrationBackend(
+            parse_uri(self.connector.get_uri()), default_migration_table
+        )
+        backend.init_database()
+        return backend
 
-    def create_schema(
-        self,
-        schema_name: str,
-        record_class: Type["KeyValueStoreIntegrationMixin"],
-        **kwargs,
-    ) -> None:
+    def _prepare_record_data(
+        self, record: "KeyValueStoreIntegrationMixin", record_key: str
+    ) -> Dict[str, Any]:
+        """Prepare record data, JSON-encoding lists/dicts for TEXT columns.
+
+        sqlite3 cannot bind list/dict parameters; _deserialize_record parses
+        the JSON text back into Python objects on read.
         """
-        Create a schema (table) based on a record's structure.
+        record_data = super()._prepare_record_data(record, record_key)
+        for field_name, value in record_data.items():
+            if isinstance(value, (dict, list)):
+                record_data[field_name] = json.dumps(value, default=str).decode()
+        return record_data
 
-        Uses a two-phase approach for FK dependencies: dependent schemas are
-        created first (columns only, no FKs), then FK constraints are added
-        inline when the referencing table is created. If a mutual reference
-        is detected (A -> B -> A), the back-reference FK is omitted and
-        falls back to software-level enforcement via _on_delete_hook.
-
-        Args:
-            schema_name: The name of the schema to create.
-            record_class: A sample record to derive the schema from.
-            kwargs: Additional keyword arguments.
-                    _creating: Internal set tracking schemas currently being created,
-                                used to detect and break mutual FK dependency cycles.
-
-        Raises:
-            SqlOperationError: If schema creation fails.
-        """
-        self._ensure_connected()
-
-        # Create isolated tracking set at top-level call only
-        _creating: Set[str] = kwargs.get("_creating", set())
-
-        # Mark this schema as in-progress before processing its fields,
-        # so recursive calls for dependent schemas can detect the cycle.
-        _creating.add(schema_name)
-
-        try:
-            from ..fields import OnDelete
-
-            fields = ["id TEXT PRIMARY KEY"]
-            fk_constraints: List[str] = []
-            record_type_hints = get_type_hints(record_class)
-
-            for field_name, field_type in record_type_hints.items():
-                if field_name.startswith("_"):
-                    continue
-
-                field_type, attrib = self.decompose_field_type(field_type)
-
-                metadata = attrib.metadata if attrib else {}
-                meta_field_type = metadata.get("type")
-                is_unique = metadata.get("unique", False)
-                is_optional = self._is_optional_field(field_type) or metadata.get(
-                    "nullable", False
-                )
-
-                if meta_field_type == "foreignkey":
-                    has_native_fk = metadata.get("has_native_fk", False)
-
-                    if has_native_fk:
-                        target_model: Optional[
-                            Type["KeyValueStoreIntegrationMixin"]
-                        ] = metadata.get("target_model")
-                        if target_model is None:
-                            raise ValueError(
-                                f"Target model missing for FK '{field_name}'"
-                            )
-
-                        target_schema = self.resolve_physical_target(
-                            target_model.get_storage_route()
-                        )
-                        col_name = f"{field_name}_object_id"
-                        field_def = f"{col_name} TEXT" + (
-                            "" if is_optional else " NOT NULL"
-                        )
-                        fields.append(field_def)
-
-                        if target_schema in _creating:
-                            logger.warning(
-                                "Mutual FK dependency: %s <-> %s. "
-                                "Omitting native FK for '%s'; software enforcement active.",
-                                schema_name,
-                                target_schema,
-                                field_name,
-                            )
-                            continue
-
-                        if not self.schema_exists(target_schema):
-                            self.create_schema(
-                                target_schema, target_model, _creating=_creating
-                            )
-                            logger.info(
-                                f"Auto-created schema '{target_schema}' required by FK "
-                                f"'{record_class.__name__}.{field_name}'"
-                            )
-
-                        on_delete: "OnDelete" = metadata.get(
-                            "on_delete", OnDelete.PROTECT
-                        )
-                        on_delete_sql = {
-                            OnDelete.CASCADE: "CASCADE",
-                            OnDelete.SET_NULL: "SET NULL",
-                            OnDelete.SET_DEFAULT: "SET DEFAULT",
-                            OnDelete.PROTECT: "NO ACTION",
-                            OnDelete.DO_NOTHING: "NO ACTION",
-                        }.get(on_delete, "NO ACTION")
-
-                        fk_constraints.append(
-                            f"FOREIGN KEY ({col_name}) REFERENCES {target_schema}(id) "
-                            f"ON DELETE {on_delete_sql}"
-                        )
-                        continue
-                    else:
-                        # Software level Constraint. It contains a JSON describing the relationship
-                        # {"object_id": "dfd","model_path": "volnux.model.Workflow","backend_alias": "default"}
-                        sql_type = "TEXT"
-                elif meta_field_type == "list":
-                    sql_type = "TEXT"
-                elif meta_field_type in ["datetime", "date"]:
-                    sql_type = "TEXT"
-                else:
-                    sql_type = self._map_python_type_to_sql(field_type)
-
-                field_def = f"{field_name} {sql_type}"
-                if not is_optional:
-                    field_def += " NOT NULL"
-                if is_unique:
-                    field_def += " UNIQUE"
-                fields.append(field_def)
-
-            fields.extend(fk_constraints)
-            create_sql = (
-                f"CREATE TABLE IF NOT EXISTS {schema_name} ({', '.join(fields)})"
-            )
-            print(create_sql)
-            self.execute_query(create_sql, fetch_method=None)
-            self._invalidate_schema_cache(schema_name)
-
-        except Exception as e:
-            logger.error(f"Error creating schema '{schema_name}': {e}")
-            raise SqlOperationError(f"Error creating schema: {e}") from e
+    # def create_schema(
+    #     self,
+    #     schema_name: str,
+    #     record_class: Type["KeyValueStoreIntegrationMixin"],
+    #     **kwargs,
+    # ) -> None:
+    #     """
+    #     Create a schema (table) based on a record's structure.
+    #
+    #     Uses a two-phase approach for FK dependencies: dependent schemas are
+    #     created first (columns only, no FKs), then FK constraints are added
+    #     inline when the referencing table is created. If a mutual reference
+    #     is detected (A -> B -> A), the back-reference FK is omitted and
+    #     falls back to software-level enforcement via _on_delete_hook.
+    #
+    #     Args:
+    #         schema_name: The name of the schema to create.
+    #         record_class: A sample record to derive the schema from.
+    #         kwargs: Additional keyword arguments.
+    #                 _creating: Internal set tracking schemas currently being created,
+    #                             used to detect and break mutual FK dependency cycles.
+    #
+    #     Raises:
+    #         SqlOperationError: If schema creation fails.
+    #     """
+    #     self._ensure_connected()
+    #     self._ensure_foreign_keys_enabled()
+    #
+    #     # Create isolated tracking set at top-level call only
+    #     _creating: Set[str] = kwargs.get("_creating", set())
+    #
+    #     # Mark this schema as in-progress before processing its fields,
+    #     # so recursive calls for dependent schemas can detect the cycle.
+    #     _creating.add(schema_name)
+    #
+    #     try:
+    #         from ..fields import OnDelete
+    #
+    #         fields = [
+    #             f"{_safe_name('id')} VARCHAR({self._id_field_length}) PRIMARY KEY"
+    #         ]
+    #         fk_constraints: List[str] = []
+    #         chk_constraints: List[str] = []
+    #         fk_columns_to_index: List[str] = []
+    #
+    #         record_type_hints = get_type_hints(record_class)
+    #
+    #         for field_name, field_type in record_type_hints.items():
+    #             if field_name.startswith("_"):
+    #                 continue
+    #
+    #             field_type, attrib = self.decompose_field_type(field_type)
+    #
+    #             metadata = attrib.metadata if attrib else {}
+    #             meta_field_type = metadata.get("type")
+    #             is_unique = metadata.get("unique", False)
+    #             is_optional = self._is_optional_field(field_type) or metadata.get(
+    #                 "nullable", False
+    #             )
+    #
+    #             if meta_field_type == "foreignkey":
+    #                 has_native_fk = metadata.get("has_native_fk", False)
+    #                 col_name = (
+    #                     f"{field_name}_object_id"
+    #                     if not field_name.endswith("_object_id")
+    #                     else field_name
+    #                 )
+    #                 fk_columns_to_index.append(col_name)
+    #
+    #                 if has_native_fk:
+    #                     target_model: Optional[
+    #                         Type["KeyValueStoreIntegrationMixin"]
+    #                     ] = metadata.get("target_model")
+    #                     if target_model is None:
+    #                         raise ValueError(
+    #                             f"Target model missing for FK '{field_name}'"
+    #                         )
+    #
+    #                     target_schema = self.resolve_physical_target(
+    #                         target_model.get_storage_route()
+    #                     )
+    #                     field_def = (
+    #                         f"{_safe_name(col_name)} VARCHAR({self._id_field_length})"
+    #                         + ("" if is_optional else " NOT NULL")
+    #                     )
+    #                     fields.append(field_def)
+    #
+    #                     if target_schema in _creating:
+    #                         logger.warning(
+    #                             "Mutual FK dependency: %s <-> %s. "
+    #                             "Omitting native FK for '%s'; software enforcement active.",
+    #                             schema_name,
+    #                             target_schema,
+    #                             field_name,
+    #                         )
+    #                         continue
+    #
+    #                     if not self.schema_exists(target_schema):
+    #                         self.create_schema(
+    #                             target_schema, target_model, _creating=_creating
+    #                         )
+    #                         logger.info(
+    #                             f"Auto-created schema '{target_schema}' required by FK "
+    #                             f"'{record_class.__name__}.{field_name}'"
+    #                         )
+    #
+    #                     on_delete: "OnDelete" = metadata.get(
+    #                         "on_delete", OnDelete.PROTECT
+    #                     )
+    #                     on_delete_sql = self._on_delete_constraints_map().get(
+    #                         on_delete, "NO ACTION"
+    #                     )
+    #
+    #                     fk_constraints.append(
+    #                         f"FOREIGN KEY ({_safe_name(col_name)}) REFERENCES {_safe_name(target_schema)}({_safe_name('id')}) "
+    #                         f"ON DELETE {on_delete_sql}"
+    #                     )
+    #                     continue
+    #                 else:
+    #                     # Software level Constraint. The data modeling layer will take care
+    #                     # of all the data consistency rules set during modeling
+    #                     field_def = (
+    #                         f"{_safe_name(col_name)} VARCHAR({self._id_field_length})"
+    #                         + ("" if is_optional else " NOT NULL")
+    #                     )
+    #                     fields.append(field_def)
+    #
+    #                 continue
+    #             if meta_field_type == "list":
+    #                 sql_type = "TEXT"
+    #             elif meta_field_type in ["datetime", "date"]:
+    #                 sql_type = "TEXT"
+    #             else:
+    #                 sql_type = self._map_python_type_to_sql(field_type)
+    #
+    #                 if sql_type == "TEXT":
+    #                     if attrib:
+    #                         if attrib.min_length and attrib.max_length:
+    #                             sql_type = f"VARCHAR({attrib.max_length})"
+    #                         elif attrib.min_length:
+    #                             sql_type = f"TEXT"
+    #                         elif attrib.max_length:
+    #                             sql_type = f"VARCHAR({attrib.max_length})"
+    #
+    #             field_def = f"{_safe_name(field_name)} {sql_type}"
+    #             if not is_optional:
+    #                 field_def += " NOT NULL"
+    #             if is_unique:
+    #                 field_def += " UNIQUE"
+    #             fields.append(field_def)
+    #
+    #             if attrib:
+    #
+    #                 safe_field = _safe_name(field_name)
+    #
+    #                 if sql_type == "TEXT":
+    #                     if attrib.min_length and attrib.max_length:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'len_range')} CHECK (length({safe_field}) BETWEEN {attrib.min_length} AND {attrib.max_length})"
+    #                         )
+    #                     elif attrib.min_length:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'min_length')} CHECK (length({safe_field}) >= {attrib.min_length})"
+    #                         )
+    #                     elif attrib.max_length:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'max_length')} CHECK (length({safe_field}) <= {attrib.max_length})"
+    #                         )
+    #
+    #                     if attrib.pattern is not None:
+    #                         raw_pattern = (
+    #                             attrib.pattern.pattern
+    #                             if hasattr(attrib.pattern, "pattern")
+    #                             else str(attrib.pattern)
+    #                         )
+    #                         # Convert anchors safely to SQL-standard sequences
+    #                         raw_pattern = (
+    #                             raw_pattern.replace(r"\A", "^")
+    #                             .replace(r"\Z", "$")
+    #                             .replace("'", "''")
+    #                         )
+    #
+    #                         # Uses standard SQLite engine REGEXP evaluation operator
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'pattern')} CHECK ({safe_field} REGEXP '{raw_pattern}')"
+    #                         )
+    #
+    #                 elif sql_type in ("INTEGER", "REAL", "NUMERIC"):
+    #                     numeric_checks = []
+    #                     if attrib.gt is not None:
+    #                         numeric_checks.append(f"{safe_field} > {attrib.gt}")
+    #                     if attrib.ge is not None:
+    #                         numeric_checks.append(f"{safe_field} >= {attrib.ge}")
+    #                     if attrib.lt is not None:
+    #                         numeric_checks.append(f"{safe_field} < {attrib.lt}")
+    #                     if attrib.le is not None:
+    #                         numeric_checks.append(f"{safe_field} <= {attrib.le}")
+    #
+    #                     if numeric_checks:
+    #                         chk_constraints.append(
+    #                             f"CONSTRAINT {_generate_constraint_name(field_name, 'chk', 'numeric')} CHECK ({' AND '.join(numeric_checks)})"
+    #                         )
+    #
+    #         fields.extend(chk_constraints)
+    #         fields.extend(fk_constraints)
+    #         create_sql = f"CREATE TABLE IF NOT EXISTS {_safe_name(schema_name)} ({', '.join(fields)})"
+    #         self.execute_query(create_sql, fetch_method=None)
+    #
+    #         # Auto-provision performance indexes on Foreign Keys to guarantee snappy deletes
+    #         for fk_col in fk_columns_to_index:
+    #             try:
+    #                 idx_name = _generate_constraint_name(
+    #                     f"{schema_name}_{fk_col}", "idx", "fk"
+    #                 )
+    #                 self.execute_query(
+    #                     f"CREATE INDEX IF NOT EXISTS {idx_name} ON {_safe_name(schema_name)} ({_safe_name(fk_col)})",
+    #                     fetch_method=None,
+    #                 )
+    #             except Exception:
+    #                 pass  # Keep resilient if index generation hits environment variations
+    #
+    #         self._invalidate_schema_cache(schema_name)
+    #
+    #     except Exception as e:
+    #         logger.error(f"Error creating schema '{schema_name}': {e}")
+    #         raise SqlOperationError(f"Error creating schema: {e}") from e
 
     def drop_schema(self, schema_name: str) -> None:
         """Drop a schema (table) from the database.
@@ -290,7 +450,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         try:
             with self.connector.transaction():
                 cursor = self.connector.get_cursor()
-                cursor.execute(f"DROP TABLE IF EXISTS {schema_name}")
+                cursor.execute(f"DROP TABLE IF EXISTS {_safe_name(schema_name)}")
                 cursor.close()
 
             self._invalidate_schema_cache(schema_name)
@@ -323,6 +483,28 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
     def supports_foreign_keys(self) -> bool:
         return True
+
+    def has_fk_constraint(self, schema_name: str, column_name: str) -> bool:
+        """
+        Determine if a column has a foreign key constraint in a given database schema.
+
+        :param schema_name: Name of the schema to search for foreign key constraints.
+        :type schema_name: str
+        :param column_name: Name of the column to check for foreign key constraints.
+        :type column_name: str
+        :return: True if the column has a foreign key constraint, False otherwise.
+        :rtype: bool
+        """
+        cursor = self.connector.get_cursor()
+        try:
+            cursor.execute(f"PRAGMA foreign_key_list({_safe_name(schema_name)})")
+            for row in cursor.fetchall():
+                # row[3] is the 'from' column name in PRAGMA output
+                if row[3] == column_name:
+                    return True
+            return False
+        finally:
+            cursor.close()
 
     def execute_query(
         self, query: str, *args, fetch_method: Optional[str] = "fetchall", **kwargs
@@ -378,7 +560,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         try:
             cursor = self.connector.get_cursor()
             cursor.execute(
-                f"SELECT 1 FROM {schema_name} WHERE id = ? LIMIT 1",
+                f"SELECT 1 FROM {_safe_name(schema_name)} WHERE id = ? LIMIT 1",
                 (record_key,),
             )
             exists = cursor.fetchone() is not None
@@ -424,8 +606,9 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             placeholders = ["?" for _ in fields]
             values = [record_data[field] for field in fields]
 
+            # Quote identifiers: fields like "order" are SQL keywords
             insert_sql = f"""
-                INSERT INTO {schema_name} ({', '.join(fields)})
+                INSERT INTO {_safe_name(schema_name)} ({', '.join(map(_safe_name, fields))})
                 VALUES ({', '.join(placeholders)})
             """
 
@@ -472,7 +655,9 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             record_data = self._prepare_record_data(record, record_key)
 
             set_fields = [
-                f"{field} = ?" for field in record_data.keys() if field != "id"
+                f"{_safe_name(field)} = ?"
+                for field in record_data.keys()
+                if field != "id"
             ]
             values = [
                 record_data[field] for field in record_data.keys() if field != "id"
@@ -480,7 +665,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             values.append(record_key)
 
             update_sql = f"""
-                UPDATE {schema_name}
+                UPDATE {_safe_name(schema_name)}
                 SET {', '.join(set_fields)}
                 WHERE id = ?
             """
@@ -525,12 +710,14 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
             fields = list(record_data.keys())
             placeholders = ["?" for _ in fields]
             update_fields = [
-                f"{field} = excluded.{field}" for field in fields if field != "id"
+                f"{_safe_name(field)} = excluded.{_safe_name(field)}"
+                for field in fields
+                if field != "id"
             ]
             values = [record_data[field] for field in fields]
 
             upsert_sql = f"""
-                INSERT INTO {schema_name} ({', '.join(fields)})
+                INSERT INTO {_safe_name(schema_name)} ({', '.join(map(_safe_name, fields))})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT(id) DO UPDATE SET
                 {', '.join(update_fields)}
@@ -568,7 +755,9 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         try:
             with self.connector.transaction():
                 cursor = self.connector.get_cursor()
-                cursor.execute(f"DELETE FROM {schema_name} WHERE id = ?", (record_key,))
+                cursor.execute(
+                    f"DELETE FROM {_safe_name(schema_name)} WHERE id = ?", (record_key,)
+                )
 
                 return cursor.rowcount
         except ObjectDoesNotExist:
@@ -607,7 +796,9 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
         try:
             cursor = self.connector.get_cursor()
-            cursor.execute(f"SELECT * FROM {schema_name} WHERE id = ?", (record_key,))
+            cursor.execute(
+                f"SELECT * FROM {_safe_name(schema_name)} WHERE id = ?", (record_key,)
+            )
             row = cursor.fetchone()
 
             if row is None:
@@ -637,16 +828,29 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         """Escape SQL LIKE metacharacters to prevent wildcard injection."""
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    def _build_sql_filter(self, filter_kwargs: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    def _build_sql_filter(
+        self, filter_kwargs: Dict[str, Any], table: Optional[str] = None
+    ) -> Tuple[str, List[Any]]:
+        """Build a WHERE clause from Django-style lookups.
+
+        Column names are quoted (and qualified with ``table`` when given, to
+        stay unambiguous in JOINs), so keyword columns work and filter keys
+        cannot inject SQL.
+        """
         if not filter_kwargs:
             return "1", []
 
         conditions: List[str] = []
         parameters: List[Any] = []
 
+        def column(name: str) -> str:
+            quoted = _safe_name(name)
+            return f"{_safe_name(table)}.{quoted}" if table else quoted
+
         for key, value in filter_kwargs.items():
             if "__" in key:
-                field, operator = key.rsplit("__", 1)
+                raw_field, operator = key.rsplit("__", 1)
+                field = column(raw_field)
 
                 if operator == "in":
                     if not value:
@@ -702,10 +906,19 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
                     conditions.append(f"{field} = ?")
                     parameters.append(value)
             else:
-                conditions.append(f"{key} = ?")
+                conditions.append(f"{column(key)} = ?")
                 parameters.append(value)
 
         return " AND ".join(conditions), parameters
+
+    @staticmethod
+    def _order_by_clause(order_by: Optional[str]) -> str:
+        """``"-age"`` → ``ORDER BY "age" DESC``; quoted so it can't inject SQL."""
+        if not order_by:
+            return ""
+        if order_by.startswith("-"):
+            return f" ORDER BY {_safe_name(order_by[1:])} DESC"
+        return f" ORDER BY {_safe_name(order_by)} ASC"
 
     def filter(
         self,
@@ -744,21 +957,21 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         try:
 
             where_clause, parameters = self._build_sql_filter(filter_kwargs)
-            query = f"SELECT id FROM {schema_name}"
+            query = f"SELECT id FROM {_safe_name(schema_name)}"
 
             if where_clause != "1":
                 query += f" WHERE {where_clause}"
 
-            if order_by:
-                if order_by.startswith("-"):
-                    query += f" ORDER BY {order_by[1:]} DESC"
-                else:
-                    query += f" ORDER BY {order_by} ASC"
+            query += self._order_by_clause(order_by)
 
-            if limit is not None:
-                query += f" LIMIT {limit}"
+            # Bound rather than interpolated; SQLite requires LIMIT before
+            # OFFSET, and LIMIT -1 means "no limit".
+            if limit is not None or offset is not None:
+                query += " LIMIT ?"
+                parameters.append(int(limit) if limit is not None else -1)
             if offset is not None:
-                query += f" OFFSET {offset}"
+                query += " OFFSET ?"
+                parameters.append(int(offset))
 
             cursor = self.connector.get_cursor()
             cursor.execute(query, parameters)
@@ -776,6 +989,204 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
         finally:
             if cursor is not None:
                 cursor.close()
+
+    def _ensure_foreign_keys_enabled(self) -> None:
+        """Enable FK enforcement on the current connection.
+
+        SQLite disables FK enforcement by default. This must be called
+        on every new connection, not just once at startup, because PRAGMA
+        settings are per-connection, not per-database.
+        """
+        cursor = self.connector.get_cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys")
+            row = cursor.fetchone()
+            if not row or row[0] != 1:
+                cursor.execute("PRAGMA foreign_keys = ON")
+                logger.debug("Enabled foreign key enforcement for SQLite connection")
+        finally:
+            cursor.close()
+
+    def _get_fk_target_schema_sqlite(
+        self, schema_name: str, fk_column: str
+    ) -> Optional[str]:
+        """Get FK target table from PRAGMA foreign_key_list().
+
+        SQLite has no information_schema. PRAGMA foreign_key_list returns:
+            (id, seq, table, from, to, on_update, on_delete, match)
+        Column index 3 is 'from' (source column), index 2 is 'table' (target).
+        """
+        cursor = self.connector.get_cursor()
+        try:
+            cursor.execute(f"PRAGMA foreign_key_list({_safe_name(schema_name)})")
+            for row in cursor.fetchall():
+                if row[3] == fk_column:  # row[3] = 'from' column name
+                    return row[2]  # row[2] = target table name
+            return None
+        finally:
+            cursor.close()
+
+    def filter_with_joins(
+        self,
+        schema_name: str,
+        model_class: Type["KeyValueStoreIntegrationMixin"],
+        join_fields: List[str],
+        **filter_kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        # TODO: connect the implementation of join push down to result stream
+        """Resolve FK fields via SQL JOINs (native) or batch fetch (software).
+
+        Ensures FK enforcement is enabled before executing JOINs.
+        Uses PRAGMA foreign_key_list() for target schema resolution
+        since SQLite lacks information_schema.
+        """
+        self._ensure_connected()
+        self._ensure_foreign_keys_enabled()
+
+        if not self.schema_exists(schema_name):
+            raise ObjectDoesNotExist(f"Schema '{schema_name}' does not exist")
+
+        # Classify each join field
+        native_joins: List[Tuple[str, str, str]] = (
+            []
+        )  # (field_name, fk_column, target_schema)
+        software_fk_columns: List[Tuple[str, str]] = []  # (field_name, fk_column)
+
+        for field_name in join_fields:
+            fk_col = (
+                f"{field_name}_object_id"
+                if not field_name.endswith("_object_id")
+                else field_name
+            )
+            has_native = self.has_fk_constraint(schema_name, fk_col)
+
+            if has_native:
+                target_schema = self._get_fk_target_schema_sqlite(schema_name, fk_col)
+                if target_schema:
+                    native_joins.append((field_name, fk_col, target_schema))
+                else:
+                    # Constraint exists but target unresolvable → treat as software
+                    software_fk_columns.append((field_name, fk_col))
+            else:
+                software_fk_columns.append((field_name, fk_col))
+
+        # Build query with native LEFT JOINs. ``SELECT alias.*`` can't be
+        # prefixed, so each target column is selected explicitly under a
+        # ``<field>__resolved_<col>`` alias (id included).
+        main = _safe_name(schema_name)
+        select_parts = [f"{main}.*"]
+        join_clauses: List[str] = []
+        alias_map: Dict[str, str] = {}
+
+        for i, (field_name, fk_col, target_schema) in enumerate(native_joins):
+            alias = _safe_name(f"j_{i}")
+            alias_map[field_name] = alias
+            join_clauses.append(
+                f"LEFT JOIN {_safe_name(target_schema)} AS {alias} "
+                f'ON {main}.{_safe_name(fk_col)} = {alias}."id"'
+            )
+            for col in self.get_cached_table_columns(target_schema):
+                select_parts.append(
+                    f"{alias}.{_safe_name(col)} "
+                    f"AS {_safe_name(f'{field_name}__resolved_{col}')}"
+                )
+
+        # Qualify filter columns: "id" etc. exist on both sides of a join
+        where_clause, parameters = self._build_sql_filter(
+            filter_kwargs, table=schema_name
+        )
+
+        query = f"SELECT {', '.join(select_parts)} FROM {main}"
+        if join_clauses:
+            query += " " + " ".join(join_clauses)
+        if where_clause != "1":
+            query += f" WHERE {where_clause}"
+
+        cursor = self.connector.get_cursor()
+        try:
+            cursor.execute(query, parameters)
+            rows = cursor.fetchall()
+            col_names = [desc[0] for desc in cursor.description]
+        finally:
+            cursor.close()
+
+        # Assemble results with nested resolved dicts
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            record_dict = dict(zip(col_names, row))
+
+            # Extract joined columns into nested resolved dicts (iterate over a
+            # snapshot of the keys: the dict is modified inside the loop)
+            for field_name in alias_map:
+                prefix = f"{field_name}__resolved_"
+                resolved = {
+                    k[len(prefix) :]: record_dict.pop(k)
+                    for k in list(record_dict)
+                    if k.startswith(prefix)
+                }
+
+                record_dict[f"{field_name}__resolved"] = (
+                    resolved if resolved.get("id") is not None else None
+                )
+
+            results.append(record_dict)
+
+        # Batch-resolve software FKs (single additional query per field)
+        for field_name, fk_col in software_fk_columns:
+            target_ids: List[str] = []
+            for r in results:
+                fk_value = r.get(fk_col)
+                if isinstance(fk_value, dict):
+                    obj_id = fk_value.get("data")
+                elif isinstance(fk_value, str):
+                    obj_id = fk_value
+                else:
+                    obj_id = None
+                if obj_id is not None:
+                    target_ids.append(obj_id)
+
+            if not target_ids:
+                continue
+
+            target_model_class = self.resolve_target_model_for_field(
+                model_class, field_name
+            )
+            if target_model_class is None:
+                continue
+
+            # get_schema_name() is async; resolve the route synchronously here
+            target_schema = self.resolve_physical_target(
+                target_model_class.get_storage_route()
+            )
+            placeholders = ", ".join(["?"] * len(target_ids))
+
+            cursor = self.connector.get_cursor()
+            try:
+                cursor.execute(
+                    f"SELECT * FROM {_safe_name(target_schema)} WHERE id IN ({placeholders})",
+                    target_ids,
+                )
+                target_rows = cursor.fetchall()
+                target_col_names = [desc[0] for desc in cursor.description]
+            finally:
+                cursor.close()
+
+            target_map = {
+                dict(zip(target_col_names, tr))["id"]: dict(zip(target_col_names, tr))
+                for tr in target_rows
+            }
+
+            for record_dict in results:
+                fk_value = record_dict.get(fk_col)
+                if isinstance(fk_value, dict):
+                    obj_id = fk_value.get("data")
+                elif isinstance(fk_value, str):
+                    obj_id = fk_value
+                else:
+                    obj_id = None
+                record_dict[f"{field_name}__resolved"] = target_map.get(obj_id)
+
+        return results
 
     def count(
         self,
@@ -806,7 +1217,7 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
         try:
             where_clause, parameters = self._build_sql_filter(filter_kwargs)
-            query = f"SELECT COUNT(*) FROM {schema_name}"
+            query = f"SELECT COUNT(*) FROM {_safe_name(schema_name)}"
 
             if where_clause != "1":
                 query += f" WHERE {where_clause}"
@@ -851,7 +1262,9 @@ class SqliteStoreBackend(YoyoMigrationsMixin, KeyValueStoreBackendBase):
 
         try:
             cursor = self.connector.get_cursor()
-            cursor.execute(f"SELECT * FROM {schema_name} WHERE id = ?", (record_key,))
+            cursor.execute(
+                f"SELECT * FROM {_safe_name(schema_name)} WHERE id = ?", (record_key,)
+            )
             row = cursor.fetchone()
 
             if row is None:

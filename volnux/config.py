@@ -5,6 +5,7 @@ import base64
 import threading
 import typing
 import orjson as json
+from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from types import ModuleType
@@ -122,9 +123,13 @@ class ConfigEntry:
         Canonical payload used for Ed25519 signing and verification.
         Must match exactly on both sender and receiver.
         """
-        payload = asdict(self)
-        payload.pop("signature", None)
-        return json.dumps(payload)
+        payload = {
+            "name": self.name,
+            "value": self.value,
+            "origin_mesh_node": self.origin_mesh_node,
+            "timestamp": self.timestamp
+        }
+        return json.dumps(payload, option=json.OPT_SORT_KEYS)
 
     def _create_signer(self, key_pem: Union[bytes, str]) -> Signer:
         """
@@ -222,7 +227,7 @@ class VolnuxConfig:
         """
         from volnux.result.result import ResultSet
 
-        self._store: ResultSet[ConfigEntry] = ResultSet()
+        self._store: ResultSet[ConfigEntry] = ResultSet[ConfigEntry]()
         self._namespace_store: typing.DefaultDict[str, ResultSet[ConfigEntry]] = (
             defaultdict(ResultSet)
         )
@@ -291,8 +296,8 @@ class VolnuxConfig:
         """
         instance = cls.__new__(cls)
         instance._lock = threading.RLock()
-        instance._store = ResultSet()
-        instance._namespace_store = defaultdict(ResultSet)
+        instance._store = ResultSet[ConfigEntry]()
+        instance._namespace_store = defaultdict(ResultSet[ConfigEntry])
         instance._signer = None
 
         instance._node_id = data.get("node_id", _generate_node_id())
@@ -374,7 +379,7 @@ class VolnuxConfig:
         if not isinstance(config_module, ModuleType):
             raise TypeError("config_module must be of type ModuleType")
 
-        valid_types = (int, float, str, bool, list, dict, tuple)
+        valid_types = (int, float, str, bool, list, dict, tuple, Path)
         for field_name, value in vars(config_module).items():
             if field_name.startswith("__"):
                 continue
@@ -548,7 +553,8 @@ class VolnuxConfig:
             (True if updated, False otherwise).
         """
         with self._lock:
-            local_entry = self._store.get_entry_by_hash(hash(incoming_entry))
+            # local_entry = self._store.get_entry_by_identity(hash(incoming_entry))
+            local_entry = self.get_config_entry(key=incoming_entry.name)
 
             if not local_entry:
                 self._store.add(incoming_entry)

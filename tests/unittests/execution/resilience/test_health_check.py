@@ -14,8 +14,6 @@ from volnux.execution.resilience.protocols import TaskInfo
 
 
 # Mock Manager Classes for Testing
-
-
 class MockHealthyManager:
     """Mock manager that is always healthy."""
 

@@ -155,12 +155,11 @@ class BackendConnectionIntegrationMixin(ObjectIdentityMixin):
             self.set_state(state)
         except NotImplementedError:
             raise SerializationError(
-                f"Cannot deserialized object of type {self.__class__.__name__!r}"
+                f"Cannot deserialise object of type {self.__class__.__name__!r}"
             )
 
-        # Ensure the backend is initialized for this class
-        if self._backend_store is None:
-            self._initialize_backend()
+        # The backend is not initialised here: _initialize_backend() is async and
+        # __setstate__ is sync. get_backend() initialises lazily on first use.
 
     @classmethod
     def get_volnux_config(cls) -> "VolnuxConfig":

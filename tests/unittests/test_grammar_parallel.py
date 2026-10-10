@@ -68,10 +68,6 @@ class TestGrammarParallel(unittest.TestCase):
         self.assertIsInstance(node.left, TaskNode)
         self.assertEqual(node.left.task, "TaskA")
 
-
-
-
-
         # self.assertEqual(node.op, "||")
         # self.assertIsInstance(node.left, BinOpNode)
         # self.assertEqual(node.left.op, "->")
@@ -83,7 +79,7 @@ class TestGrammarParallel(unittest.TestCase):
         # self.assertEqual(node.right.right.task, "TaskD")
 
     def test_parallel_task_with_attributes(self):
-        program = pointy_parser('Worker[retries = 3] || DoIt')
+        program = pointy_parser("Worker[retries = 3] || DoIt")
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
         left = node.left
@@ -97,7 +93,7 @@ class TestGrammarParallel(unittest.TestCase):
         self.assertEqual(attr.value.value, 3)
 
     def test_parallel_namespaced_and_meta_event(self):
-        program = pointy_parser('pypi::Run || MAP<FetchUserData>')
+        program = pointy_parser("pypi::Run || MAP<FetchUserData>")
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
         self.assertIsInstance(node.left, TaskNode)
@@ -107,15 +103,15 @@ class TestGrammarParallel(unittest.TestCase):
         self.assertEqual(node.right.mode, "MAP")
 
     def test_parallel_grouped_with_attributes(self):
-        program = pointy_parser('{DoIt}[opt = 1] || {Run}[opt = 2]')
+        program = pointy_parser("{DoIt}[opt = 1] || {Run}[opt = 2]")
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
         self.assertIsInstance(node.left, PipelineGroupingNode)
         self.assertIsInstance(node.right, PipelineGroupingNode)
         left_names = {a.attr: a for a in node.left.options}
         right_names = {a.attr: a for a in node.right.options}
-        self.assertEqual(left_names['opt'].value.value, 1)
-        self.assertEqual(right_names['opt'].value.value, 2)
+        self.assertEqual(left_names["opt"].value.value, 1)
+        self.assertEqual(right_names["opt"].value.value, 2)
 
     def test_parallel_task_attribute_value_variants(self):
         # list, map, arithmetic, variable reference
@@ -124,44 +120,46 @@ class TestGrammarParallel(unittest.TestCase):
         left = node.left
         right = node.right
         from volnux.parser.ast import ListNode, MapNode
+
         names_l = {a.attr: a for a in left.options}
         names_r = {a.attr: a for a in right.options}
-        self.assertIsInstance(names_l['params'].value, ListNode)
-        self.assertIsInstance(names_r['config'].value, MapNode)
+        self.assertIsInstance(names_l["params"].value, ListNode)
+        self.assertIsInstance(names_r["config"].value, MapNode)
 
     def test_parallel_sequential_complex_mix(self):
         # Left is a sequential chain that includes a task with attributes and retry; right is a sequential chain ending in a meta-event
-        program = pointy_parser('TaskA * 2 -> Worker[retries = 3, timeout = 30] || pypi::Run[version = "1.2.3"] -> MAP<FetchUserData>')
+        program = pointy_parser(
+            'TaskA * 2 -> Worker[retries = 3, timeout = 30] || pypi::Run[version = "1.2.3"] -> MAP<FetchUserData>'
+        )
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, '->')
+        self.assertEqual(node.op, "->")
         self.assertIsInstance(node.right, MetaTaskNode)
-        self.assertEqual(node.right.mode, 'MAP')
-        self.assertEqual(node.right.template_task, 'FetchUserData')
+        self.assertEqual(node.right.mode, "MAP")
+        self.assertEqual(node.right.template_task, "FetchUserData")
 
         node = node.left
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, '||')
+        self.assertEqual(node.op, "||")
         self.assertIsInstance(node.right, TaskNode)
-        self.assertEqual(node.right.task, 'Run')
-        self.assertEqual(node.right.namespace, 'pypi')
+        self.assertEqual(node.right.task, "Run")
+        self.assertEqual(node.right.namespace, "pypi")
         options = {a.attr: a for a in node.right.options}
-        self.assertEqual(options['version'].value.value, '1.2.3')
+        self.assertEqual(options["version"].value.value, "1.2.3")
 
         node = node.left
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, '->')
+        self.assertEqual(node.op, "->")
         self.assertIsInstance(node.right, TaskNode)
-        self.assertEqual(node.right.task, 'Worker')
+        self.assertEqual(node.right.task, "Worker")
         names = {a.attr: a for a in node.right.options}
-        self.assertEqual(names['retries'].value.value, 3)
-        self.assertEqual(names['timeout'].value.value, 30)
+        self.assertEqual(names["retries"].value.value, 3)
+        self.assertEqual(names["timeout"].value.value, 30)
 
         self.assertIsInstance(node.left, RetryNode)
         self.assertIsInstance(node.left.job, TaskNode)
-        self.assertEqual(node.left.job.task, 'TaskA')
+        self.assertEqual(node.left.job.task, "TaskA")
         self.assertEqual(node.left.attempts.value, 2)
-
 
         # # left side should be a sequential chain
         # self.assertIsInstance(node.left, BinOpNode)
@@ -183,74 +181,82 @@ class TestGrammarParallel(unittest.TestCase):
 
     def test_parallel_complex_task_patterns(self):
         # tasks using lists, maps, arithmetic, env var, ternary, null coalesce
-        program = pointy_parser('@v = 5 Worker[params = [1,2], config = {"a": 1}, port = 8000 + 80, path = $env.PATH, pick = (1 ?? 2) ? 3 : 4] || pypi::Deploy[version = "1.2.3", flag = true]')
+        program = pointy_parser(
+            '@v = 5 Worker[params = [1,2], config = {"a": 1}, port = 8000 + 80, path = $env.PATH, pick = (1 ?? 2) ? 3 : 4] || pypi::Deploy[version = "1.2.3", flag = true]'
+        )
         node = program.chain
         # self.assertIsInstance(node, BinOpNode)
         left = node.left
         right = node.right
         # check left complex attributes
         names = {a.attr: a for a in left.options}
-        from volnux.parser.ast import ListNode, MapNode, BinOpNode, EnvironmentVariableAccessNode, TernaryExprNode, NullCoalesceExprNode
-        self.assertIsInstance(names['params'].value, ListNode)
-        self.assertIsInstance(names['config'].value, MapNode)
-        self.assertIsInstance(names['port'].value, BinOpNode)
-        self.assertIsInstance(names['path'].value, EnvironmentVariableAccessNode)
-        self.assertIsInstance(names['pick'].value, TernaryExprNode)
+        from volnux.parser.ast import (
+            ListNode,
+            MapNode,
+            BinOpNode,
+            EnvironmentVariableAccessNode,
+            TernaryExprNode,
+            NullCoalesceExprNode,
+        )
+
+        self.assertIsInstance(names["params"].value, ListNode)
+        self.assertIsInstance(names["config"].value, MapNode)
+        self.assertIsInstance(names["port"].value, BinOpNode)
+        self.assertIsInstance(names["path"].value, EnvironmentVariableAccessNode)
+        self.assertIsInstance(names["pick"].value, TernaryExprNode)
         # right should be namespaced task with literal attribute
         rnames = {a.attr: a for a in right.options}
-        self.assertEqual(rnames['version'].value.value, '1.2.3')
-        self.assertEqual(rnames['flag'].value.value, True)
+        self.assertEqual(rnames["version"].value.value, "1.2.3")
+        self.assertEqual(rnames["flag"].value.value, True)
 
     def test_parallel_grouped_sequences_with_retries(self):
-        program = pointy_parser('{Init}[opt=1] -> TaskA || {Start}[opt=2] -> TaskB * 3')
+        program = pointy_parser("{Init}[opt=1] -> TaskA || {Start}[opt=2] -> TaskB * 3")
         node = program.chain
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, '->')
+        self.assertEqual(node.op, "->")
         self.assertIsInstance(node.right, RetryNode)
         self.assertEqual(node.right.attempts.value, 3)
         self.assertIsInstance(node.right.job, TaskNode)
-        self.assertEqual(node.right.job.task, 'TaskB')
+        self.assertEqual(node.right.job.task, "TaskB")
 
         self.assertIsInstance(node.left, BinOpNode)
-        self.assertEqual(node.left.op, '||')
+        self.assertEqual(node.left.op, "||")
         self.assertIsInstance(node.left.right, PipelineGroupingNode)
         self.assertEqual(len(node.left.right.expressions), 1)
         self.assertIsInstance(node.left.right.expressions[0], TaskNode)
-        self.assertEqual(node.left.right.expressions[0].task, 'Start')
+        self.assertEqual(node.left.right.expressions[0].task, "Start")
         options = {a.attr: a for a in node.left.right.options}
-        self.assertEqual(options['opt'].value.value, 2)
+        self.assertEqual(options["opt"].value.value, 2)
 
         node = node.left.left
         self.assertIsInstance(node, BinOpNode)
-        self.assertEqual(node.op, '->')
+        self.assertEqual(node.op, "->")
         self.assertIsInstance(node.right, TaskNode)
-        self.assertEqual(node.right.task, 'TaskA')
+        self.assertEqual(node.right.task, "TaskA")
         self.assertIsInstance(node.left, PipelineGroupingNode)
         self.assertEqual(len(node.left.expressions), 1)
         self.assertIsInstance(node.left.expressions[0], TaskNode)
-        self.assertEqual(node.left.expressions[0].task, 'Init')
+        self.assertEqual(node.left.expressions[0].task, "Init")
         options = {a.attr: a for a in node.left.options}
-        self.assertEqual(options['opt'].value.value, 1)
-
-
+        self.assertEqual(options["opt"].value.value, 1)
 
     # Negative cases for parallel when using complex/sequential forms
     def test_parallel_missing_attribute_bracket_raises(self):
         with self.assertRaises(SyntaxError):
-            pointy_parser('Worker[retries = 3 || TaskB')
+            pointy_parser("Worker[retries = 3 || TaskB")
 
     def test_parallel_malformed_map_literal_raises(self):
         with self.assertRaises(SyntaxError):
-            pointy_parser('Worker[config = {a: 1}] || TaskB')
+            pointy_parser("Worker[config = {a: 1}] || TaskB")
 
     def test_parallel_invalid_namespace_raises(self):
         # unknown namespace should raise ValueError during TaskNode creation
         with self.assertRaises(ValueError):
-            pointy_parser('unknown::Task || TaskB')
+            pointy_parser("unknown::Task || TaskB")
 
     def test_parallel_retry_invalid_count_raises(self):
         with self.assertRaises(SyntaxError):
-            pointy_parser('TaskA * 1 || TaskB')
+            pointy_parser("TaskA * 1 || TaskB")
 
 
 if __name__ == "__main__":

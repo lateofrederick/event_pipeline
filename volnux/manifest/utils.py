@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import importlib
 import logging
 import re
@@ -15,8 +17,9 @@ from urllib.parse import urlparse, urlunparse
 
 if TYPE_CHECKING:
     from volnux.event.base import EventBase
-    from volnux.engine.workflows import WorkflowRegistry, WorkflowConfig
-    from volnux.engine.workflows.source import SourceCredentials
+
+    # from volnux.engine.workflows import WorkflowRegistry, WorkflowConfig
+    # from volnux.engine.workflows.source import SourceCredentials
 
 
 __all__ = [
@@ -647,7 +650,7 @@ def build_authenticated_url(
         )
 
     if credentials.token:
-        if auth_style.lower() is "pypi":
+        if auth_style.lower() == "pypi":
             # PyPI convention: __token__ is the username, token is the password.
             auth = f"__token__:{credentials.token}"
         else:

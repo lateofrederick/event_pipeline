@@ -154,7 +154,7 @@ class TriggerBase(ABC):
         Should be called after trigger creation to ensure the state is available
         for CLI interactions.
         """
-        await self.state.save_async()
+        await self.state.save()
         logger.debug(f"Initialized state for trigger '{self.trigger_id}'")
 
     def generate_correlation_id(self) -> str:
@@ -174,7 +174,7 @@ class TriggerBase(ABC):
         to apply changes made by the CLI (pause, resume, stop, etc.).
         """
 
-        await self.state.reload_async()
+        await self.state.reload()
 
     def set_activation_callback(
         self, callback: Callable[[TriggerActivation], Awaitable[None]]
@@ -263,7 +263,7 @@ class TriggerBase(ABC):
 
         if self._on_activate is None:
             self.state.error_count += 1
-            await self.state.save_async()
+            await self.state.save()
             logger.error(
                 f"Trigger '{self.trigger_id}' has no activation callback set. "
                 "Register the trigger with the engine before activating it."
@@ -281,8 +281,8 @@ class TriggerBase(ABC):
             )
 
         self.state.fire_count += 1
-        self.state.last_fired = datetime.now(timezone.utc).isoformat()
-        await self.state.save_async()
+        self.state.last_fired = datetime.now(timezone.utc)
+        await self.state.save()
 
         activation = TriggerActivation(
             trigger_id=self.trigger_id,
@@ -302,7 +302,7 @@ class TriggerBase(ABC):
             await self._on_activate(activation)
         except Exception as e:
             self.state.error_count += 1
-            await self.state.save_async()
+            await self.state.save()
             logger.error(
                 f"Activation callback failed for trigger '{self.trigger_id}': {e}"
             )

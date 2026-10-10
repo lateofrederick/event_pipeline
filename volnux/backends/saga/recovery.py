@@ -75,7 +75,6 @@ class SagaRecoveryManager:
             updated_at=now,
         )
 
-        # Upsert state using active-record persistence
         await state.save()
         logger.debug(
             "Saga recovery checkpoint saved: %s (step %d)", saga_id, current_step_index

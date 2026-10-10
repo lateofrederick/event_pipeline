@@ -191,11 +191,14 @@ def test_get_config_entry_finds_entry_by_name(cfg):
     assert entry.value == "https://example.test"
 
 
-def test_get_reads_environment_first(monkeypatch, cfg):
-    monkeypatch.setenv("API_URL", "from-env")
-    cfg.add("API_URL", "from-store")
-
+def test_load_from_environment_variable_and_override_manually(monkeypatch, cfg):
+    monkeypatch.setenv("VOLNUX_API_URL", "from-env")
+    cfg.load_from_environ()
     assert cfg.get("API_URL") == "from-env"
+
+    cfg.add("API_URL", "from-store") # overridden
+
+    assert cfg.get("API_URL") == "from-store"
 
 
 def test_get_reads_store_when_env_missing(cfg):
@@ -322,7 +325,7 @@ def test_getattr_rejects_private_attrs(cfg):
 async def test_add_async_calls_sync_add(monkeypatch, cfg):
     called = {"count": 0}
 
-    def fake_add(key, value, node_id=None, timestamp=None):
+    def fake_add(key, value, node_id=None, timestamp=None, namespace=None):
         called["count"] += 1
 
     monkeypatch.setattr(cfg, "add", fake_add)
@@ -343,4 +346,4 @@ async def test_get_async_calls_sync_get(monkeypatch, cfg):
 
 def test_repr_includes_store_length(cfg):
     cfg.add("a", 1)
-    assert repr(cfg) == "VolnuxConfig <len=1>"
+    assert repr(cfg) == "VolnuxConfig <len=2>"
