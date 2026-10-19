@@ -31,7 +31,7 @@ slow or failing transport never blocks a running workflow.
 from .events import GOVERNANCE_SCHEMA, EventType, GovernanceEvent
 from .publisher import GovernanceEventPublisher, enqueue_governance_event
 from .reporter import SignalGovernanceReporter, install_governance_reporter
-from .sampling import DEFAULT_CRITICAL, EventSampler, ReservoirSampler
+from .sampling import DEFAULT_CRITICAL, EventSampler
 
 __all__ = [
     "EventType",
@@ -42,6 +42,5 @@ __all__ = [
     "SignalGovernanceReporter",
     "install_governance_reporter",
     "EventSampler",
-    "ReservoirSampler",
     "DEFAULT_CRITICAL",
 ]

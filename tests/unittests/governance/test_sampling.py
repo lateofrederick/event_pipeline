@@ -1,54 +1,56 @@
 """Tests for reservoir sampling of governance telemetry.
 
 Pure and deterministic: the RNG is injected, so the sampling decisions are
-reproducible and no backend is involved.
+reproducible and no backend is involved. The reservoir itself is the shared
+Algorithm R implementation from volnux.execution.remote.context.
 """
 
 import random
 
+from volnux.execution.remote.context import ReservoirSample
 from volnux.governance.events import EventType
-from volnux.governance.sampling import EventSampler, ReservoirSampler
+from volnux.governance.sampling import EventSampler
 
 
 # --- Algorithm R ------------------------------------------------------------
 
 
 def test_reservoir_never_exceeds_capacity():
-    reservoir = ReservoirSampler(capacity=4, rng=random.Random(0))
+    reservoir = ReservoirSample(k=4, _rng=random.Random(0))
 
     for i in range(100):
-        reservoir.offer(i)
+        reservoir.add(i)
 
-    assert len(reservoir) == 4
-    assert reservoir.seen == 100
+    assert len(reservoir.sample()) == 4
+    assert reservoir.total_seen == 100
 
 
 def test_reservoir_keeps_everything_below_capacity():
-    reservoir = ReservoirSampler(capacity=10, rng=random.Random(0))
+    reservoir = ReservoirSample(k=10, _rng=random.Random(0))
 
     for i in range(3):
-        reservoir.offer(i)
+        reservoir.add(i)
 
-    assert reservoir.drain() == [0, 1, 2]
+    assert reservoir.sample() == [0, 1, 2]
 
 
-def test_drain_resets_the_window():
-    reservoir = ReservoirSampler(capacity=4, rng=random.Random(0))
-    for i in range(10):
-        reservoir.offer(i)
+def test_drain_starts_a_fresh_window(make_event):
+    # The sampler drops each reservoir after draining, so the next flush
+    # cannot see the previous window's items.
+    sampler = EventSampler(capacity=4, rng=random.Random(0))
+    for _ in range(10):
+        sampler.offer(make_event(event_type=EventType.TASK_STARTED))
 
-    reservoir.drain()
-
-    assert len(reservoir) == 0
-    assert reservoir.seen == 0
+    assert len(sampler.drain()) == 4
+    assert sampler.drain() == []
 
 
 def test_capacity_must_be_positive():
     try:
-        ReservoirSampler(capacity=0)
+        EventSampler(capacity=0)
     except ValueError:
         return
-    raise AssertionError("expected ValueError for a zero-capacity reservoir")
+    raise AssertionError("expected ValueError for a zero-capacity sampler")
 
 
 # --- Classification ---------------------------------------------------------

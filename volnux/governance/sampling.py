@@ -16,6 +16,12 @@ Two classes of event:
   reservoir. ``drain`` returns the current sample and resets, so a periodic flush
   forwards a representative slice rather than the whole firehose.
 
+The reservoir itself is ``volnux.execution.remote.context.ReservoirSample`` —
+the same Algorithm R implementation the remote-execution mini-contexts use —
+kept in one place rather than duplicated. Its ``sample()`` does not reset the
+window, so ``EventSampler`` discards each reservoir object after draining:
+every flush starts a fresh window by construction.
+
 The sampler is pure and thread-safe: ``offer`` is called from the reporter's
 signal handlers and ``drain`` from the publisher's flush timer, so both take a
 lock. It performs no I/O and needs no backend, which makes it fully testable.
@@ -24,6 +30,8 @@ lock. It performs no I/O and needs no backend, which makes it fully testable.
 import random
 import threading
 from typing import Any, Dict, List, Optional
+
+from volnux.execution.remote.context import ReservoirSample
 
 from .events import EventType, GovernanceEvent
 
@@ -56,48 +64,6 @@ _TERMINAL = frozenset(
 )
 
 
-class ReservoirSampler:
-    """A fixed-capacity uniform random sample over a stream (Algorithm R).
-
-    Each ``offer`` keeps the item with probability ``capacity / seen``, so after
-    any number of offers the reservoir holds a uniform random sample of the items
-    seen since the last ``drain``. Not thread-safe on its own; callers that share
-    one across threads must guard it (``EventSampler`` does).
-    """
-
-    def __init__(self, capacity: int, rng: Optional[random.Random] = None) -> None:
-        if capacity < 1:
-            raise ValueError("reservoir capacity must be >= 1")
-        self._capacity = capacity
-        self._rng = rng or random.Random()
-        self._items: List[Any] = []
-        self._seen = 0
-
-    def offer(self, item: Any) -> None:
-        self._seen += 1
-        if len(self._items) < self._capacity:
-            self._items.append(item)
-            return
-        # Replace a random existing item with probability capacity/seen.
-        j = self._rng.randrange(self._seen)
-        if j < self._capacity:
-            self._items[j] = item
-
-    def drain(self) -> List[Any]:
-        """Return the current sample and reset for the next window."""
-        items = self._items
-        self._items = []
-        self._seen = 0
-        return items
-
-    @property
-    def seen(self) -> int:
-        return self._seen
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-
 class EventSampler:
     """Classify governance events and reservoir-sample the telemetry ones.
 
@@ -115,10 +81,12 @@ class EventSampler:
         critical: frozenset = DEFAULT_CRITICAL,
         rng: Optional[random.Random] = None,
     ) -> None:
+        if capacity < 1:
+            raise ValueError("reservoir capacity must be >= 1")
         self._capacity = capacity
         self._critical = critical
         self._rng = rng or random.Random()
-        self._reservoirs: Dict[Any, ReservoirSampler] = {}
+        self._reservoirs: Dict[Any, ReservoirSample] = {}
         self._lock = threading.Lock()
 
     def offer(self, event: GovernanceEvent) -> List[GovernanceEvent]:
@@ -138,9 +106,9 @@ class EventSampler:
             key = self._key(event)
             reservoir = self._reservoirs.get(key)
             if reservoir is None:
-                reservoir = ReservoirSampler(self._capacity, self._rng)
+                reservoir = ReservoirSample(k=self._capacity, _rng=self._rng)
                 self._reservoirs[key] = reservoir
-            reservoir.offer(event)
+            reservoir.add(event)
             return []
 
     def drain(self) -> List[GovernanceEvent]:
@@ -148,7 +116,7 @@ class EventSampler:
         with self._lock:
             out: List[GovernanceEvent] = []
             for reservoir in self._reservoirs.values():
-                out.extend(reservoir.drain())
+                out.extend(reservoir.sample())
             self._reservoirs.clear()
             return out
 
@@ -165,4 +133,4 @@ class EventSampler:
 
     def _drain_key(self, key: Any) -> List[GovernanceEvent]:
         reservoir = self._reservoirs.pop(key, None)
-        return reservoir.drain() if reservoir else []
+        return reservoir.sample() if reservoir else []
