@@ -28,7 +28,7 @@ off the engine's hot path: the reporter hands each event to a
 slow or failing transport never blocks a running workflow.
 """
 
-from .events import GOVERNANCE_SCHEMA, EventType, GovernanceEvent
+from .events import EventType, GovernanceEvent
 from .publisher import GovernanceEventPublisher, enqueue_governance_event
 from .reporter import SignalGovernanceReporter, install_governance_reporter
 from .sampling import DEFAULT_CRITICAL, EventSampler
@@ -36,7 +36,6 @@ from .sampling import DEFAULT_CRITICAL, EventSampler
 __all__ = [
     "EventType",
     "GovernanceEvent",
-    "GOVERNANCE_SCHEMA",
     "GovernanceEventPublisher",
     "enqueue_governance_event",
     "SignalGovernanceReporter",

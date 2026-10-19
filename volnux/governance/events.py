@@ -62,15 +62,6 @@ class EventType:
     NODE_DECOMMISSIONED = "node.decommissioned"
 
 
-# The logical identity of the governance event feed, shared by the engine
-# producer and the platform consumer. The physical queue name is the model's
-# resolved storage route (see GovernanceEvent.get_storage_route), scoped to the
-# deployment's project and node, so Redis administration never has to scan a
-# single flat global keyspace. Producer and consumer resolve the same route
-# from the same config, so they still meet on one queue.
-GOVERNANCE_SCHEMA = "volnux:governance:events"
-
-
 class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
     """A single governance fact, delivered over the provisioned messaging backend.
 

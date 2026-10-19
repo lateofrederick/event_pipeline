@@ -9,7 +9,7 @@ provisioned backend.
 import asyncio
 
 from volnux.config import VolnuxConfig
-from volnux.governance.events import GOVERNANCE_SCHEMA, EventType, GovernanceEvent
+from volnux.governance.events import EventType, GovernanceEvent
 
 
 # --- Vocabulary -------------------------------------------------------------
@@ -50,9 +50,6 @@ def test_schema_name_resolves_the_scoped_route():
             "events",
         ]
     )
-    # The unscoped identity stays meaningful as the logical name both sides
-    # document the feed under.
-    assert GOVERNANCE_SCHEMA == "volnux:governance:events"
 
 
 # --- Field handling ---------------------------------------------------------
