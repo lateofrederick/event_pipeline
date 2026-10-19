@@ -4,8 +4,8 @@ A ``GovernanceEvent`` is a single fact the engine reports for the platform to
 project (an execution started, a task completed, a node beat). It is a
 transport-agnostic message: it mixes in the engine's messaging integration and
 is delivered through whatever backend the deployment has provisioned (Redis,
-Postgres, in-memory, ...), keyed by ``get_schema_name()``. There is no Redis or
-any other transport hard-wired here.
+Postgres, in-memory, ...), keyed by the model's resolved storage route. There
+is no Redis or any other transport hard-wired here.
 
 The pattern mirrors ``volnux.backends.saga._dlq.DeadLetterEntry``: a model that
 mixes in ``MessagingBackendIntegrationMixin``, which itself extends
@@ -21,6 +21,7 @@ consumers read a dict, and the model layer handles coercion and serialisation.
 
 from typing import Any, Dict, Optional
 from formax import BaseModel, Attrib, MiniAnnotated
+from volnux.backends.storage_route import StorageRoute
 from volnux.mixins.messaging import MessagingBackendIntegrationMixin
 from volnux.config import VolnuxConfig
 
@@ -61,8 +62,12 @@ class EventType:
     NODE_DECOMMISSIONED = "node.decommissioned"
 
 
-# The queue/channel identity for governance events, shared by the engine
-# producer and the platform consumer.
+# The logical identity of the governance event feed, shared by the engine
+# producer and the platform consumer. The physical queue name is the model's
+# resolved storage route (see GovernanceEvent.get_storage_route), scoped to the
+# deployment's project and node, so Redis administration never has to scan a
+# single flat global keyspace. Producer and consumer resolve the same route
+# from the same config, so they still meet on one queue.
 GOVERNANCE_SCHEMA = "volnux:governance:events"
 
 
@@ -95,8 +100,26 @@ class GovernanceEvent(MessagingBackendIntegrationMixin, BaseModel):
     project_id: MiniAnnotated[str, Attrib(default_factory=lambda: volnux_config.get('PROJECT_ID'))]
 
     @classmethod
-    async def get_schema_name(cls) -> str:
-        return GOVERNANCE_SCHEMA
+    def get_storage_route(cls) -> StorageRoute:
+        """Project- and node-scoped route for the event feed.
+
+        Scoping keeps every governance key under ``volnux:<project>:<node>...``
+        instead of one flat global name, so Redis KEYS/SCAN and expiry sweeps
+        stay narrow. Producer and consumer must run with the same PROJECT_ID
+        and mesh node id configured — they then resolve this same route and
+        meet on one queue.
+        """
+        config = cls.get_volnux_config()
+        return StorageRoute(
+            components=["volnux", "{project_id}", "{node_id}", "governance", "events"],
+            routing_keys=lambda: {
+                "project_id": config.get("PROJECT_ID"),
+                # Via the canonical accessor, not a "NODE_ID" config key: that
+                # key is not seeded from VOLNUX_MESH_NODE_ID, while this is the
+                # same accessor the event's own node_id field defaults to.
+                "node_id": config.get_node_id(),
+            },
+        )
 
     def get_state(self) -> Dict[str, Any]:
         """Serialisable state for the transport.

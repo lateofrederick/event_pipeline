@@ -8,6 +8,7 @@ provisioned backend.
 
 import asyncio
 
+from volnux.config import VolnuxConfig
 from volnux.governance.events import GOVERNANCE_SCHEMA, EventType, GovernanceEvent
 
 
@@ -23,10 +24,34 @@ def test_event_types_are_namespaced_by_subject():
     assert EventType.NODE_HEARTBEAT.startswith("node.")
 
 
-def test_schema_name_is_the_shared_queue_identity():
-    # Producer and consumer must agree on this exact string or nothing is
-    # delivered; it is keyed off the model, not configured per deployment.
-    assert asyncio.run(GovernanceEvent.get_schema_name()) == GOVERNANCE_SCHEMA
+def test_schema_name_resolves_the_scoped_route():
+    # Producer and consumer must resolve the same physical queue or nothing is
+    # delivered. The name is no longer a flat global string: it is the model's
+    # storage route, scoped to the deployment's project and node so Redis
+    # administration never scans one flat keyspace.
+    config = VolnuxConfig.get_instance()
+    backend = asyncio.run(GovernanceEvent.get_backend())
+    resolved = asyncio.run(GovernanceEvent.get_schema_name())
+
+    route = GovernanceEvent.get_storage_route()
+    assert route.components == [
+        "volnux",
+        "{project_id}",
+        "{node_id}",
+        "governance",
+        "events",
+    ]
+    assert resolved == backend.NAMESPACE_SEPARATOR.join(
+        [
+            "volnux",
+            config.get("PROJECT_ID"),
+            config.get_node_id(),
+            "governance",
+            "events",
+        ]
+    )
+    # The unscoped identity stays meaningful as the logical name both sides
+    # document the feed under.
     assert GOVERNANCE_SCHEMA == "volnux:governance:events"
 
 
